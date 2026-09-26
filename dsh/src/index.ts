@@ -7,18 +7,20 @@
  *  2. 桥发现工具 → `syncTools` 原生注册进 `ctx.tools`（`mcp__paperpilot__<tool>`）；重连后
  *     工具集变化会再同步。
  *  3. 断联显式信号：状态迁移写日志；服务离线时工具调用抛**可读**离线错误（桥内已实现）。
- *  4. 向 web client 注入 bootstrap（`__PAPERPILOT__`），client 半据此把 PaperPilot 面板
- *     iframe 进 dsh 右栏。
+ *  4. 注册**面板地址的同源只读路由**（`dsh-panel` 参考实现的 `makeMonitorUrlHandler`）：
+ *     读项目根 `PANEL_CONFIG.PORT_FILE` 里的裸端口 → 回 `{base}`（**绝不回落默认端口**），
+ *     client 半据此把 PaperPilot 面板 iframe 进 dsh 右栏。
  *
  * 安全红线：**只 connect、绝不 spawn 服务**（人启动 launcher = 权威）。换 harness 只丢
  * 本插件，PaperPilot 的独立 MCP server 照用（跨 harness）。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
 import { PaperPilotMcpBridge } from './host/mcp-bridge.ts'
 import { httpSessionFactory } from './host/mcp-session-http.ts'
 import { buildRequestInit, resolveMcpUrl } from './host/config.ts'
 import { syncTools, type ToolDisposers } from './host/register-tools.ts'
+import { makeMonitorUrlHandler } from './panel/monitor-url.ts'
+import { PANEL_CONFIG } from './panel/panel-config.ts'
 
 /** Cordis 插件显示名（诊断用；工具命名空间默认同此）。 */
 export const name = 'paperpilot'
@@ -40,8 +42,8 @@ export interface Config {
   mcpPortFile?: string
   /** 工具命名空间：`mcp__<serverName>__<tool>`。 */
   serverName?: string
-  /** PaperPilot Web 面板地址（client 面板 iframe 它）。 */
-  webUrl?: string
+  /** 项目根（面板端口文件所在目录；默认 dsh 进程的 cwd = launcher 已切到项目根）。 */
+  projectRoot?: string
   /** 远程 MCP 鉴权 token（→ Authorization: Bearer）；本地默认空。 */
   mcpToken?: string
   /** 额外请求头。 */
@@ -59,7 +61,6 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   await ctx.effect(async () => {
     const url = await resolveMcpUrl(config)
     const serverName = config.serverName || 'paperpilot'
-    const webUrl = config.webUrl || 'http://127.0.0.1:8080/'
     let disposers: ToolDisposers = new Map()
 
     const bridge = new PaperPilotMcpBridge({
@@ -87,18 +88,35 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       },
     })
 
-    // 向 web client 的 index.html 注入 bootstrap（client 面板据此 iframe PaperPilot Web）。
-    // 只**监听**事件、不 inject webServer：headless（无 web）时事件不触发，MCP 桥照常工作。
-    const offInject = ctx.on('webserver/index-inject', (table: IndexInjection[]) => {
-      table.push({ kind: 'global', name: '__PAPERPILOT__',
-        value: { webUrl } })
+    // 面板地址的**同源只读路由**：读项目根 `PANEL_CONFIG.PORT_FILE` 里的裸端口 → `{base}`。
+    // **绝不回落默认端口**（回落会把"Web 没起来"显示成"连上了但空白"）；每次被 fetch 都
+    // 现读文件 ⇒ Web 换端口后下一拍落在新端口，不需要重启 dsh。
+    //
+    // 为什么用 `ctx.inject` 而不是顶层 `inject: [..., 'webServer']`：本插件要**在 headless
+    // 下照常工作**（`paperpilot mcp` 不进 dsh；但换 harness/无 web 时 MCP 桥仍要活）。顶层
+    // inject 缺一个服务就**整个插件不激活**，那会把"面板没有 web 服务"升级成"AI 工具也没了"。
+    // `ctx.inject` 只在 webServer 就绪时才跑回调，且返回值即 disposer。
+    ctx.inject?.(['webServer'], scoped => {
+      const webServer = (scoped as { webServer: { register(route: {
+        kind: 'exact'; path: string
+        // 参数用 `any`：`unknown` 与本插件实现的 `IncomingMessage`/`ServerResponse` 逆变不兼容
+        handler: (req: any, res: any) => void }): () => void } }).webServer
+      const root = config.projectRoot?.trim() || process.cwd()
+      const disposeRoute = webServer.register({
+        kind: 'exact',
+        path: PANEL_CONFIG.ROUTE_PATH,
+        handler: makeMonitorUrlHandler({ root, portFile: PANEL_CONFIG.PORT_FILE }),
+      })
+      ctx.logger?.info?.(
+        `[paperpilot] 注册面板地址路由 ${PANEL_CONFIG.ROUTE_PATH}` +
+        `（读 ${root}\\${PANEL_CONFIG.PORT_FILE}，不回落默认端口）`)
+      return disposeRoute
     })
 
     ctx.logger?.info?.(`[paperpilot] 连接 PaperPilot MCP：${url}（只 connect，不 spawn 权威）`)
     await bridge.start()   // 服务未起也不抛：插件照常加载，桥后台重连，起来后自动注册工具
 
     return async () => {
-      offInject()
       for (const dispose of disposers.values()) {
         try { dispose() } catch { /* ignore */ }
       }

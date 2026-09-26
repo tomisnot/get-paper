@@ -17,7 +17,22 @@ declare module '@deepseek-ai/cordis' {
       closeRightbar?(): void
       toggleSidebar?(): void
     }
-    on(event: string, listener: (payload: never) => void): () => void
+    /**
+     * **scoped effect**：等 `deps` 里的服务就绪再跑回调，**回调返回值即 disposer**。
+     * 与顶层 `export const inject` 的区别是"缺服务只是这段不跑"，而不是整个插件不激活
+     * （后者会把"面板没有 web 服务"升级成"AI 工具也没了"）。
+     */
+    inject?(deps: string[], callback: (scoped: Context) => void | (() => void)): unknown
+    /** dsh-host-webserver 提供的服务（仅 web 模式在场；headless 缺省）。 */
+    webServer?: {
+      register(route: {
+        kind: 'exact' | 'prefix'
+        path: string
+        // 参数用 `any`（shim 只求够用）：`unknown` 会与实现侧的 `IncomingMessage`/
+        // `ServerResponse` 逆变不兼容，逼实现去写更弱的类型。
+        handler: (req: any, res: any) => void | Promise<void>
+      }): () => void
+    }
     effect(
       fn: () => void | (() => void | Promise<void>) | Promise<void | (() => void | Promise<void>)>,
       label?: string,
@@ -35,14 +50,6 @@ declare module '@deepseek-ai/dsh-tools' {
   }
   export interface ToolExecution {
     signal?: AbortSignal
-  }
-}
-
-declare module '@deepseek-ai/dsh-host-webserver' {
-  export interface IndexInjection {
-    kind: 'global' | string
-    name: string
-    value: unknown
   }
 }
 
