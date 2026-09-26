@@ -5,18 +5,25 @@
  * PaperPilot Web iframe 挂进右栏列（`[data-rightbar-col]`）+ 自动关左栏；对话回中栏全高
  * （宽度随右栏打开自动收窄）。再点 → closeRightbar + 复原左栏 + 移除 iframe。
  *
- * 贡献：① 会话头部切换按钮（`conversation.session.header.actions`）；② 注入 CSS
- * （`<style data-plugin-css>`，仅 `html[data-pp-panel="on"]` 生效）。
+ * 贡献：① 会话头部 📄简报 按钮（`conversation.session.header.actions`）；② 注入 CSS
+ * （`<style data-plugin-css>`，仅 `html[data-pp-panel="on"]` 生效）+ 简报 iframe 的挂载/取址。
  * 跨 scope（按钮 session / iframe root）的模式状态由模块级 mode-store 桥接；
  * 注册与副作用都经 `ctx.effect` 可逆。
  *
- * ## 地址**不再**来自注入的 bootstrap（2026-09-26 迁移）
+ * ## ⚠「◈ 监控」不在这里了（**另一个面，另一种形态**）
+ *
+ * AI 监控面板**不再是本插件的 iframe 视图**：它改走共享资产 `dsh-panel/` 的**原生 tab**
+ * （数据层 `panelData.ts`、呈现 `MonitorTabBody.tsx`，用户点名"几乎完全复用 EL，布局也是"）。
+ * 本文件**故意不保留**它的旧链（旧的 Web `/monitor` 页 + iframe + `panel-state`/`panel-probe`
+ * 的 monitor 视图）——**留着就是两套视图并存的漂移源**。
+ * ⚠ **两个面板共用右栏 ⇒ 必须互斥**：抄装监控 tab 时，`openCockpit` 里先
+ * `setPanelMode(false)`（收起本 iframe），点 📄简报 时先 `sidebarRight.closeTab(...)`。
+ *
+ * ## 地址**不再**来自注入的 bootstrap
  *
  * 旧形态 `readBootstrap()?.webUrl || ''`：地址是 host 半注入的**静态默认**
- * `http://127.0.0.1:8080/`（`src/index.ts` 的 `config.webUrl`），与 `settings.yaml` 的
- * `web.port` **各写一份**——换端口即漂移；注入缺失时 src 还会退化成相对 `monitor`
- * （按 dsh 自己的域解析）或空串（iframe 永不设 src = 纯白）。
- *
+ * `http://127.0.0.1:8080/`（与 `settings.yaml` 的 `web.port` **各写一份**）——换端口即漂移；
+ * 注入缺失时 src 还会退化成相对路径（按 dsh 自己的域解析）或空串（iframe 永不设 src = 纯白）。
  * 现形态：地址经**同源只读路由** `PANEL_CONFIG.ROUTE_PATH` **现取**（host 半读项目根
  * `PANEL_CONFIG.PORT_FILE` 里的裸端口，**绝不回落默认端口**）。判定收进纯函数
  * `renderPanel`（`panel-state.ts`）⇒ **"要么可用地址、要么可读错误"，没有第三态**；
@@ -27,9 +34,8 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { BriefingPanel } from './BriefingPanel.tsx'
-import { MonitorButton } from './MonitorButton.tsx'
 import { PANEL_MODE_CSS } from './panel-mode-css.ts'
-import { getPanelMode, getPanelPath, subscribePanelMode } from './mode-store.ts'
+import { getPanelMode, subscribePanelMode } from './mode-store.ts'
 import { PANEL_CONFIG } from '../panel/panel-config.ts'
 import { assertNever, fetchMonitorBase } from '../panel/monitor-client.ts'
 import { probeReachable } from './panel-probe.ts'
@@ -54,19 +60,14 @@ export async function apply(ctx: Context): Promise<void> {
     style.textContent = PANEL_MODE_CSS
     document.head.appendChild(style)
 
-    // 会话头部：📄简报按钮（切到 Web 根）+ ◈监控按钮（切到 /monitor 操作审计）
+    // 会话头部：📄简报按钮（把 PaperPilot Web 挂进右栏）
     const disposeBtn = ctx.slots.inject('conversation.session.header.actions', () =>
       ctx.slots.register(
         { name: 'conversation.session.header.actions', id: 'pp-briefing', order: 200 },
         BriefingPanel,
       ))
-    const disposeMonitorBtn = ctx.slots.inject('conversation.session.header.actions', () =>
-      ctx.slots.register(
-        { name: 'conversation.session.header.actions', id: 'pp-monitor', order: 201 },
-        MonitorButton,
-      ))
 
-    // ---- 模式副作用：右栏=PaperPilot 面板（简报或监控）+ 左栏自动关 + iframe 挂右栏列 ----
+    // ---- 模式副作用：右栏=PaperPilot 简报 iframe + 左栏自动关 ----
     let frame: HTMLIFrameElement | null = null
     let errorBox: HTMLElement | null = null
     let overlay: HTMLElement | null = null
@@ -167,7 +168,6 @@ export async function apply(ctx: Context): Promise<void> {
       paint(renderPanel({
         address,
         reachable,
-        view: getPanelPath() === 'monitor' ? 'monitor' : '',
         hasHost: Boolean(hostEl()),
         routePath: PANEL_CONFIG.ROUTE_PATH,
         portFile: PANEL_CONFIG.PORT_FILE,
@@ -207,10 +207,9 @@ export async function apply(ctx: Context): Promise<void> {
     return () => {
       unsub()
       unmountPanel()
-      try { disposeMonitorBtn?.() } catch { /* ignore */ }
       try { disposeBtn?.() } catch { /* ignore */ }
       style.remove()
       document.documentElement.removeAttribute('data-pp-panel')
     }
-  }, 'paperpilot: briefing + monitor panel')
+  }, 'paperpilot: briefing panel')
 }

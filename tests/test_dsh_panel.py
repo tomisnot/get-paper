@@ -46,7 +46,12 @@ PROJECT_PANEL_TEST = "test/panel.test.ts"
 #: 两条守卫都绿）——那正是"**守卫被悄悄抽空**"。
 #: ⚠ 反过来，**共享**的那两份 `.test.ts` **在**指纹表里 ⇒ 改它们必红（亦已实测）。
 #: ⚠ **新增用例后请同步抬高这个数**：失败信息会提醒你是"删了判据"还是"忘了抬下限"。
-PANEL_TEST_FLOOR = 19
+#:
+#: 变更记录（每次**有意**增删都在这里留一行——"为什么是这个数"必须可追）：
+#: * 19 → **17**（2026-09-26 第 3 批）：删了 2 条 —— `viewPath`（AI 监控不再走 iframe，
+#:   没有第二个视图了）与 `assertNever`（**资产自测已覆盖**，见 `monitor-client.test.ts`：
+#:   同一事实不留两个守卫）。
+PANEL_TEST_FLOOR = 17
 
 _COUNT_RE = re.compile(r"^\u2139\s+(tests|pass|fail|skipped)\s+(\d+)\s*$", re.M)
 

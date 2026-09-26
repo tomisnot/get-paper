@@ -32,9 +32,9 @@ import {
   resolveMonitorBase,
 } from '../src/panel/monitor-url.ts'
 import { PANEL_CONFIG } from '../src/panel/panel-config.ts'
-import { assertNever, fetchMonitorBase, isOriginLike } from '../src/panel/monitor-client.ts'
+import { fetchMonitorBase, isOriginLike } from '../src/panel/monitor-client.ts'
 import { probeReachable } from '../src/client/panel-probe.ts'
-import { renderPanel, viewPath, type PanelView } from '../src/client/panel-state.ts'
+import { renderPanel } from '../src/client/panel-state.ts'
 
 /** 本项目**历史**的静态默认地址（迁移前写在插件配置里）——只作为**反面语料**。 */
 const HISTORICAL_DEFAULT = 'http://127.0.0.1:8080'
@@ -84,13 +84,11 @@ const badAddress = (tier: 'address' | 'offline' | 'route', detail: string) =>
 function judged(input: {
   address: ReturnType<typeof okAddress> | ReturnType<typeof badAddress>
   reachable?: boolean
-  view?: PanelView
   hasHost?: boolean
 }) {
   return renderPanel({
     address: input.address as never,
     reachable: input.reachable ?? true,
-    view: input.view ?? 'monitor',
     hasHost: input.hasHost ?? true,
     routePath: PANEL_CONFIG.ROUTE_PATH,
     portFile: PANEL_CONFIG.PORT_FILE,
@@ -130,9 +128,14 @@ test('⭐ 端口文件缺失 ⇒ 503 + 无 base，且**绝不回落到历史默�
     assert.equal(body.base, undefined)                       // 不许回半截地址
     assert.match(body.error, /监控端点未知/)
     // 反面语料：不许偷偷用历史默认 —— 契约里能出现地址的地方只有 base，这里已为 undefined；
-    // 再钉一次"错误体里也不许出现地址"，防止有人把默认值塞进文案当"提示"。
+    // 再钉一次"错误体里也不许出现**地址**"，防止有人把默认值塞进文案当"提示"。
     assert.ok(!res.body.includes(HISTORICAL_DEFAULT), `失败体不许含默认地址：${res.body}`)
-    assert.ok(!/\d{2,5}/.test(body.error), `错误文案里不该出现端口数字：${body.error}`)
+    // ⚠ 判"没有地址"要用**地址形状**，不许用"有没有数字"：错误文案里本就含出错文件的**路径**，
+    // 而临时目录名偶尔带数字（例：`paperpilot-panel-G05d6O`）⇒ 按数字判会**概率性假红**。
+    // 我原先写成 `!/\d{2,5}/`，实测在全量 pytest 里偶发红、单跑又绿 —— **那正是 R7 明令
+    // 禁止的"守卫靠概率"**，也是我自己制造的一处 flaky（别再把这类红归给环境）。
+    assert.ok(!/127\.0\.0\.1|https?:\/\//.test(body.error),
+      `错误文案里不该出现地址（不许回落到任何默认地址）：${body.error}`)
   })
 })
 
@@ -274,7 +277,6 @@ test('错误态都该重试（Web 比 dsh 起得慢是常态）——判定里**
 })
 
 test('⭐ R8 非退化 + 全状态不变量：ready⇒非空绝对地址；error⇒非空文案；无第三态', () => {
-  const views: PanelView[] = ['', 'monitor']
   const addresses = [
     okAddress('http://127.0.0.1:8123'),        // 真数据
     okAddress('http://127.0.0.1:8123/'),       // 尾斜杠
@@ -286,17 +288,15 @@ test('⭐ R8 非退化 + 全状态不变量：ready⇒非空绝对地址；error
   let errors = 0
   for (const hasHost of [true, false]) {
     for (const reachable of [true, false]) {
-      for (const view of views) {
-        for (const address of addresses) {
-          const r = judged({ address, reachable, view, hasHost })
-          if (r.kind === 'ready') {
-            ready++
-            assert.ok(r.src.length > 0, 'ready 的 src 不许为空（那会变成 iframe 永不设 src）')
-            assert.match(r.src, /^https?:\/\//, `ready 的 src 必须是绝对地址：${r.src}`)
-          } else {
-            errors++
-            assert.ok(r.message.trim().length > 0, 'error 的文案不许为空')
-          }
+      for (const address of addresses) {
+        const r = judged({ address, reachable, hasHost })
+        if (r.kind === 'ready') {
+          ready++
+          assert.ok(r.src.length > 0, 'ready 的 src 不许为空（那会变成 iframe 永不设 src）')
+          assert.match(r.src, /^https?:\/\//, `ready 的 src 必须是绝对地址：${r.src}`)
+        } else {
+          errors++
+          assert.ok(r.message.trim().length > 0, 'error 的文案不许为空')
         }
       }
     }
@@ -306,11 +306,12 @@ test('⭐ R8 非退化 + 全状态不变量：ready⇒非空绝对地址；error
   assert.ok(errors > 0, `矩阵退化：没有 error 样本（errors=${errors}）`)
 
   // 非退化自证：成功态**真的带上了喂进去的地址**（空 vs 空不会过这一条）
+  // ⚠ 简报面板 = Web 根（AI 监控已改走原生 tab，不再是本 iframe 的第二个视图）
   assert.deepEqual(
-    judged({ address: okAddress('http://127.0.0.1:8123'), view: 'monitor' }),
-    { kind: 'ready', src: 'http://127.0.0.1:8123/monitor' })
+    judged({ address: okAddress('http://127.0.0.1:8123') }),
+    { kind: 'ready', src: 'http://127.0.0.1:8123/' })
   assert.deepEqual(
-    judged({ address: okAddress('http://127.0.0.1:8123'), view: '' }),
+    judged({ address: okAddress('http://127.0.0.1:8123/') }),
     { kind: 'ready', src: 'http://127.0.0.1:8123/' })
 
   // 档位不同 ⇒ 文案不同（否则"档位"是个恒定装饰）
@@ -319,23 +320,18 @@ test('⭐ R8 非退化 + 全状态不变量：ready⇒非空绝对地址；error
   assert.notEqual(a.kind === 'error' && a.message, b.kind === 'error' && b.message)
 })
 
-test('viewPath：两个视图各一条路径，且都是绝对路径', () => {
-  assert.equal(viewPath(''), '/')
-  assert.equal(viewPath('monitor'), '/monitor')
-})
 
-// ---------------------------------------------------------------- ④ 不许相对路径 / 未处理态
+
+// ---------------------------------------------------------------- ④ 不许相对路径
 
 test('⭐ 缺地址的旧输入 ⇒ 必须 error，**绝不**产出相对 src（迁移前的病）', () => {
-  // 迁移前：base = readBootstrap()?.webUrl || '' ⇒ '' ⇒ '' + 'monitor' = 相对 'monitor'
-  for (const view of ['', 'monitor'] as PanelView[]) {
-    for (const address of [okAddress(''), okAddress('   '), badAddress('address', '注入缺失')]) {
-      const r = judged({ address, view })
-      assert.equal(r.kind, 'error', `空地址 + 视图 ${JSON.stringify(view)} 必须报错而不是产出 src`)
-      assert.notEqual((r as any).src, 'monitor')
-      assert.notEqual((r as any).src, '/monitor')
-      assert.notEqual((r as any).src, '')
-    }
+  // 迁移前：base = readBootstrap()?.webUrl || '' ⇒ '' ⇒ reletive src（按 dsh 自己的域解析）
+  for (const address of [okAddress(''), okAddress('   '), badAddress('address', '注入缺失')]) {
+    const r = judged({ address })
+    assert.equal(r.kind, 'error', `空地址必须报错而不是产出 src：${JSON.stringify(address)}`)
+    assert.notEqual((r as any).src, 'monitor')
+    assert.notEqual((r as any).src, '/monitor')
+    assert.notEqual((r as any).src, '')
   }
 })
 
@@ -345,9 +341,7 @@ test('⭐ 非绝对地址也被拒（相对串一律不许进 iframe）', () => 
     assert.equal(r.kind, 'error', `非绝对地址 ${JSON.stringify(base)} 必须被拒`)
   }
   const absolute = judged({ address: okAddress('https://example.com/') })
-  assert.deepEqual(absolute, { kind: 'ready', src: 'https://example.com/monitor' })
+  assert.deepEqual(absolute, { kind: 'ready', src: 'https://example.com/' })
 })
 
-test('assertNever：真收到未处理的状态 ⇒ 抛（绝不"什么都不画"）', () => {
-  assert.throws(() => assertNever({ kind: 'bogus' } as never), /未处理的 PanelState/)
-})
+

@@ -1,5 +1,5 @@
 /**
- * PaperPilot 面板模式的极小模块级 store。
+ * PaperPilot **简报面板**（可视化面 iframe）模式的极小模块级 store。
  *
  * 为什么要模块级：切换按钮在 `conversation.session.header.actions`（scope=session），
  * iframe 挂在 `[data-rightbar-col]`（scope=root）——slot 的 store 是逐注册绑定的，跨这两个
@@ -8,23 +8,21 @@
  * 副作用：翻转时给 `<html>` 打/去 `data-pp-panel="on"`（注入 CSS 的总开关），并按稳定
  * 锚点给 dsh 的三列打 `data-pp-*` 标记——列类名是 CSS Modules hash、CSS 选不中，只能运行时
  * 靠 `[data-rightbar-col]` 的兄弟关系定位后打标。
+ *
+ * ⚠ 原先还有 `panelPath`（'' 简报 / 'monitor' 操作审计）那一维：**AI 监控面板已改走共享
+ * 资产的原生 tab**（见 `dsh-panel/` 与后续抄装），不再是本 store 的第二个视图 ⇒
+ * **路径维度已删**（只留"开/关"）。这条"两面板互斥"的规则见 `client/index.ts` 的注释。
  */
 
 type Listener = () => void
 
 let panelMode = false
-let panelPath = ''            // '' = Web 根（简报）；'monitor' = /monitor 操作审计（cockpit）
 const listeners = new Set<Listener>()
 let observer: MutationObserver | null = null
 
-/** 当前是否处于 PaperPilot 面板模式。 */
+/** 当前是否处于 PaperPilot 简报面板模式。 */
 export function getPanelMode(): boolean {
   return panelMode
-}
-
-/** 当前面板显示的视图路径（'' 简报 / 'monitor' 监控）。 */
-export function getPanelPath(): string {
-  return panelPath
 }
 
 /** useSyncExternalStore 的 subscribe：返回退订函数。 */
@@ -42,18 +40,9 @@ export function togglePanelMode(): void {
   setPanelMode(!panelMode)
 }
 
-/** 打开面板到指定视图（'' 简报 / 'monitor' 监控）；已开则切视图，不关。 */
-export function openPanel(path: string): void {
-  const changed = path !== panelPath
-  panelPath = path
-  if (!panelMode) setPanelMode(true)   // setPanelMode 会 notify
-  else if (changed) notify()           // 已开：仅切 iframe src，通知订阅者重挂
-}
-
-/** 点头部按钮：正显示该视图则收起，否则打开到该视图。 */
-export function togglePanel(path: string): void {
-  if (panelMode && panelPath === path) setPanelMode(false)
-  else openPanel(path)
+/** 点头部按钮：开着就收起，否则打开。 */
+export function togglePanel(): void {
+  setPanelMode(!panelMode)
 }
 
 /** 设定面板模式；变化时落 DOM 副作用并通知订阅者。 */
