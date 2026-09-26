@@ -82,8 +82,13 @@ DSH（AI 对话/管理/UI） ──MCP(streamable-http, 仅 localhost)──▶ 
         └── dsh/ 插件（Cordis）──────────────────────────────────────┘
               · 自愈 MCP 桥：服务重启自动重连重试（治 dsh stock 桥的永久 404 死区）
               · 工具原生注册：mcp__paperpilot__* 供 AI 调用
-              · 「📄 简报」按钮：PaperPilot Web 挂进 dsh 右栏（含 `/monitor` 操作审计页 = cockpit）
+              · 「📄 简报 / ◈ 监控」按钮：PaperPilot Web 挂进 dsh 右栏（含 `/monitor` 操作审计页 = cockpit）
+                地址走**同源只读路由** `/paperpilot/monitor-url` ← 读项目根 `.web-port`（Web 真 listen 后才写）
+                ⇒ 换端口自愈；**读不到就显可读错误，绝不空白、绝不回落默认端口**
 ```
+
+> dsh 面板侧还有一件**待办**：`POST /monitor/mode`（人类侧切写权）**尚无鉴权**——形态保留
+> （它不在 dsh 插件里、dsh 不在也能用），鉴权按 ADR 认可的人工控制端点口径补齐。
 
 ```bash
 paperpilot          # 统一启动（无参）= Web(人类面) + mecha MCP(AI 面) + cockpit(监控面) + 每日调度，共享一个 mecha 栈
