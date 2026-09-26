@@ -14,7 +14,6 @@ dependencies = [
     "pydantic>=2.6",
     "pyyaml>=6.0",
     "typer>=0.12",
-    "apscheduler>=3.10,<4",
     "python-multipart>=0.0.9",
     "mcp>=2,<3",
 ]

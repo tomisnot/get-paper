@@ -39,6 +39,9 @@ class ScoringCfg(BaseModel):
     max_papers: int = 12
     max_per_author: int = 1
     must_read_cap: int = 3
+    # W4：评审 payload 的基线分下限（低于此不进候选包，降 token；库里仍在，
+    # requeue/调低本值可捞回）。只影响评审面信噪比，不影响入库与检索。
+    review_floor: float = 0.4
 
 
 class AICfg(BaseModel):
@@ -69,11 +72,6 @@ class NotifyCfg(BaseModel):
     webhook_url: str = ""
 
 
-class ScheduleCfg(BaseModel):
-    enabled: bool = True
-    daily_at: str = "07:30"
-
-
 class WebCfg(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8080
@@ -99,7 +97,6 @@ class Settings(BaseModel):
     scoring: ScoringCfg = Field(default_factory=ScoringCfg)
     ai: AICfg = Field(default_factory=AICfg)
     notify: NotifyCfg = Field(default_factory=NotifyCfg)
-    schedule: ScheduleCfg = Field(default_factory=ScheduleCfg)
     web: WebCfg = Field(default_factory=WebCfg)
     mcp: MCPCfg = Field(default_factory=MCPCfg)
     topics: list[TopicCfg] = Field(default_factory=list)

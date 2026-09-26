@@ -73,7 +73,9 @@ def make_settings(data_dir: Path) -> Settings:
             ),
         ],
         scoring=ScoringCfg(
-            threshold=0.5, quota_per_topic=2, max_papers=8, max_per_author=1, must_read_cap=3
+            threshold=0.5, quota_per_topic=2, max_papers=8, max_per_author=1, must_read_cap=3,
+            # W4 评审下限：基线套件不随新键漂移（floor 行为在 test_practical_w.py 专测）
+            review_floor=0.0,
         ),
         ai=AICfg(provider="heuristic"),
     )

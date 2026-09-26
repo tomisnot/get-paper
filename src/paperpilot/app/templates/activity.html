@@ -4,7 +4,7 @@
 <h1>记录仪</h1>
 <p class="muted">
   append-only 事件总线（只增不改，DB 触发器钉死）。每次写入都带 <b>actor</b>（谁）/
-  <b>reason</b>（为什么）/ before → after 快照。AI（ai）、人（human）、调度（scheduler）同台可查。
+  <b>reason</b>（为什么）/ before → after 快照。AI（ai）与人（human）同台可查。
   当前最新 seq：<b>{{ last_seq }}</b>
 </p>
 
@@ -12,7 +12,7 @@
   <div class="row">
     <div>
       <label>actor（谁写的）</label>
-      <input type="text" name="actor" value="{{ actor }}" placeholder="ai / human / scheduler" style="width:160px;">
+      <input type="text" name="actor" value="{{ actor }}" placeholder="ai / human" style="width:160px;">
     </div>
     <div>
       <label>op（操作类型）</label>

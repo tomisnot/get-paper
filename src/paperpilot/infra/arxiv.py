@@ -259,10 +259,14 @@ class ArxivClient:
             "sortBy": sort_by,
             "sortOrder": "descending",
         }
+        return self._request(params, label=search_query[:60])
+
+    def _request(self, params: dict, *, label: str) -> str:
+        """缓存 + 限速 + 重试的统一 GET（search_query 与 id_list 两条 API 形态共用）。"""
         key = hashlib.sha1(json.dumps(params, sort_keys=True).encode()).hexdigest()
         cached = self._cache_get(key)
         if cached is not None:
-            logger.debug("缓存命中: %s", search_query[:60])
+            logger.debug("缓存命中: %s", label)
             return cached
 
         last_error: Exception | None = None
@@ -281,6 +285,20 @@ class ArxivClient:
                 logger.warning("arXiv 请求失败（第 %d 次）: %s；%.1fs 后重试", attempt + 1, exc, backoff)
                 self._sleep(backoff)
         raise ArxivError(f"arXiv 请求多次失败: {last_error}")
+
+    def fetch_by_ids(self, arxiv_ids: Sequence[str]) -> list[NormalizedPaper]:
+        """W8：按 arXiv id 精确拉取（id_list 通道）。对话里“这篇加进库”用。
+
+        幂等由调用方（upsert 的 new/updated 计数）体现；本方法只管拉。"""
+        cleaned = [str(i).strip().removeprefix("arXiv:").removeprefix("arxiv:")
+                   for i in arxiv_ids if str(i).strip()]
+        if not cleaned:
+            return []
+        xml = self._request({"id_list": ",".join(cleaned),
+                             "start": 0, "max_results": max(10, len(cleaned))},
+                            label=f"id_list={cleaned[:3]}")
+        papers, _total = parse_feed(xml)
+        return papers
 
     def download_pdf(self, url: str, dest: Path, *, chunk_size: int = 65536) -> int:
         """下载 PDF 到 dest（限速 + 指数退避重试）；返回写入字节数。

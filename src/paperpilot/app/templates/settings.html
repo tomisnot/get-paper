@@ -21,7 +21,7 @@
       <div class="kv"><b>库内论文</b>
         {% for k, v in counts.items() %}<span class="chip">{{ k }} {{ v }}</span>{% endfor %}
       </div>
-      <div class="kv"><b>定时</b>每天 {{ settings.schedule.daily_at }}{{ "（已启用，自动出报）" if settings.schedule.enabled else "（未启用）" }}</div>
+      <div class="kv"><b>节奏</b>无定时任务——想看日报时打开这里（立即生成）或去 dsh 让 AI 跑；用完即走（脉冲式）</div>
     </div>
     <div style="flex:1; text-align:right;">
       <form method="post" action="/settings/run">
@@ -74,8 +74,7 @@
       <div><label>必读直通上限</label><input type="number" name="must_read_cap" value="{{ settings.scoring.must_read_cap }}" min="0"></div>
     </div>
     <div class="row" style="margin-top:10px;">
-      <div><label>每日跑批时间</label><input type="time" name="daily_at" value="{{ settings.schedule.daily_at }}"></div>
-      <div><label>启用每日调度</label><input type="checkbox" name="schedule_enabled" {{ "checked" if settings.schedule.enabled }} style="width:auto;"></div>
+      <div><label>评审下限 review_floor</label><input type="number" step="0.05" name="review_floor" value="{{ settings.scoring.review_floor }}" min="0" max="1"></div>
       <div><label>启用 Webhook 通知</label><input type="checkbox" name="notify_enabled" {{ "checked" if settings.notify.enabled }} style="width:auto;"></div>
       <div style="flex:2;"><label>Webhook 地址（飞书/钉钉/企微）</label><input type="text" name="webhook_url" value="{{ settings.notify.webhook_url }}" style="width:100%;"></div>
     </div>

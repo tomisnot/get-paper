@@ -417,7 +417,7 @@ def test_gate_config_override_does_not_mutate_shared_settings(tmp_path):
     assert stack["gate"].snapshot["scoring.max_papers"] == 1
     out = _call(tools, "run_pipeline", force=True)
     assert out["ok"] and out["selected"] <= 1          # gate 配置对本次 run 生效
-    # 共享 settings 未被就地改：并发的 Web/scheduler/CLI 路径不会误读到 gate 值
+    # 共享 settings 未被就地改：并发的 Web/CLI 路径不会误读到 gate 值
     assert container.settings.scoring.max_papers == original_max
 
 

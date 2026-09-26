@@ -39,9 +39,12 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
                       "sort_by_citations": "是否按引用数降序"},
     "undo": {"seq": "要撤销的事件序号（0=最近一条可逆）", "reason": "一句话中文说明撤销原因"},
     "fetch_papers": {"days": "回溯天数", "reason": "一句话中文说明本次抓取目的"},
+    "fetch_paper_by_id": {"arxiv_id": "论文 arXiv 编号（形如 1706.03762，可带 vN，勿带 URL）",
+                          "reason": "一句话中文说明入库原因"},
     "download_paper": {"arxiv_id": "论文 arXiv 编号", "reason": "一句话中文说明下载原因"},
     "prepare_review": {"date": "日期 ISO 格式（省略=今天）",
-                       "requeue": "True=把近 lookback 内 archived/in_briefing 拉回 new 再审（可 undo）",
+                       "requeue": "适用：池子被上轮消费光、想原班人马再审——把近 lookback 内 "
+                                  "archived/in_briefing 拉回 new 重新出题（可 undo 回退）",
                        "reason": "一句话中文说明目的"},
     "submit_review": {"reviews": "评审列表 [{arxiv_id,score,label,reason,…}]",
                       "date": "评审对应日期 ISO 格式（省略=今天）",
@@ -59,7 +62,8 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
                   "threshold": "入选评分阈值", "reason": "一句话中文说明新增原因"},
     "set_topic_enabled": {"name": "主题名", "enabled": "True 启用 / False 停用",
                           "reason": "一句话中文说明原因"},
-    "mark_read": {"arxiv_id": "论文 arXiv 编号", "read": "True 已读 / False 未读",
+    "mark_read": {"arxiv_id": "论文 arXiv 编号；可逗号分隔多篇（逐篇处理，坏 id 不伤其余）",
+                  "read": "True 已读 / False 未读",
                   "reason": "一句话中文说明原因"},
     "star_paper": {"arxiv_id": "论文 arXiv 编号", "reason": "一句话中文说明原因"},
     "skip_paper": {"arxiv_id": "论文 arXiv 编号", "reason": "一句话中文说明原因"},
@@ -250,6 +254,26 @@ def build_registry(container) -> Registry:
         return ok(fetched=len(papers), new=result["new"], updated=result["updated"],
                   hint="接着 prepare_review 生成待评审候选")
 
+    @reg.tool(name="fetch_paper_by_id", kind="write",
+              description="按 arXiv id 把单篇拉进入库（对话里'这篇加进来'）；幂等，已在库回 cached。"
+                          "拉入后即可 read_paper/add_note/mark_read，配合 download_paper 存 PDF。")
+    def fetch_paper_by_id(arxiv_id: str, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        client = ArxivClient(cache_dir=settings.cache_dir / "arxiv")
+        try:
+            papers = client.fetch_by_ids([arxiv_id])
+        finally:
+            client.close()
+        if not papers:
+            return err("not_found", f"arXiv 上没找到 {arxiv_id}",
+                       hint="核对 id（形如 1706.03762，可带 vN；勿贴 URL 整串）")
+        result = repo.upsert_papers(papers, actor=actor,
+                                    reason=reason or f"按 id 入库 {arxiv_id}")
+        cached = int(result.get("new", 0)) == 0
+        return ok(arxiv_id=papers[0].arxiv_id, title=papers[0].title,
+                  new=result.get("new"), updated=result.get("updated"), cached=cached,
+                  hint="已在库（幂等）" if cached
+                  else "已入库，可 read_paper/add_note/download_paper")
+
     @reg.tool(name="download_paper", kind="write",
               description="下载论文 PDF 到本地库并归档（幂等：已下载直接返回本地路径）。")
     def download_paper(arxiv_id: str, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
@@ -394,19 +418,65 @@ def build_registry(container) -> Registry:
     @reg.tool(name="mark_read", kind="write", reversible=True,
               description="标记论文已读/未读。")
     def mark_read(arxiv_id: str, read: bool = True, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
-        paper, e = _paper_or_err(arxiv_id)
-        if e:
-            return e
-        repo.set_read(paper, read=read, actor=actor, reason=reason)
-        return ok(arxiv_id=arxiv_id, read=read)
+        # W9 批量：逗号分隔多篇（per-item 纪律，坏 id 进 rejected 不伤其余）；
+        # 单 id 保持旧返回形状，不碎已依赖它的调用方/判据。
+        ids = [x.strip() for x in str(arxiv_id).replace("，", ",").split(",") if x.strip()]
+        if not ids:
+            return err("bad_params", "arxiv_id 为空",
+                       hint='形如 "1706.03762"，多篇逗号分隔')
+        if len(ids) == 1:
+            paper, e = _paper_or_err(ids[0])
+            if e:
+                return e
+            repo.set_read(paper, read=read, actor=actor, reason=reason)
+            return ok(arxiv_id=ids[0], read=read)
+        updated: list[str] = []
+        rejected: list[dict] = []
+        for one in ids:
+            paper = repo.get_paper(one)
+            if paper is None:
+                rejected.append({"arxiv_id": one, "why": "库里没有这篇"})
+                continue
+            repo.set_read(paper, read=read, actor=actor,
+                          reason=reason or f"批量标记{'已读' if read else '未读'}")
+            updated.append(one)
+        if not updated:
+            return err("not_found", "所有 arxiv_id 都不在库中",
+                       hint="先 search_papers 确认，或 fetch_paper_by_id 拉入",
+                       suggest=[x["arxiv_id"] for x in rejected])
+        return ok(arxiv_ids=updated, read=read, rejected=rejected,
+                  hint=f"{len(updated)} 篇已{'标为已读' if read else '标为未读'}"
+                       + (f"；{len(rejected)} 篇被拒" if rejected else ""))
 
     @reg.tool(name="star_paper", kind="write", reversible=True,
               description="收藏/取消收藏论文。")
     def star_paper(arxiv_id: str, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
-        paper, e = _paper_or_err(arxiv_id)
-        if e:
-            return e
-        return ok(arxiv_id=arxiv_id, star=repo.toggle_star(paper, actor=actor, reason=reason))
+        # W9 批量：逗号分隔多篇逐篇 toggle；单 id 保持旧形状。注意 toggle 语义：
+        # 批量时每篇各自翻面，不保证同态（回执逐篇给 star 值）。
+        ids = [x.strip() for x in str(arxiv_id).replace("，", ",").split(",") if x.strip()]
+        if not ids:
+            return err("bad_params", "arxiv_id 为空", hint='形如 "1706.03762"，多篇逗号分隔')
+        if len(ids) == 1:
+            paper, e = _paper_or_err(ids[0])
+            if e:
+                return e
+            return ok(arxiv_id=ids[0], star=repo.toggle_star(paper, actor=actor, reason=reason))
+        results: list[dict] = []
+        rejected: list[dict] = []
+        for one in ids:
+            paper = repo.get_paper(one)
+            if paper is None:
+                rejected.append({"arxiv_id": one, "why": "库里没有这篇"})
+                continue
+            results.append({"arxiv_id": one,
+                            "star": repo.toggle_star(paper, actor=actor,
+                                                     reason=reason or "批量收藏/取消")})
+        if not results:
+            return err("not_found", "所有 arxiv_id 都不在库中",
+                       hint="先 search_papers 确认，或 fetch_paper_by_id 拉入",
+                       suggest=[x["arxiv_id"] for x in rejected])
+        return ok(starred=results, rejected=rejected,
+                  hint=f"{len(results)} 篇已翻面" + (f"；{len(rejected)} 篇被拒" if rejected else ""))
 
     @reg.tool(name="skip_paper", kind="write", reversible=True,
               description="标记不感兴趣（同类下次过滤）。")

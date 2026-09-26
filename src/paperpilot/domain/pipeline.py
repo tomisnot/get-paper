@@ -60,7 +60,7 @@ _RELEVANT_LABELS = ("must_read", "worth", "skip")
 
 #: 本次运行（当前线程）的配置覆盖：线程隔离，**不改共享 settings**。
 #: 供 mecha 适配层把 Gate 里的配置态权威地作用于单次 Engine.run，而不污染
-#: Web「立即运行」/scheduler/CLI 等并发线程读到的人类配置（settings.yaml）。
+#: Web「立即运行」/CLI 等并发线程读到的人类配置（settings.yaml）。
 _CONFIG_OVERRIDE = threading.local()
 
 
@@ -218,6 +218,11 @@ class DailyPipelineService:
                 best[paper.arxiv_id] = (paper, topic, score)
         unique_ranked = sorted(best.values(), key=lambda x: -x[2].score)
 
+        # ⭐ W4 评审 floor：低于 review_floor 的基线不进候选包（降评审 input；库里仍在，
+        # 调低 floor/requeue 可再议）。n_after_rules 仍报全量，floor 单独回执。
+        floor = float(getattr(self._eff_scoring(), "review_floor", 0.0) or 0.0)
+        above = [x for x in unique_ranked if x[2].score >= floor]
+        floor_applied = {"floor": floor, "kept": len(above), "total": len(unique_ranked)}
         candidates = [
             {
                 "arxiv_id": paper.arxiv_id,
@@ -227,13 +232,14 @@ class DailyPipelineService:
                 "abstract": (paper.abstract or "")[:_REVIEW_ABSTRACT_CHARS],
                 "baseline": score.model_dump(),
             }
-            for paper, topic, score in unique_ranked[:_MAX_REVIEW_CANDIDATES]
+            for paper, topic, score in above[:_MAX_REVIEW_CANDIDATES]
         ]
         # ⭐ 空池诊断：不再静默 ok:true+candidates:[]；不写 review 文件。
         if not candidates:
             diagnosis = self._diagnose_empty_review(
                 n_candidates=n_candidates, n_after_rules=len(kept_ids),
                 requeue=requeue, requeue_flipped=requeue_flipped,
+                pool_before_floor=len(unique_ranked), floor=floor,
             )
             self.repo.finish_run(
                 run_id, status="empty",
@@ -252,6 +258,7 @@ class DailyPipelineService:
             "n_candidates": n_candidates,
             "n_after_rules": len(kept_ids),
             "requeue_flipped": requeue_flipped,
+            "floor_applied": floor_applied,
             "topics": [
                 {
                     "id": t.id,
@@ -278,19 +285,23 @@ class DailyPipelineService:
         return PreparedReview(date=date_str, run_id=run_id, payload=payload)
 
     def _diagnose_empty_review(self, *, n_candidates: int, n_after_rules: int,
-                               requeue: bool, requeue_flipped: int) -> dict:
-        """空池诊断：三种"空"分开讲——(a) 有候选但全被硬规则拒；(b) 库里 0 篇 new
-        （池已消费）；(c) 有 new 但都在窗口外。各配出路（调规则/requeue/fetch_papers/
-        放宽 lookback）。绝不静默 ok:true+candidates:[]（"对着空池发评审指令"）。"""
+                               requeue: bool, requeue_flipped: int,
+                               pool_before_floor: int = 0, floor: float = 0.0) -> dict:
+        """空池诊断：四种"空"分开讲——(a) 有候选但全被硬规则拒；(b) 有但全在
+        review_floor 之下（W4）；(c) 库里 0 篇 new（池已消费）；(d) 有 new 但窗口外。
+        计数写进 reason 文本（err 信封只传 message/hint，数字得让模型看得见）。"""
         counts = dict(self.repo.counts_by_status() or {})
         n_new = int(counts.get("new", 0))
-        n_consumed = int(counts.get("archived", 0)) + int(counts.get("in_briefing", 0))
+        n_arch = int(counts.get("archived", 0))
+        n_brief = int(counts.get("in_briefing", 0))
         lookback = int(self._eff_lookback_days())
+        tally = f"new={n_new}, archived={n_arch}, in_briefing={n_brief}"
         diag: dict[str, object] = {
             "kind": "empty_pool",
-            "counts": {"new": n_new, "archived_or_in_briefing": n_consumed},
+            "counts": {"new": n_new, "archived": n_arch, "in_briefing": n_brief},
             "lookback_days": lookback,
             "requeue_used": requeue, "requeue_flipped": requeue_flipped,
+            "review_floor": floor,
         }
         if n_candidates > 0 and n_after_rules == 0:
             diag["reason"] = (f"{n_candidates} 篇 new 全被硬规则（黑名单作者/排除词/"
@@ -299,17 +310,25 @@ class DailyPipelineService:
                 "检查 /settings 的 blocked_authors 与主题 exclude_keywords",
                 "放宽主题 categories（若过窄）",
             ]
-        elif n_new == 0:
+        if ("reason" not in diag and n_after_rules > 0 and pool_before_floor > 0):
+            diag["reason"] = (f"{n_after_rules} 篇过规则候选全部低于 review_floor={floor}"
+                              f"（被 W4 滤空，计数 {tally}）。")
+            diag["suggests"] = [
+                "到 /settings 调低评审下限 scoring.review_floor（或改 0 全量放行）",
+                "prepare_review(requeue=True) 把近 lookback 内 archived/in_briefing 原班人马拉回再审",
+            ]
+        elif "reason" not in diag and n_new == 0:
             tail = ("；requeue 已开但近 lookback 内无 archived 可拉回。"
                     if requeue else "；未启 requeue。")
-            diag["reason"] = ("库里 0 篇 new（今天池已消费成 archived/in_briefing）" + tail)
+            diag["reason"] = (f"库里 0 篇 new（池已消费：archived={n_arch}, "
+                              f"in_briefing={n_brief}）" + tail)
             diag["suggests"] = [
-                "prepare_review(requeue=True) 把近 lookback 内 archived/in_briefing 回炉",
+                "prepare_review(requeue=True) 把近 lookback 内 archived/in_briefing 原班人马拉回再审",
                 "fetch_papers(days=N) 拉 arXiv 新提交（当日也可能无新）",
             ]
-        else:
+        elif "reason" not in diag:
             diag["reason"] = (f"库里还有 {n_new} 篇 new，但都在 lookback_days={lookback}"
-                              " 窗口外（first_seen_at 太老）。")
+                              f" 窗口外（first_seen_at 太老；{tally}）。")
             diag["suggests"] = [
                 f"到 /settings 放宽 lookback_days（当前 {lookback}）",
                 "fetch_papers 抓最新提交",

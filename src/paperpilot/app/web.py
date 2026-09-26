@@ -275,8 +275,7 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         max_papers: int = Form(12),
         max_per_author: int = Form(1),
         must_read_cap: int = Form(3),
-        daily_at: str = Form("07:30"),
-        schedule_enabled: bool = Form(False),
+        review_floor: float = Form(0.4),
         notify_enabled: bool = Form(False),
         webhook_url: str = Form(""),
     ):
@@ -287,12 +286,11 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         s.scoring.max_papers = max_papers
         s.scoring.max_per_author = max_per_author
         s.scoring.must_read_cap = must_read_cap
-        s.schedule.daily_at = daily_at
-        s.schedule.enabled = schedule_enabled
+        s.scoring.review_floor = review_floor
         s.notify.enabled = notify_enabled
         s.notify.webhook_url = webhook_url
         save_settings(s)
-        return RedirectResponse("/settings?msg=全局参数已保存（AI provider/daily_at 重启后生效）", status_code=303)
+        return RedirectResponse("/settings?msg=全局参数已保存（AI provider 重启后生效）", status_code=303)
 
     @app.post("/settings/run")
     def trigger_run():

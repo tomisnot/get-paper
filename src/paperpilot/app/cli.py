@@ -278,7 +278,6 @@ def _serve_impl(config, host=None, port=None, open_gate=False, no_cockpit=False,
     import uvicorn
 
     from ..config import load_settings
-    from .scheduler import start_scheduler
     from .web import create_app
 
     settings = load_settings(config)
@@ -289,7 +288,6 @@ def _serve_impl(config, host=None, port=None, open_gate=False, no_cockpit=False,
     _publish_web_port_when_ready(web_host, web_port, web_port_file)
     container, stack, mcp_host, cockpit = _boot_stack(
         settings, open_gate=open_gate, with_cockpit=not no_cockpit, log=typer.echo)
-    start_scheduler(container.pipeline, settings)
     typer.echo(f"🌐 Web（人类面）: http://{web_host}:{web_port}  (AI: {container.ai_provider})")
     typer.echo(f"🔌 MCP（AI 面）: {mcp_host.url}  ← .mcp-port")
     if cockpit is not None:
@@ -507,7 +505,6 @@ def ai(
     import uvicorn
 
     from ..config import load_settings
-    from .scheduler import start_scheduler
     from .web import create_app
 
     settings = load_settings(config)
@@ -520,7 +517,6 @@ def ai(
     # 1) 后台：MCP（AI 面）+ cockpit（监控面），共享一个 mecha 栈；AI 模式默认开闸到 AI
     container, stack, mcp_host, cockpit = _boot_stack(
         settings, open_gate=True, with_cockpit=True, log=typer.echo)
-    start_scheduler(container.pipeline, settings)
     typer.echo(f"  MCP（AI 面）: {mcp_host.url}（.mcp-port 已写；dsh 插件据此发现）")
     if cockpit is not None:
         typer.echo(f"  cockpit（监控面）: {cockpit.url}（.cockpit-port 已写）")
