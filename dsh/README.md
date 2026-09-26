@@ -46,6 +46,15 @@ types/dsh-shims.d.ts       本地最小类型 shim（@deepseek-ai/* 是宿主提
 （迁移前 `readBootstrap()?.webUrl || ''` 会产出空串 ⇒ iframe 永不设 src = 纯白；视图为
 `monitor` 时还会退化成相对路径 ⇒ 被浏览器按 dsh 自己的域解析）。
 
+**资产管不到的那一半（项目侧义务，本仓已兜住）**：资产 README 明说它"只做地址+取数+状态，
+不含 DOM / 渲染 / 挂载"⇒ 两条义务归项目：① **挂载失败必须可见**（找不到 `[data-rightbar-col]`
+时贴可读错误卡，**禁止静默 `return`**）；② **两跳（iframe）必须可诊断**（外层读不到跨源内层
+的 DOM ⇒ 挂之前 `probeReachable` 探 `/healthz`，不让"外层 200、内层空白"成为静默态）。
+另外照该 README 的「**抄完照 R17 自查一遍**」，本仓删掉了原先恒真的
+`shouldRetry(render)`（调用点那个 `!shouldRetry(...)` 永不成立 = 死缝）；
+每个注入点都配了「**换掉它、结果就变**」的用例（`fetchMonitorBase` 的 `doFetch`、
+`probeReachable` 的 `doFetch` 都有）。
+
 **安全红线**：插件**只 connect、绝不 spawn 服务**（人启动 launcher = 权威）。换 harness 只丢
 本插件，PaperPilot 的独立 MCP server 照用（跨 harness）。
 
