@@ -7,15 +7,26 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from mecha.authority import Mode
 
+from paperpilot.app import control_token as ct
 from paperpilot.app.container import build_container
 from paperpilot.app.web import create_app
 from paperpilot.infra.arxiv import parse_atom
 from paperpilot.mecha_adapter.hub import build_stack
 
 from .conftest import SAMPLE_XML, make_settings
+
+
+@pytest.fixture
+def control_token(tmp_path, monkeypatch):
+    """把控制口令指到 tmp 并发布一个（判据**不碰**真实家目录）；返回口令字符串。"""
+    target = tmp_path / ct.CONTROL_TOKEN_FILE
+    token = ct.publish_control_token(target)
+    monkeypatch.setattr(ct, "control_token_path", lambda: target)
+    return token
 
 
 def _gated(tmp_path):
@@ -74,10 +85,11 @@ def test_monitor_page_without_stack_is_honest(tmp_path):
     assert "未接监控面" in page.text
 
 
-def test_mode_switch_grants_ai_then_human_write_preempts(tmp_path):
-    """人类侧开闸：切到 AI 授予写权；随后 Web 写自动取回 human（human 优先）。"""
+def test_mode_switch_grants_ai_then_human_write_preempts(tmp_path, control_token):
+    """人类侧开闸：口令 + 切到 AI 授予写权；随后 Web 写自动取回 human（human 优先）。"""
     client, _container, stack = _gated(tmp_path)
-    resp = client.post("/monitor/mode", data={"target": "ai"}, follow_redirects=False)
+    resp = client.post("/monitor/mode",
+                       data={"target": "ai", "token": control_token}, follow_redirects=False)
     assert resp.status_code == 303
     assert stack["authority"].mode is Mode.AI
     # Web 写自动取回 human（单写权：人类在 Web 上动手即取闸）
@@ -85,10 +97,70 @@ def test_mode_switch_grants_ai_then_human_write_preempts(tmp_path):
     assert stack["authority"].mode is Mode.HUMAN
 
 
-def test_mode_switch_rejects_bad_target(tmp_path):
+def test_mode_switch_rejects_bad_target(tmp_path, control_token):
     """非法 target 不崩、如实回消息（可教学）。"""
     client, _container, stack = _gated(tmp_path)
     before = stack["authority"].mode
-    resp = client.post("/monitor/mode", data={"target": "root"}, follow_redirects=False)
+    resp = client.post("/monitor/mode",
+                       data={"target": "root", "token": control_token}, follow_redirects=False)
     assert resp.status_code == 303
     assert stack["authority"].mode is before      # 未被非法值改动
+
+
+# ---------------------------------------------------------------- 控制端点鉴权（fail-closed）
+
+def test_mode_switch_denied_without_token(tmp_path, control_token):
+    """⭐ 无口令 ⇒ **403**，且**写权一点没动**（拒绝必须是"什么都没发生"）。"""
+    client, _container, stack = _gated(tmp_path)
+    before = stack["authority"].mode
+    resp = client.post("/monitor/mode", data={"target": "ai"}, follow_redirects=False)
+    assert resp.status_code == 403
+    assert "写权切换被拒" in resp.text
+    assert stack["authority"].mode is before
+
+
+def test_mode_switch_denied_with_wrong_token(tmp_path, control_token):
+    """⭐ 口令不对 ⇒ 403，且**不透露**真口令/不提示"接近了"。"""
+    client, _container, stack = _gated(tmp_path)
+    before = stack["authority"].mode
+    resp = client.post("/monitor/mode",
+                       data={"target": "ai", "token": control_token + "x"},
+                       follow_redirects=False)
+    assert resp.status_code == 403
+    assert control_token not in resp.text
+    assert stack["authority"].mode is before
+
+
+def test_mode_switch_fails_closed_when_no_token_published(tmp_path, monkeypatch):
+    """⭐ **未配置口令 ⇒ 一律拒绝**：控制端点没有"默认放开"这一档。"""
+    missing = tmp_path / "no-such-token"
+    monkeypatch.setattr(ct, "control_token_path", lambda: missing)
+    client, _container, stack = _gated(tmp_path)
+    before = stack["authority"].mode
+    for given in ("", "anything", "  "):
+        resp = client.post("/monitor/mode",
+                           data={"target": "ai", "token": given}, follow_redirects=False)
+        assert resp.status_code == 403, f"未发布口令时 token={given!r} 竟放行"
+    assert stack["authority"].mode is before
+    # 空口令时的文案要**说清是"没配置"**（不是"口令不对"）——否则人会去猜口令
+    resp_empty = client.post("/monitor/mode", data={"target": "ai"}, follow_redirects=False)
+    assert "未发布控制口令" in resp_empty.text
+    # 给了错口令时则说"口令不对"（两种失败**可区分**，与两档错误态同一纪律）
+    resp_wrong = client.post("/monitor/mode",
+                             data={"target": "ai", "token": "guess"}, follow_redirects=False)
+    assert "口令不对" in resp_wrong.text
+
+
+def test_monitor_page_reports_control_token_state(tmp_path, control_token):
+    """有口令时：页面**要**口令，并把边界（挡进程不挡 AI）写在明面上。"""
+    client, _container, _stack = _gated(tmp_path)
+    page = client.get("/monitor").text
+    assert "控制口令" in page
+    assert "挡不住能读你文件的 AI" in page
+
+
+def test_monitor_page_reports_missing_token(tmp_path, monkeypatch):
+    """无口令时：页面如实说"会被一律拒绝"（fail-closed 让人看得见）。"""
+    monkeypatch.setattr(ct, "control_token_path", lambda: tmp_path / "no-such-token")
+    client, _container, _stack = _gated(tmp_path)
+    assert "未发布控制口令" in client.get("/monitor").text
