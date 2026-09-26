@@ -33,7 +33,7 @@ import { getPanelMode, getPanelPath, subscribePanelMode } from './mode-store.ts'
 import { PANEL_CONFIG } from '../panel/panel-config.ts'
 import { assertNever, fetchMonitorBase } from '../panel/monitor-client.ts'
 import { probeReachable } from './panel-probe.ts'
-import { renderPanel, shouldRetry, type PanelRender } from './panel-state.ts'
+import { renderPanel, type PanelRender } from './panel-state.ts'
 
 /** Cordis 插件名（与 host 半一致）。 */
 export const name = 'paperpilot'
@@ -163,16 +163,15 @@ export async function apply(ctx: Context): Promise<void> {
       const address = await fetchMonitorBase(fetch, PANEL_CONFIG.ROUTE_PATH)
       const reachable = address.ok ? await probeReachable(address.data) : false
       if (token !== paintToken || !getPanelMode()) return    // 已被更新的取址/已收起取代
-      const render = renderPanel({
+      // 一切错误态都值得重试（见 panel-state.ts 末尾的 R17 自查：不留"不可重试"的假缝）
+      paint(renderPanel({
         address,
         reachable,
         view: getPanelPath() === 'monitor' ? 'monitor' : '',
         hasHost: Boolean(hostEl()),
         routePath: PANEL_CONFIG.ROUTE_PATH,
         portFile: PANEL_CONFIG.PORT_FILE,
-      })
-      if (render.kind === 'error' && !shouldRetry(render)) return   // 不可重试的错（当前没有，留缝）
-      paint(render)
+      }))
     }
 
     const unmountPanel = (): void => {

@@ -113,7 +113,9 @@ export function renderPanel(input: PanelInput): PanelRender {
   return { kind: 'ready', src: base + viewPath(input.view) }
 }
 
-/** 错误态是否值得重试（地址未发布 / 右栏稍后才挂上 / Web 还在启动，都是**瞬时**态）。 */
-export function shouldRetry(render: PanelRender): boolean {
-  return render.kind === 'error'
-}
+// ⚠ R17 自查（照资产 README「抄完照 R17 自查一遍」）删掉了原先的 `shouldRetry(render)`：
+// 它对**任何** error 都恒返回 true ⇒ 调用点那句 `if (render.kind === 'error' && !shouldRetry(render))`
+// **永远不成立**，是个"看起来是缝、其实是死的"分支。**当前所有错误态都值得重试**
+// （地址未发布 / 右栏稍后才挂上 / Web 还在启动，都是瞬时态）⇒ 直接**无条件重试**，
+// 不留假缝。将来真出现"不可重试的错"（如配置写错），再让它**带在状态上**
+// （`{ kind:'error'; retryable: boolean }`）并配「换掉它、结果就变」的用例。

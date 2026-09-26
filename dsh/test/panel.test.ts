@@ -34,7 +34,7 @@ import {
 import { PANEL_CONFIG } from '../src/panel/panel-config.ts'
 import { assertNever, fetchMonitorBase, isOriginLike } from '../src/panel/monitor-client.ts'
 import { probeReachable } from '../src/client/panel-probe.ts'
-import { renderPanel, shouldRetry, viewPath, type PanelView } from '../src/client/panel-state.ts'
+import { renderPanel, viewPath, type PanelView } from '../src/client/panel-state.ts'
 
 /** 本项目**历史**的静态默认地址（迁移前写在插件配置里）——只作为**反面语料**。 */
 const HISTORICAL_DEFAULT = 'http://127.0.0.1:8080'
@@ -261,10 +261,16 @@ test('右栏容器缺失 ⇒ 也可读（不是静默 return）', () => {
   assert.ok(r.message.trim().length > 20)
 })
 
-test('错误态都该重试（Web 比 dsh 起得慢是常态）', () => {
-  assert.equal(shouldRetry(judged({ address: badAddress('address', 'x') })), true)
-  assert.equal(shouldRetry(judged({ address: okAddress('http://127.0.0.1:9'), reachable: false })), true)
-  assert.equal(shouldRetry(judged({ address: okAddress('http://127.0.0.1:9') })), false)
+test('错误态都该重试（Web 比 dsh 起得慢是常态）——判定里**不留"不可重试"的假缝**', () => {
+  // 原先有个 shouldRetry(render) 恒真 ⇒ 调用点的 `!shouldRetry(...)` 永不成立（死分支）。
+  // R17 自查后删掉；这里改为直接断言"三种错误态都产生 error"（重试由调用点无条件执行）。
+  for (const r of [
+    judged({ address: badAddress('address', 'x') }),
+    judged({ address: okAddress('http://127.0.0.1:9'), reachable: false }),
+    judged({ address: okAddress('http://127.0.0.1:9'), hasHost: false }),
+  ]) {
+    assert.equal(r.kind, 'error')
+  }
 })
 
 test('⭐ R8 非退化 + 全状态不变量：ready⇒非空绝对地址；error⇒非空文案；无第三态', () => {
