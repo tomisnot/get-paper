@@ -23,7 +23,18 @@ arXiv 每日文献情报系统：**抓取 → AI 智能筛选 → AI 结构化�
 ## 快速开始（Windows：双击 `开始.bat`）
 
 `开始.bat` 会自动完成：建虚拟环境 → 装 Python 依赖（清华镜像）→ 装 DSH 插件依赖
-（npmmirror）→ 启动 Web 面板 + MCP 语义通道 + DSH AI 界面。首次约 1–3 分钟。
+（npmmirror）→ 启动 **Web 工作台（自动弹浏览器）+ mecha MCP + cockpit + dsh AI 界面**。首次约 1–3 分钟。
+
+**两种用法（两个“前门”，都是前台可见）：**
+
+- **人面（你自己用）** = Web 工作台。起服务后**自动弹浏览器**到 `http://127.0.0.1:8080`：
+  看今日简报 / 检索论文库 / 标已读收藏笔记 / 下 PDF / 改主题参数 / 跑批 / 看“操作审计”。
+- **AI 面（对话驱动）** = dsh（复用现成 harness）。在 dsh 里跟 AI 说“看看今天候选、帮我评审生成简报”；
+  dsh 侧边栏还能一键开“📄简报 / ◈监控”（都是 Web 的视图）。
+
+> Web 本质是本地服务（无独立窗口），“前台”就是浏览器；所以启动时会**自动帮你打开**（`--no-open` 可关）。
+> “人面写”与“AI 面写”走**同一道写权门**（单写权：默认 LOCKED，人在 Web 上写会自动取 human，
+> 要让 AI 写就在“操作审计”页点“授予 AI 写权”）。
 
 手动方式（等价）：
 
@@ -46,8 +57,10 @@ python -m venv .venv
 ## 日常使用
 
 ```bash
-paperpilot                 # 启动 Web + 每日调度（无参数默认行为）
-paperpilot web             # 只启动 Web
+paperpilot                 # 统一启动：Web + mecha MCP + cockpit + 每日调度（自动开浏览器到工作台）
+paperpilot --no-open       #   同上，但不自动弹浏览器
+paperpilot ai              # AI 模式：上面那些后台起 + 前台弹 dsh（AI 在 dsh 里驱动）
+paperpilot web             # 只启动 Web（不接 mecha 栈；无 MCP/监控）
 paperpilot fetch --days 3  # 抓取近 3 天提交的新论文入库（遵守 arXiv 3s 限速）
 paperpilot run             # 立即跑一次「打分→精读→简报」
 paperpilot run --force     # 当天已有简报也重跑
@@ -57,23 +70,24 @@ paperpilot call <能力> -p k=v  # 调用一个能力，输出统一信封 JSON�
 paperpilot backup          # 打包 data/ 到 backups/
 ```
 
-Web 页面：`/` 今日简报 · `/digest/{date}` 历史简报 · `/papers` 论文库检索 · `/papers/{arxiv_id}` 详情与笔记 · `/activity` **记录仪**（append-only 事件总线：谁/何时/为什么/改了什么） · `/settings` 主题与参数管理、手动触发跑批。
+Web 页面：`/` 今日简报 · `/digest/{date}` 历史简报 · `/papers` 论文库检索 · `/papers/{arxiv_id}` 详情与笔记 · `/activity` **记录仪**（域数据面：repo.events 的 before→after + undo） · `/monitor` **操作审计**（mecha cockpit：写权模式 + 命令审计 + 配置态，可被原始证伪） · `/settings` 主题与参数管理、手动触发跑批。
 
-## AI 接入：DSH/MCP 主轨（`paperpilot ai`）
+## AI 接入：mecha v2 操作者无关层（`paperpilot` / `serve` / `ai`）
 
-**AI 对话、模型管理、界面全部复用 DSH（DeepSeek Harness）**，PaperPilot 只暴露语义面：
+**AI 对话、模型管理、界面全部复用 DSH（DeepSeek Harness）**；PaperPilot 经 **mecha v2** 把中性能力层投影成 AI 面（MCP 工具）+ 监控面（cockpit），人机同过**一道写权门**（authority）：
 
 ```
-DSH（AI 对话/管理/UI） ──MCP(streamable-http, 仅 localhost)──▶ paperpilot mcp（语义通道）
-        │                                                          │ 工具 = service 薄封装
+DSH（AI 对话/管理/UI） ──MCP(streamable-http, 仅 localhost)──▶ mecha 投影（24 工具，.mcp-port 发现）
+        │                                                          │ 工具 = 22 能力薄封装；写经命令面（authority 门 + 审计）
         └── dsh/ 插件（Cordis）──────────────────────────────────────┘
               · 自愈 MCP 桥：服务重启自动重连重试（治 dsh stock 桥的永久 404 死区）
               · 工具原生注册：mcp__paperpilot__* 供 AI 调用
-              · 「📄 简报」按钮：PaperPilot Web 挂进 dsh 右栏
+              · 「📄 简报」按钮：PaperPilot Web 挂进 dsh 右栏（含 `/monitor` 操作审计页 = cockpit）
 ```
 
 ```bash
-paperpilot ai      # 起 Web(:8080) + MCP 语义通道(写 .mcp-port)，前台跑 dsh
+paperpilot          # 统一启动（无参）= Web(人类面) + mecha MCP(AI 面) + cockpit(监控面) + 每日调度，共享一个 mecha 栈
+paperpilot ai       # 同上但后台跑，前台起 dsh（AI 在 dsh 里驱动；默认开 AI 写权）
                    # → 浏览器里对 AI 说："看看今天的候选论文，帮我评审并生成简报"
 ```
 
@@ -85,13 +99,13 @@ paperpilot ai      # 起 Web(:8080) + MCP 语义通道(写 .mcp-port)，前台�
 | 2 | `submit_review` | AI 逐篇评审：`score/label/reason` + 入选者的结构化 `summary`（只依据给定摘要，不编造） |
 | 3 | `finalize_briefing` | 用 AI 评审（缺的用基线分）筛选、精读、生成简报落库 |
 
-**归因与记录仪**（18 个工具，写入全部留痕）：
+**归因与记录仪**（24 个工具，写入全部留痕）：
 
 - 所有写入工具接受 `reason`（为什么）；写入带 `actor`（ai/human/scheduler）进 **append-only 事件总线**
-  （DB 触发器钉死只增不改：任何 UPDATE/DELETE 都被拒绝）；
-- `get_activity(since_seq/actor/op)` 读「谁、何时、为什么、改了什么」（diff-since-seq + 过滤 + 体积闸）；
-  Web 侧对应只读页 `/activity`；
-- 写错了 `undo(seq=0)` 撤销最近一条可逆操作（按事件的 before 快照回写）；
+  （DB 触发器钉死只增不改：任何 UPDATE/DELETE 都被拒绝）；写同时经 mecha 命令面审计进 History（与 dsh call_id 互引）；
+- `read_activity(since_seq/actor/op)` 读「谁、何时、为什么、改了什么」（diff-since-seq + 过滤 + 体积闸）；
+  Web 侧对应只读页 `/activity`（域数据）与 `/monitor`（mecha 操作审计）；
+- 写错了 `undo_change(seq=0)` 撤销最近一条可逆操作（按事件的 before 快照回写）；
   抓取入库/简报定稿**不可逆**，undo 会明确拒绝并说明原因，不静默；
 - 不可逆操作、未分类异常都带可教学 hint（第一次错就能改对）。
 
@@ -151,7 +165,8 @@ PaperPilot 暴露 17 个语义工具。错误可教学（`{ok:false, error:{kind
 ```
 src/paperpilot/
 ├── config.py              # YAML 配置加载（pydantic）
-├── mcp_server.py          # MCP 语义通道：17 个工具（service 薄封装）+ 端口文件发现
+├── mecha_adapter/         # mecha v2 接入（Scheme E）：engine/tools/commands/monitor/hub
+│                          #   22 能力→工具 + 13 写命令 + Gate 配置 + cockpit 监控 + MCP 端点
 ├── domain/                # 纯业务：不认识 HTTP/SQLite/arXiv
 │   ├── models.py          # AI 边界 DTO（RelevanceScore/PaperSummary/BriefingContent）
 │   ├── policy.py          # 硬规则 / 配额 / 兜底打分 / 抽取式摘要（纯函数）
@@ -171,13 +186,13 @@ src/paperpilot/
 └── data/sample_arxiv.xml  # demo 样例（离线）
 dsh/                       # DSH 插件（Cordis）：自愈 MCP 桥 + 工具注册 + 📄简报面板
 docs/GAPS.md               # 缺口审计：脊椎层差距与补齐记录（参照 Energy Level 七层脊椎）
-tests/                     # 契约 / 解析 / 策略 / 流水线 / Web / MCP 直调 / MCP 活体 / 归因记录仪判据
+tests/                     # 契约 / 解析 / 策略 / 流水线 / Web / mecha 适配（MCP e2e・cockpit・写治理・判据）/ 归因记录仪
 ```
 
 ## 测试
 
 ```bash
-.venv\Scripts\python -m pytest        # 71 用例，全部离线可跑（含真 HTTP+真 MCP 协议的活体测试）
+.venv\Scripts\python -m pytest        # 121 用例，全部离线可跑（含真 HTTP+真 MCP 协议的 e2e）
 .venv\Scripts\python -m ruff check .  #  lint
 cd dsh && npm test                    # 插件 14 例（自愈重连桥 + 端点解析）
 cd dsh && npm run typecheck           # tsc 零错误
