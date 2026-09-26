@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "dsh (Cordis) plugin for PaperPilot: takes over the MCP connection lifecycle (self-healing reconnect past dsh's streamable-http dead-zone) and surfaces the briefing panel in the right sidebar.",
+  "description": "dsh (Cordis) plugin for PaperPilot: takes over the MCP connection lifecycle (self-healing reconnect past dsh's streamable-http dead-zone) and surfaces the read-only AI-monitor tab in the right sidebar.",
   "main": "lib/index.mjs",
   "types": "src/index.ts",
   "exports": {

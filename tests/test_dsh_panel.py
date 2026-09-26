@@ -55,7 +55,11 @@ PROJECT_PANEL_TEST = "test/panel.test.ts"
 #:   同一事实不留两个守卫）。
 #: * 17 → **18**（2026-09-26 第 4 批）：**加**了 1 条 —— 本项目 client 入口的
 #:   **import 闭包零 `node:`** 守卫（资产那条只走资产目录内部；消费侧的"树摇运气"要自己钉）。
-PANEL_TEST_FLOOR = 18
+#: * 18 → **10**（2026-09-26 第 5 批）：用户裁决📄简报 iframe 整体退役，删 8 条盯它的用例——
+#:   probeReachable×1（两跳探测）、renderPanel 判定⑤段（地址失败/无应答/缺容器/重试/非退化矩阵）、
+#:   ④两段（旧输入相对路径/非绝对拒）；其对象 panel-state/panel-probe/mode-store/
+#:   panel-mode-css/BriefingPanel 已从浏览器代码里整体消失。
+PANEL_TEST_FLOOR = 10
 
 _COUNT_RE = re.compile(r"^\u2139\s+(tests|pass|fail|skipped)\s+(\d+)\s*$", re.M)
 

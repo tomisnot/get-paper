@@ -23,8 +23,6 @@ src/host/mcp-session-http.ts  唯一 import @modelcontextprotocol/sdk：每次�
 src/host/register-tools.ts MCP 工具 → ctx.tools.register（照 dsh mcp-client/tools.ts 的两阶段 swap）
 src/host/config.ts         端点解析（mcpUrl / .mcp-port / 默认 8780）
 src/panel/*                面板共享资产（**逐字复制**自 mecha 参考实现，只有 panel-config.ts 是本项目的值）
-src/client/panel-state.ts  **简报 iframe** 的状态判定：要么可用绝对地址、要么可读错误（**没有"空白"这一态**）
-src/client/panel-probe.ts  **简报 iframe** 的两跳可达性探测（跨源读不到内层 DOM ⇒ 挂之前探 /healthz）
 src/client/*               CLIENT 半：📄简报 开关 + 右栏 iframe + 错误卡 + 面板模式 CSS
 types/dsh-shims.d.ts       本地最小类型 shim（@deepseek-ai/* 是宿主提供的 peer，本地装不到）
 ```
@@ -69,7 +67,7 @@ types/dsh-shims.d.ts       本地最小类型 shim（@deepseek-ai/* 是宿主提
 
 三条纪律（都有判据）：**绝不回落默认端口**（读不到 ⇒ 路由 `503` + 可读错误，失败体**没有**
 `base`）；**端口文件名必填**（`panel-config.ts` 的 `PORT_FILE`，库不替项目猜）；**缺地址/缺容器
-一律显示可读错误卡**，`panel-state.ts` 里**不存在**"既不是地址也不是错误"的第三态
+一律显示可读错误卡**，`〔已随简报 iframe 链退役，2026-09-26 第 5 批〕panel-state.ts` 里**不存在**"既不是地址也不是错误"的第三态
 （迁移前 `readBootstrap()?.webUrl || ''` 会产出空串 ⇒ iframe 永不设 src = 纯白；视图为
 `monitor` 时还会退化成相对路径 ⇒ 被浏览器按 dsh 自己的域解析）。
 
@@ -183,7 +181,7 @@ npm run test:panel                  # 只跑面板判据（src/panel/*.test.ts +
   **地址不回落**（缺/坏端口文件 ⇒ `503` 且失败体无 `base`，且不许回落到历史默认 8080）、
   **面板不空白**（R8：`ready`⇒非空绝对地址 / `error`⇒非空可读文案，两分支都被走到且成功态
   真的带上喂进去的地址）、**缺地址不许指向相对路径**（迁移前的 `'' + 'monitor'` 病）。
-  **R7 能红证据**（实测，非声称）：把 `panel-state.ts` 的空地址分支改回"相对 src" ⇒
+  **R7 能红证据**（实测，非声称）：把 `〔已随简报 iframe 链退役，2026-09-26 第 5 批〕panel-state.ts` 的空地址分支改回"相对 src" ⇒
   `node --test` **pass 9 / fail 4**；把 `panel-config.ts` 的 `PORT_FILE` 清空 ⇒ 参数块与
   **Python 侧跨语言守卫**同时红（`test_cli_startup.py::test_web_port_file_name_matches_dsh_panel_config`）。
 - 仓内门禁入口：`tests/test_dsh_panel.py`（pytest）会跑上面那三份 `.ts` 判据，并断言
@@ -191,4 +189,4 @@ npm run test:panel                  # 只跑面板判据（src/panel/*.test.ts +
 - 活体验证（需真 `dsh web`）：插件加载 → `mcp__paperpilot__*` 工具可调；杀服务再起 → 工具
   自动恢复；会话头部「📄 简报 / ◈ 监控」按钮开/关右栏面板。
 - **未验证**（明确不宣称）：面板在**浏览器里**的渲染（本机没有可驱动的浏览器）——
-  `panel-state.ts` 的判定与错误卡 DOM 只有 Node 级判据，**没有跑过真页面**。
+  `〔已随简报 iframe 链退役，2026-09-26 第 5 批〕panel-state.ts` 的判定与错误卡 DOM 只有 Node 级判据，**没有跑过真页面**。

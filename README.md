@@ -193,7 +193,7 @@ src/paperpilot/
 │   ├── web.py + templates/# FastAPI + Jinja2，无 CDN 依赖（含「记录仪」只读页）
 │   └── cli.py             # typer CLI（含 ai 模式 launcher）
 └── data/sample_arxiv.xml  # demo 样例（离线）
-dsh/                       # DSH 插件（Cordis）：自愈 MCP 桥 + 工具注册 + 📄简报面板
+dsh/                       # DSH 插件（Cordis）：自愈 MCP 桥 + 工具注册 + 「◈ 监控」原生页签（📄简报 iframe 已退役：阅读面就是本 Web）
 docs/GAPS.md               # 缺口审计：脊椎层差距与补齐记录（参照 Energy Level 七层脊椎）
 tests/                     # 契约 / 解析 / 策略 / 流水线 / Web / mecha 适配（MCP e2e・cockpit・写治理・判据）/ 归因记录仪
 ```
