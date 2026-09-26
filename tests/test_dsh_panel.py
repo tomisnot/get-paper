@@ -88,11 +88,17 @@ def test_panel_copies_match_reference_commit():
         "\n若确有必要（如上游已发布新版本），请**重新整份复制**并同步更新 "
         "REFERENCE_REVISION 与 REFERENCE_SHA256，而不是就地打补丁。")
 
-    # 参数块**必须**是项目值（不是参考实现的中性默认）——它是唯一允许差异的文件。
-    baseline = PANEL_DIR / "panel-config.ts"
-    assert baseline.is_file()
-    assert _text_sha256(baseline) not in REFERENCE_SHA256.values(), (
-        "panel-config.ts 不该出现在参考指纹表里：它是唯一允许项目专有的文件")
+    # ⚠ 这里原先还有一条 `assert _text_sha256(panel-config.ts) not in REFERENCE_SHA256.values()`，
+    # 注释写的是"参数块必须是项目值"——**它不可能失败**（参数块的正文结构上不可能等于那 4 个
+    # 代码/单测文件之一的正文）⇒ R11 那一类（观测量恒真），**已删**。
+    #
+    # 它想守的事实**已被两条能失败的守卫覆盖**，且**各有其家**（改动任一处都会红）：
+    #   · 参数块的**值**（`PORT_FILE` 非空且不是参考实现的中性默认 / `ROUTE_PATH` 非中性默认 /
+    #     `TITLE` 非空）→ `dsh/test/panel.test.ts` 的参数块判据。它 **import** 资产的
+    #     `DEFAULT_ROUTE_PATH` 常量来比对 ⇒ 上游改了中性默认它**跟着变**；若在这里用 Python
+    #     重写一遍，就得**硬编** `/mecha/monitor-url`（跨仓字面量，会陈旧）⇒ 不该在此重复。
+    #   · **Python 侧写的名字** == 参数块的 `PORT_FILE` → `tests/test_cli_startup.py` 的跨语言守卫。
+    # 依据：**同一事实只留一个能失败的守卫**（D1 一事实一归属；两条都在 = 噪声）。
 
 
 def test_dsh_panel_criteria_pass():
