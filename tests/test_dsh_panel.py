@@ -28,10 +28,12 @@ import pytest
 DSH_DIR = Path(__file__).resolve().parents[1] / "dsh"
 PANEL_DIR = DSH_DIR / "src" / "panel"
 
-#: 相对 `dsh/` 的判据文件（共享件在前，项目自己那份在后）。
+#: 相对 `dsh/` 的判据文件（**资产四份在前**，项目自己那份在后）。
 PANEL_TEST_FILES = (
     "src/panel/monitor-url.test.ts",
     "src/panel/monitor-client.test.ts",
+    "src/panel/panel-data.test.ts",
+    "src/panel/panel-view.test.ts",
     "test/panel.test.ts",
 )
 
@@ -51,7 +53,9 @@ PROJECT_PANEL_TEST = "test/panel.test.ts"
 #: * 19 → **17**（2026-09-26 第 3 批）：删了 2 条 —— `viewPath`（AI 监控不再走 iframe，
 #:   没有第二个视图了）与 `assertNever`（**资产自测已覆盖**，见 `monitor-client.test.ts`：
 #:   同一事实不留两个守卫）。
-PANEL_TEST_FLOOR = 17
+#: * 17 → **18**（2026-09-26 第 4 批）：**加**了 1 条 —— 本项目 client 入口的
+#:   **import 闭包零 `node:`** 守卫（资产那条只走资产目录内部；消费侧的"树摇运气"要自己钉）。
+PANEL_TEST_FLOOR = 18
 
 _COUNT_RE = re.compile(r"^\u2139\s+(tests|pass|fail|skipped)\s+(\d+)\s*$", re.M)
 
@@ -82,13 +86,14 @@ def _run_node_tests(*files: str) -> tuple[int, str]:
 #: 参考实现的来源版本（mecha 仓的提交）。重新复制时**必须**同步更新本行与下表。
 #:
 #: ⚠ **不必等上游通知**：按 mecha 的**当前提交态**取即可（`git cat-file blob <rev>:…`），
-#: 取完把 rev 写在这里 ⇒ **两仓的"同步"因此不需要人来对齐**（本轮已如实走了一遍：
-#: `eab7b9e` → `7931b8d`，只 README 变了）。
-REFERENCE_REVISION = "mecha@7931b8d (2026-09-26) mecha/dsh-panel/"
+#: 取完把 rev 写在这里 ⇒ **两仓的"同步"因此不需要人来对齐**（本轮已如实走了四遍：
+#: `eab7b9e` → `7931b8d`（只 README 变）→ `c44b01f`（面板本体进资产：12 文件）
+#: → **`5ee78e4`（修 `panel-data.ts` 的缺 type import + `tabLabel` 的期望值来源）**）。
+REFERENCE_REVISION = "mecha@5ee78e4 (2026-09-26) mecha/dsh-panel/"
 
 #: 参考实现**提交态**的正文指纹（`\r\n` 归一成 `\n` 后的 sha256）。
 #:
-#: ⚠ 三条刻意的设计（每一条都是本工程付过代价的）：
+#: ⚠ 四条刻意的设计（每一条都是本工程付过代价的）：
 #:
 #: 1. **按提交态，不按工作树**（A8 裁决）：判据**不读** `D:\code-nosync\mecha` 的活文件。
 #:    否则**参考实现那边任何在飞改动都会红本仓判据**（本轮就真发生了：M 正在改那边 README），
@@ -98,12 +103,20 @@ REFERENCE_REVISION = "mecha@7931b8d (2026-09-26) mecha/dsh-panel/"
 #:    （本仓提交时会 LF→CRLF）。逐**字节**比对会被行尾配置打败 ⇒ 这里比**正文**（归一 LF）。
 #: 3. **`panel-config.ts` 不进表**：它是复制约定里**唯一允许项目专有**的文件（`ROUTE_PATH`
 #:    /`PORT_FILE`/`TITLE` 三个值），它的正确性由 `test_cli_startup.py` 的跨语言守卫管。
-#:    `README.md` 也**不进表**：prose 的就地批注不改变行为，钉它只制造噪声（复制时仍逐字抄）。
+#: 4. **`README.md` 不进表**：prose 的就地批注不改变行为，钉它只制造噪声（复制时仍逐字抄）。
+#:
+#: ⇒ 资产 `c44b01f` 共 **12 个文件**，减去上面两个不钉的 = **本表 10 项**。
 REFERENCE_SHA256 = {
-    "monitor-url.ts": "c6a948106a480c67b76447d9e160f29519637a1ae5e3716a824552497efcf1ba",
-    "monitor-client.ts": "eec71f3f7e47cdbbafdece1c9649bd68f3a86e6631b486e9e8e3d18cac9260c9",
-    "monitor-url.test.ts": "62994cf218fc195890a7dc966f5159ee62aaf926a25a032d1a7f70bdf6d99c07",
-    "monitor-client.test.ts": "754dee85d2a329a5da3c1425368e3c46595ac8605f4df88a0acc6bdf95f03616",
+    "routes.ts": "e2b5bc35d84d368548146a4c7d6c4a2ef733b3191480f6a9d0131045c1295963",
+    "monitor-url.ts": "9808f71a7179857f56baa25652cfc77e2d109f3d92d643aaf2c3ebc42f95c2a3",
+    "monitor-client.ts": "200a7764f2d0139c17dd91294d02dd165ad0f51ad782ad39b3bb67708153e93c",
+    "panel-data.ts": "cc32f9c7692fdbf2f0495d23f2f4bab2ac3e27620795e92f734132c96a0153bc",
+    "panel-view.ts": "560103c18231df5bad3d18a77f16f0ed6cceab513928ef765dbdb2afec9a1aca",
+    "MonitorTabBody.tsx": "8ed1233f18e32a9c4b6af37ebd69937fe63f5522ce2a410bb0dab8ec9339d3d6",
+    "monitor-url.test.ts": "90db86e3b5217b89b18b082f37c502ef6750c54b2de58ad202fb71eecd9cfd29",
+    "monitor-client.test.ts": "8dcff14f8fe5fb2f505ba7e9e845adab4f8c28c4af87c0234856817cecea4487",
+    "panel-data.test.ts": "b3ece6c3f436f22b5abd3f7ffb295d3799f0fadf2628d4d791312bbd4445152a",
+    "panel-view.test.ts": "bd2afe86800130e9ff8c03081a5696bd2c9f4c23fe71070c3fca57c72931d1b4",
 }
 
 

@@ -22,15 +22,15 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import {
-  BASIC_ROUTES,
-  DEFAULT_ROUTE_PATH,
-  makeMonitorUrlHandler,
-  resolveMonitorBase,
-} from '../src/panel/monitor-url.ts'
+import { dirname, join, normalize, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { makeMonitorUrlHandler, resolveMonitorBase } from '../src/panel/monitor-url.ts'
+// ⚠ `BASIC_ROUTES` / `DEFAULT_ROUTE_PATH` 已随资产 `c44b01f` 迁到**浏览器安全**的 `routes.ts`
+//   （原先它们在 node-only 的 `monitor-url.ts` 里 ⇒ client 半取值导入会把 `node:fs` 拖进
+//   浏览器 bundle；资产已把这条边界结构化，并加了一条 import 闭包守卫）。
+import { BASIC_ROUTES, DEFAULT_ROUTE_PATH } from '../src/panel/routes.ts'
 import { PANEL_CONFIG } from '../src/panel/panel-config.ts'
 import { fetchMonitorBase, isOriginLike } from '../src/panel/monitor-client.ts'
 import { probeReachable } from '../src/client/panel-probe.ts'
@@ -342,6 +342,64 @@ test('⭐ 非绝对地址也被拒（相对串一律不许进 iframe）', () => 
   }
   const absolute = judged({ address: okAddress('https://example.com/') })
   assert.deepEqual(absolute, { kind: 'ready', src: 'https://example.com/' })
+})
+
+// ---------------------------------------------------------------- ⑤ 浏览器安全（项目自己的入口）
+
+/**
+ * ⭐ **本项目 client 入口的 import 闭包必须零 `node:`**。
+ *
+ * 为什么项目侧还要一条（资产那条只走**资产目录内部**，入口写死为资产文件）：
+ * 真正被 dsh 加载的是**本项目**的 `src/client/index.ts` —— 它 import 资产 + 本项目文件。
+ * 而"我先前没撞上 EL 那个 `node:fs` 事故"**纯属树摇的运气**（我恰好没用到带 node 的导出，
+ * 整条 import 被摇掉）；资产已把那条边界**结构化**（`routes.ts` 浏览器安全 / `monitor-url.ts`
+ * 才碰 `node:fs`），这条判据把**消费侧的运气**也变成**结构**。
+ */
+test('⭐ 本项目 client 入口的 import 闭包里没有 node:（浏览器安全靠结构，不靠树摇的运气）', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const src = join(here, '..', 'src')
+  const ALLOWED_BARE = new Set(['react', 'react/jsx-runtime'])
+  const stripComments = (s: string) => s
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
+  /** 把 `from './x'` / `from '../x'` 解析成相对 `src/` 的 posix 路径。
+   *  ⚠ **别自己剥 `../`**：交给 `join`/`normalize` 处理（第一版剥掉前缀再拼 ⇒ 拼成
+   *  `client/panel/...` 这种不存在的路径，判据以 ENOENT 假红——**自己的守卫自己先红过一次**）。 */
+  const resolveRel = (fromRel: string, spec: string): string =>
+    normalize(join(dirname(fromRel), spec)).split(sep).join('/')
+
+  const queue = ['client/index.ts']
+  const seen = new Set<string>()
+  const nodeHits: string[] = []
+  const bareHits: string[] = []
+  while (queue.length) {
+    const rel = queue.shift() as string
+    if (seen.has(rel)) continue
+    seen.add(rel)
+    for (const line of stripComments(readFileSync(join(src, rel), 'utf8')).split('\n')) {
+      if (/^\s*import\s+type\b/.test(line)) continue      // 类型导入会被剥掉，不是运行时依赖
+      const m = line.match(/from\s+'([^']+)'/)
+      if (!m) continue
+      const spec = m[1] ?? ''
+      if (spec.startsWith('node:')) { nodeHits.push(`${rel} → ${spec}`); continue }
+      if (spec.startsWith('./') || spec.startsWith('../')) {
+        queue.push(resolveRel(rel, spec))
+        continue
+      }
+      if (!ALLOWED_BARE.has(spec)) bareHits.push(`${rel} → ${spec}`)
+    }
+  }
+  assert.deepEqual(nodeHits, [],
+    `client 闭包里出现 node 内建：${nodeHits.join('、')} ⇒ 浏览器 bundle 会失败`
+    + '（node-only 的实现只许留在 panel/monitor-url.ts，且 client 侧不许 import 它）')
+  assert.deepEqual(bareHits, [],
+    `client 闭包 import 了非白名单裸包：${bareHits.join('、')} ⇒ 只许宿主注入的 react + 相对路径`)
+  // R8 自证：闭包必须**真的走过若干文件**，否则"没命中"只是因为什么都没读到
+  assert.ok(seen.size >= 8, `闭包只走了 ${seen.size} 个文件 ⇒ 检查可能没生效：${[...seen]}`)
+  // 对偶（不许误报）：闭包**必须包含**资产里那两个纯模块——否则这条可能根本没走进资产
+  for (const must of ['panel/panel-data.ts', 'panel/panel-view.ts', 'panel/MonitorTabBody.tsx']) {
+    assert.ok(seen.has(must), `闭包里应当有 ${must}：${[...seen]}`)
+  }
 })
 
 
