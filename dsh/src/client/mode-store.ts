@@ -13,6 +13,7 @@
 type Listener = () => void
 
 let panelMode = false
+let panelPath = ''            // '' = Web 根（简报）；'monitor' = /monitor 操作审计（cockpit）
 const listeners = new Set<Listener>()
 let observer: MutationObserver | null = null
 
@@ -21,10 +22,19 @@ export function getPanelMode(): boolean {
   return panelMode
 }
 
+/** 当前面板显示的视图路径（'' 简报 / 'monitor' 监控）。 */
+export function getPanelPath(): string {
+  return panelPath
+}
+
 /** useSyncExternalStore 的 subscribe：返回退订函数。 */
 export function subscribePanelMode(fn: Listener): () => void {
   listeners.add(fn)
   return () => { listeners.delete(fn) }
+}
+
+function notify(): void {
+  for (const fn of listeners) fn()
 }
 
 /** 翻转面板模式（头部按钮调用）。 */
@@ -32,12 +42,26 @@ export function togglePanelMode(): void {
   setPanelMode(!panelMode)
 }
 
+/** 打开面板到指定视图（'' 简报 / 'monitor' 监控）；已开则切视图，不关。 */
+export function openPanel(path: string): void {
+  const changed = path !== panelPath
+  panelPath = path
+  if (!panelMode) setPanelMode(true)   // setPanelMode 会 notify
+  else if (changed) notify()           // 已开：仅切 iframe src，通知订阅者重挂
+}
+
+/** 点头部按钮：正显示该视图则收起，否则打开到该视图。 */
+export function togglePanel(path: string): void {
+  if (panelMode && panelPath === path) setPanelMode(false)
+  else openPanel(path)
+}
+
 /** 设定面板模式；变化时落 DOM 副作用并通知订阅者。 */
 export function setPanelMode(on: boolean): void {
   if (on === panelMode) return
   panelMode = on
   applyDom(on)
-  for (const fn of listeners) fn()
+  notify()
 }
 
 function applyDom(on: boolean): void {

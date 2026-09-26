@@ -39,7 +39,7 @@ test('端口文件：含数字的任意串也能提出端口', async () => {
 
 test('没有端口文件 → 回落默认（不抛，交给桥重连）', async () => {
   const url = await resolveMcpUrl({ mcpPortFile: '/nonexistent/.mcp-port' })
-  assert.equal(url, 'http://127.0.0.1:8765/mcp')
+  assert.equal(url, 'http://127.0.0.1:8780/mcp')
 })
 
 test('buildRequestInit：无 token/头 → undefined', () => {

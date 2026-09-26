@@ -7,16 +7,19 @@
  */
 import { useSyncExternalStore } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { getPanelMode, subscribePanelMode, togglePanelMode } from './mode-store.ts'
+import { getPanelMode, getPanelPath, subscribePanelMode, togglePanel } from './mode-store.ts'
 
 type Props = PropsRuntime<'conversation.session.header.actions'>
 
 export function BriefingPanel(_props: Props) {
-  const on = useSyncExternalStore(subscribePanelMode, getPanelMode)
+  const on = useSyncExternalStore(
+    subscribePanelMode,
+    () => getPanelMode() && getPanelPath() === '',
+  )
   return (
     <button
       type="button"
-      onClick={() => togglePanelMode()}
+      onClick={() => togglePanel('')}
       data-pp-panel-toggle={on ? 'on' : 'off'}
       title={on
         ? '收起 PaperPilot 面板，回到原版 dsh 布局'
