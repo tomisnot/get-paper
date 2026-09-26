@@ -21,6 +21,11 @@
  *   `resolve_data_dir(root, dir_name)` 的纪律：不给就报错）。留空时
  *   `resolveMonitorBase` 会**当场抛错**（响亮失败，不是静默用默认名）。
  * * `TITLE`：面板标题（纯展示；模型不读它）。
+ *
+ * ⚠ **本模块必须浏览器安全**（client 半会 import 它）⇒ 只许 import `./routes.ts`
+ * 这类零 `node:*` 的模块。
+ * ⚠ 本项目已把 `ROUTE_PATH` 写成自己的字面量 ⇒ **不再 import `./routes.ts`**
+ * （资产说明：换了值之后那行 import 若不再被用到就删掉——R17）。
  */
 
 export interface PanelConfig {
@@ -30,12 +35,25 @@ export interface PanelConfig {
   PORT_FILE: string
   /** 面板标题。 */
   TITLE: string
+  /**
+   * 标准页的**页签文案覆盖**（可选）。不填则用共享默认（`飞行记录仪` / `配置态`）。
+   * ⚠ 只有标准两页能这样覆盖；**项目的附加页**文案写在它自己的**附加页声明**里。
+   */
+  TABS?: { rec?: string; cfg?: string }
 }
 
 export const PANEL_CONFIG: PanelConfig = {
+  // PaperPilot 自己的路由字面量（host 半注册它、client 半 fetch 它）。
+  // ⚠ 换成本项目的值之后，上面那行 `DEFAULT_ROUTE_PATH` 的 import **已按资产说明删掉**
+  //    （R17：不留声明了不用的东西）。
   ROUTE_PATH: '/paperpilot/monitor-url',
   // ⚠ 复制到项目后**必须**填成该项目权威实际写的那个文件名。
   //    留空 ⇒ 路由一律 503 并给出"端口文件未配置"的可读错误（这是刻意的）。
   PORT_FILE: '.web-port',
   TITLE: '操作审计',
+  // **TABS 不填**（用共享默认「飞行记录仪 | 配置态」）：用户的要求是"**几乎完全复用 EL，
+  //   布局也是**" ⇒ 页签文案也跟 EL 一致，少一处差异。
+  //   （历史：本仓曾因"填了就红"而被迫不填——资产自测 `tabLabel` 原先把中性默认写死却读项目
+  //   参数块；该缺陷已在 `mecha@5ee78e4` 修好（改成"临时清空 TABS 测默认 + 另测覆盖"）。
+  //   所以现在**想填随时可填**，只是我们选择与 EL 一致。）
 }

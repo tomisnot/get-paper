@@ -1,6 +1,14 @@
 /**
  * 监控端点**地址**：dsh **同源只读路由**（host 半）。**参考实现**，不是框架能力。
  *
+ * ## ⚠ 本模块是 **node-only**（host 半）：client 半**不许** import 它
+ *
+ * 它顶层要 `node:fs` / `node:path`（读端口文件、拼路径）。而 **client 半是浏览器 bundle**
+ * ⇒ 一旦 client 半（或它的 import 闭包）碰到本模块，`node:fs` 就进包、**加载即失败**
+ * （2026-09-26 的真实缺陷：`esbuild --bundle --platform=browser` 报
+ * `Could not resolve "node:fs"`，指到本文件）。**浏览器安全的常量住 `routes.ts`**；
+ * 本模块只放要 node 的实现。边界由 `monitor-client.test.ts` 的**导入闭包检查**机械守着。
+ *
  * ## 它解决什么
  *
  * 面板（client 半）不能自己读磁盘；而监控端点的端口是**动态分配**的（`mecha.cockpit`
@@ -22,17 +30,6 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-
-/** 中性默认路由（**不含任何项目名**）。项目可在参数块里覆盖。 */
-export const DEFAULT_ROUTE_PATH = '/mecha/monitor-url'
-
-/**
- * 面板的**四基础路由**（`mecha.cockpit` 契约里的那四条）。
- *
- * 用途：`monitor-client` 用它区分"**基础路由失败 = 权威离线**"与"**附加路由失败**"——
- * 这两类**必须分档**（混在一起会让真因被"权威离线"吃掉）。
- */
-export const BASIC_ROUTES = ['/status', '/activity', '/history', '/config'] as const
 
 /** 监控端点基址的解析选项。`portFile` **必填**（无默认名）。 */
 export interface MonitorUrlOptions {

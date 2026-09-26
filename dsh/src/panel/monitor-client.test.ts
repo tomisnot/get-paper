@@ -14,6 +14,9 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   assertNever,
   classifyRoute,
@@ -26,6 +29,62 @@ import {
   readJson,
   statsLine,
 } from './monitor-client.ts'
+
+// ---------------------------------------------------------------- 浏览器安全（结构保证）
+
+test('⭐ client 半的 **import 闭包里没有 `node:`**（浏览器安全靠结构，不靠树摇的运气）', () => {
+  // 为什么要有这条：**真实缺陷**（2026-09-26）——client 半原先从 node-only 的
+  // `monitor-url.ts` 取值导入 `BASIC_ROUTES`，把 `node:fs` 拖进原生消费者的浏览器
+  // bundle（`esbuild --platform=browser` 直接报 `Could not resolve "node:fs"`）。
+  // 另一个消费者当时没事，纯粹是**树摇恰好摇掉了那条链**（它自己说：
+  // "我的安全是碰巧没用那几个导出换来的，不是结构保证的"）。⇒ 这里把结构钉死。
+  const dir = dirname(fileURLToPath(import.meta.url))
+  const seen = new Set<string>()
+  const nodeHits: string[] = []
+  const bareHits: string[] = []
+  // client 半的入口（含面板层；`.tsx` 壳也在内——它只许 import react）
+  const queue = ['monitor-client.ts', 'panel-config.ts', 'panel-data.ts',
+                 'panel-view.ts', 'MonitorTabBody.tsx']
+  // 唯一允许的**裸包名**：宿主 dsh 通过模块表注入的 react（项目的 bundler 把它外置）。
+  // 其余裸包名一律红 ⇒ 把"能随资产发货"变成机械可查的性质。
+  const ALLOWED_BARE = new Set(['react', 'react/jsx-runtime'])
+
+  /** 剥掉注释再扫（否则文档里"举例说明"的那句 `from 'node:fs'` 会被误当成真 import
+   *  ——本检查第一版就踩了这个假阳性）。足够用于本目录自己的源码。 */
+  const stripComments = (src: string) => src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
+
+  while (queue.length) {
+    const rel = queue.shift() as string
+    if (seen.has(rel)) continue
+    seen.add(rel)
+    for (const line of stripComments(readFileSync(join(dir, rel), 'utf8')).split('\n')) {
+      if (/^\s*import\s+type\b/.test(line)) continue      // 类型导入会被剥掉，不是运行时依赖
+      const m = line.match(/from\s+'([^']+)'/)
+      if (!m) continue
+      // `?? ''`：严格 tsconfig（noUncheckedIndexedAccess）下 `m[1]` 是 `string | undefined`
+      const spec = m[1] ?? ''
+      if (spec.startsWith('node:')) { nodeHits.push(`${rel} → ${spec}`); continue }
+      if (spec.startsWith('./')) { queue.push(spec.slice(2)); continue }
+      if (!ALLOWED_BARE.has(spec)) bareHits.push(`${rel} → ${spec}`)
+    }
+  }
+  assert.deepEqual(nodeHits, [],
+    `client 半的 import 闭包里出现了 node 内建：${nodeHits.join('、')}`
+    + ' ⇒ 浏览器 bundle 会失败（node-only 的实现必须留在 monitor-url.ts）')
+  assert.deepEqual(bareHits, [],
+    `client 半 import 了非白名单的裸包：${bareHits.join('、')}`
+    + ' ⇒ 资产只许依赖宿主注入的 react（以及相对路径）')
+  // R8 自证：闭包必须**真的走过了几个文件**，否则"没命中"只是因为什么都没读到
+  assert.ok(seen.size >= 5, `闭包只走了 ${seen.size} 个文件 ⇒ 检查可能没生效：${[...seen]}`)
+  for (const must of ['routes.ts', 'panel-view.ts', 'MonitorTabBody.tsx']) {
+    assert.ok(seen.has(must), `闭包里应当有 ${must}：${[...seen]}`)
+  }
+  // 对偶（不许误报）：**node 半必须仍然依赖 node** —— 否则上一条会因为"没东西可抓"而变空洞
+  const nodeHalf = readFileSync(join(dir, 'monitor-url.ts'), 'utf8')
+  assert.match(nodeHalf, /from 'node:fs'/, 'node 半应当 import node:fs（否则本检查没有可抓之物）')
+})
 
 /** fetch 替身：按 path 决定回什么，并**记下每次调用**（判据据此自证注入生效）。 */
 function fakeFetch(reply: (path: string) => Response | Error) {

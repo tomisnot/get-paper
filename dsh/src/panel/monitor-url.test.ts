@@ -21,12 +21,12 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  BASIC_ROUTES,
-  DEFAULT_ROUTE_PATH,
   makeMonitorUrlHandler,
   resolveMonitorBase,
   sendJson,
 } from './monitor-url.ts'
+// ⚠ 浏览器安全的常量住 `routes.ts`（client 半也要用它）；`monitor-url.ts` 是 **node-only**。
+import { BASIC_ROUTES, DEFAULT_ROUTE_PATH } from './routes.ts'
 
 const PORT_FILE = 'probe.port'   // 中性名：判据自己造的文件，不是任何项目的约定名
 

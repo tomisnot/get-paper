@@ -22,8 +22,16 @@
  * 那正是"两边都空所以相同"的假绿。
  *
  * ⚠ 把附加路由的失败混进"权威离线"会让**真因被吃掉**（本工程最贵的一类假象）。
+ *
+ * ## ⚠ 本模块必须**浏览器安全**（零 `node:*`）
+ *
+ * 它是 **client 半**。**不许** import `monitor-url.ts`（那个是 node-only 的 host 半：
+ * 顶层 `node:fs`）。共享常量住 `routes.ts` —— 2026-09-26 的真实缺陷就是这里原先
+ * 从 `monitor-url.ts` 取值导入 `BASIC_ROUTES`，把 `node:fs` 拖进了原生消费者的
+ * 浏览器 bundle（加载即失败）。**边界不靠打包器树摇的运气**，靠
+ * `monitor-client.test.ts` 的**导入闭包检查**。
  */
-import { BASIC_ROUTES, DEFAULT_ROUTE_PATH } from './monitor-url.ts'
+import { BASIC_ROUTES, DEFAULT_ROUTE_PATH } from './routes.ts'
 
 export type MonitorFailureTier = 'address' | 'offline' | 'route'
 
@@ -40,7 +48,10 @@ export type DoFetch = typeof fetch
 
 /** 该路径属于"基础路由"还是"附加路由"（决定失败落到哪一档）。 */
 export function classifyRoute(path: string): 'basic' | 'extra' {
-  const clean = path.split('?')[0]
+  // ⚠ `?? ''`：严格 tsconfig（`noUncheckedIndexedAccess`）下 `split(...)[0]` 是
+  // `string | undefined` ⇒ 会报 TS2345。**这是可移植性要求的一部分**（见 README）：
+  // 资产必须能在**最严的**消费者 tsconfig 下编译，不能让项目为它放松类型严格度。
+  const clean = path.split('?')[0] ?? ''
   return (BASIC_ROUTES as readonly string[]).includes(clean) ? 'basic' : 'extra'
 }
 
