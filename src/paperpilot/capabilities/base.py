@@ -27,7 +27,7 @@ from ..infra.scholar import ScholarError
 
 logger = logging.getLogger("paperpilot.capabilities")
 
-# 回程预算（字节）与长列表保留条数（与旧 mcp_server 同源纪律）
+# 回程预算（字节）与长列表保留条数（回程体积纪律）
 _RETURN_BUDGET = 65536
 _LIST_KEEP = 20
 _LIST_KEYS = (

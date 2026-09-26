@@ -17,12 +17,38 @@ LOCKED 态下**域写会先落地、审计才失败**（最该被拦的写反而
 
 from __future__ import annotations
 
+import contextvars
+
 from mecha.commands import CommandResult, define_command
 from mecha.errors import MechaError
 from mecha.surface import ExecutionContext
 
 from .. import capabilities
 from .tools import TOOL_DECLS, _cap_params, _suggest_text
+
+#: 当前调用的操作者通道（contextvar，按请求/线程隔离）。
+#: ⭐ 为何需要：``CommandRegistry.invoke(name, args, *, context, gate, channel)`` 把 channel
+#: 用于 scope 检查与审计，但**不把 channel 传给 handler**（handler 只收 context= + 声明参数）。
+#: 而 handler 需要用**实际调用方的通道**做两件事：① ``authority.gate(channel.side)``
+#: 写权前置闸（human/ai 侧不同）；② ``actor=channel.actor`` 归因（否则人类写会被误记为 ai）。
+#: 故由统一入口 ``invoke_command`` 在 invoke 前 set 本 contextvar，handler 读它。
+_CURRENT_CHANNEL: contextvars.ContextVar = contextvars.ContextVar(
+    "pp_command_channel", default=None)
+
+
+def invoke_command(commands, gate, channel, cmd_name: str, args: dict,
+                   context=None) -> dict:
+    """统一命令调用口：把实际通道经 contextvar 传给 handler，再经框架 invoke。
+
+    AI 工具桥（ai 通道）与 Web 人类面（human 通道）都走这里——handler 据此
+    用**正确的 side/actor** 过写权闸与归因（人机同路、各记各的 actor）。
+    """
+    ctx = context if isinstance(context, ExecutionContext) else ExecutionContext()
+    token = _CURRENT_CHANNEL.set(channel)
+    try:
+        return commands.invoke(cmd_name, args, context=ctx, gate=gate, channel=channel)
+    finally:
+        _CURRENT_CHANNEL.reset(token)
 
 #: 命令 scope（声明字段；进审计记录供 cockpit/归因，未绑 ScopePolicy 则不做过滤——
 #: 与 EL 单宿主同款。scope 是「能写但有作用域边界」的维度，留待需要细粒度时绑定）。
@@ -37,8 +63,10 @@ _SCOPES: dict[str, tuple[str, ...]] = {
 }
 
 #: result_ref 抽取的实体标识键（不透明引用，供两份 journal 互引；不放结果体）。
+#: 注：repo.undo 回的键是 ``undone_seq``（非 undid_seq）——写错会让最该被追溯的
+#: 撤销操作 result_ref=None、互引断裂（设计师复审发现③）。
 _REF_KEYS = ("arxiv_id", "note_id", "topic", "added", "date", "run_id",
-             "briefing_id", "seq", "undid_seq", "path")
+             "briefing_id", "seq", "undone_seq", "path")
 
 
 def _scope_for(name: str) -> tuple[str, ...]:
@@ -48,12 +76,15 @@ def _scope_for(name: str) -> tuple[str, ...]:
 def _command_params(cap_params: dict, omit: tuple[str, ...]) -> dict:
     """从能力自描述派生命令的 JSON-schema 参数（properties/required）。
 
-    ⚠ **零必填命令用宽松形**（n=3 发现）：``CommandRegistry._check_args`` 在
-    ``required`` 为空/缺失时**回退成「所有 properties 都必填」**——故只有可选参数的
-    命令（fetch_papers/run_pipeline/prepare_review/finalize_briefing/undo_change）
-    无法同时声明 properties 与「零必填」，只能用 ``additionalProperties: True``
-    放弃 properties 声明。模型面的参数契约由**工具层**（define_tool + RequiredSource）
-    保证，域参数校验由 ``capabilities.invoke`` 兜底，故命令层宽松不丢正确性。
+    ⭐ **reason 显式声明为必填**（设计师复审发现①）：mecha 把 ``reason``/``call_id``
+    当 ``RESERVED_ARGS``，**不在 required 里就会在进 handler 前被剥掉**（只进审计 meta）。
+    若不声明，handler 收不到 reason → ``capabilities.invoke(reason="")`` → 域 journal
+    （repo.events）的 reason 永远为空，/activity 与 undo 归因丢了“为什么”。故把 reason
+    加进 required（框架的 ``declared_set`` 才会把它透传给 handler）——工具层对模型仍
+    可选，桥接填默认空串。
+
+    连带好处：required 恒非空 ⇒ 避开框架“空/缺失 required 回退成全 properties 必填”
+    的坑（MECHA-N3 发现 6），故所有命令都能正常声明 properties（不再需 additionalProperties 宽松形）。
     """
     props: dict[str, dict] = {}
     required: list[str] = []
@@ -66,9 +97,11 @@ def _command_params(cap_params: dict, omit: tuple[str, ...]) -> dict:
         props[pname] = entry
         if info.get("required"):
             required.append(pname)
-    if required:
-        return {"type": "object", "properties": props, "required": required}
-    return {"type": "object", "additionalProperties": True}
+    if "reason" in props and "reason" not in required:
+        required.append("reason")        # 让 handler 收到操作者的“为什么”（写进域 journal）
+    if not required:                     # 防御：无 reason 也无必填的能力→宽松形（不应发生）
+        return {"type": "object", "additionalProperties": True}
+    return {"type": "object", "properties": props, "required": required}
 
 
 def _result_ref(res: dict) -> dict | None:
@@ -76,12 +109,17 @@ def _result_ref(res: dict) -> dict | None:
     return ref or None
 
 
-def _make_handler(container, decl, authority, channel, surface):
-    """命令体：① authority 写权前置闸 → ② 调能力/Engine.run → ③ 归一化回执。"""
+def _make_handler(container, decl, authority, default_channel, surface):
+    """命令体：① authority 写权前置闸 → ② 调能力/Engine.run → ③ 归一化回执。
+
+    通道取自 ``_CURRENT_CHANNEL``（实际调用方：ai 工具桥 / human Web），缺失时回落
+    ``default_channel``——确保写权闸看**正确的 side**、归因用**正确的 actor**。
+    """
     cap_name = decl.cap_name
     via_surface = decl.via_surface
 
     def handler(context=None, **args):
+        channel = _CURRENT_CHANNEL.get() or default_channel
         # ① 写权前置（见模块 docstring 的 n=3 说明）：LOCKED/模式不符 → GateDenied，
         #    域写不发生；命令面把 MechaError 归一化成失败回执（可归因）。
         authority.gate(channel.side)

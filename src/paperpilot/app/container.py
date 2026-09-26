@@ -134,11 +134,13 @@ def build_container(settings: Settings | None = None) -> Container:
 
 
 def run_in_background(
-    container: Container, *, actor: str = "human", reason: str = ""
+    container: Container, *, stack: dict | None = None, actor: str = "human", reason: str = ""
 ) -> bool:
     """触发一次每日流水线（后台线程）；已在跑则返回 False。
 
     actor：Web 手动触发 = "human"，调度器 = "scheduler"（GAPS.md §2 归因）。
+    给了 ``stack``（统一启动）则经 mecha 命令面跑（human 通道 + 写权门 + 审计）；
+    否则直调 pipeline.run（向后兼容）。
     """
     with container._lock:
         if container.run_state["running"]:
@@ -148,8 +150,16 @@ def run_in_background(
 
     def _work() -> None:
         try:
-            result = container.pipeline.run(actor=actor, reason=reason)
-            container.run_state["last"] = result
+            if stack is not None:
+                from ..mecha_adapter.hub import human_write
+
+                res = human_write(stack, "run_pipeline", reason=reason)
+                container.run_state["last"] = (
+                    res.get("value") if not res.get("is_error") else res.get("error")
+                )
+            else:
+                result = container.pipeline.run(actor=actor, reason=reason)
+                container.run_state["last"] = result
         finally:
             container.run_state["running"] = False
 

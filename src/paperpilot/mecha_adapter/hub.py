@@ -27,7 +27,7 @@ from mecha.data_layout import resolve_data_dir
 from mecha.providers.mcp import McpEndpoint as _McpEndpoint
 from mecha.providers.mcp import build_mcp_server as _framework_build_mcp_server
 
-from .commands import build_commands
+from .commands import build_commands, invoke_command
 from .engine import CONFIG_SCHEMA, PaperPilotEngine, make_validator
 from .monitor import paperpilot_summarizer, start_cockpit
 from .tools import build_required_source, build_tool_registry
@@ -158,6 +158,22 @@ def make_host(stack: dict, *, host: str = "127.0.0.1", port: int = 0,
                    host=host, port=port, port_file=port_file, log=log)
 
 
+def human_write(stack: dict, cmd_name: str, **args) -> dict:
+    """人类面（Web）经**同一道门**写：确保 HUMAN 模式 + 用 human 通道 invoke 命令。
+
+    单写权模型（用户已接受）：人类侧可切模式，故 Web 写时若写权不在 human
+    （LOCKED 或 AI 持有）则取回到 HUMAN（human 优先）。actor 由 human 通道钉死，
+    写落 repo.events（actor=human）+ mecha History（command.<name> 审计）——与 AI
+    写同一条门、同一审计面（cockpit 可见）。返回 invoke 的归一化回执 {is_error, value|error}。
+    """
+    authority = stack["authority"]
+    if authority.mode is not Mode.HUMAN:
+        authority.switch_mode(Mode.HUMAN, side="human")   # 人类侧取写权（side=human 可切）
+    args.setdefault("reason", "")
+    return invoke_command(stack["commands"], stack["gate"],
+                          stack["channels"]["human"], cmd_name, args)
+
+
 def main(argv=None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -216,7 +232,7 @@ def main(argv=None) -> int:
 
 
 __all__ = ["INSTRUCTIONS", "MCP_SERVER_NAME", "McpHost", "build_mcp_server",
-           "build_stack", "make_host"]
+           "build_stack", "human_write", "make_host"]
 
 
 if __name__ == "__main__":

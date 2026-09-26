@@ -27,7 +27,6 @@ from dataclasses import dataclass, field
 
 from mecha.errors import MechaError
 from mecha.gate import Channel
-from mecha.surface import ExecutionContext
 from mecha.tools import CURRENT_CALL_ID, ToolRegistry, define_tool
 
 from .. import capabilities
@@ -257,13 +256,18 @@ def _make_command_bridge(commands, gate, channel: Channel, cmd_name: str):
     """写入能力的 execute 桥：经命令面 invoke（authority 写权闸 + Gate 审计）。
 
     ``call_id`` 从请求作用域读并随 args 传入——命令面把它抽给 Gate 审计事件，
-    把这次工具调用与宿主行为史钉在一起（总纲 §5.2② 互引）。
+    把这次工具调用与宿主行为史钉在一起（总纲 §5.2② 互引）。经 ``invoke_command``
+    统一入口把 ai 通道传给 handler（写权闸/归因用正确 side/actor）。
     """
+    from .commands import invoke_command  # 延迟导入：commands 依赖 tools，避免模块级循环
+
     def _exec(**kwargs):
         args = dict(kwargs)
         args["call_id"] = CURRENT_CALL_ID.get()
-        res = commands.invoke(cmd_name, args, context=ExecutionContext(),
-                              gate=gate, channel=channel)
+        # reason 在命令面是必填（才会透传给 handler、写进域 journal）；对模型仍可选，
+        # 故省略时桥接填默认空串（不影响命令 required 契约）。
+        args.setdefault("reason", "")
+        res = invoke_command(commands, gate, channel, cmd_name, args)
         if res["is_error"]:
             failure = res["error"]
             info = failure.get("info", {})

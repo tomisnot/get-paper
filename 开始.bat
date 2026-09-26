@@ -4,7 +4,7 @@ cd /d %~dp0
 
 echo ============================================
 echo   PaperPilot 一键启动
-echo   Web 面板 + MCP 语义通道 + DSH AI 界面
+echo   Web 面板 + MCP(AI 面) + 监控面 + DSH AI 界面
 echo ============================================
 echo.
 
@@ -39,7 +39,8 @@ echo.
 echo ------------------------------------------------------------
 echo   启动中...
 echo   Web 面板:  http://127.0.0.1:8080
-echo   MCP 通道:  http://127.0.0.1:8780/mcp
+echo   MCP 通道:  自动端口，见 .mcp-port（dsh 自动发现）
+echo   监控面:    Web 的 /monitor 页（操作审计 = mecha cockpit）
 echo   AI 界面:   dsh 起来后会自动打开浏览器
 echo.
 echo   首次使用：在 dsh 里对 AI 说

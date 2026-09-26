@@ -1,19 +1,19 @@
-"""CLI：paperpilot（无参数 = 启动 Web + 每日调度）。
+"""CLI：paperpilot（无参数 = 统一启动 Web + MCP + cockpit + 每日调度）。
 
 常用：
+  paperpilot / serve           统一启动入口：Web（人类面）+ mecha MCP（AI 面）+ cockpit（监控面）+ 调度（共享一个 mecha 栈）
   paperpilot fetch [--days 3]   抓取论文入库
   paperpilot run [--force]      立即跑一次每日流水线
   paperpilot demo               离线演示（内置样例，不联网）
-  paperpilot web [--port 8080]  只启动 Web
-  paperpilot mcp                起 MCP 语义通道（给 DSH 等 harness  attach）
-  paperpilot ai                 AI 模式：起 Web+MCP，前台跑 dsh（AI 在 dsh 里驱动）
+  paperpilot web [--port 8080]  只启动 Web（不接 mecha 栈；无监控面）
+  paperpilot mcp                只起 mecha MCP 语义通道（headless，给 DSH 等 harness attach）
+  paperpilot ai                 AI 模式：后台起 Web+MCP+cockpit，前台跑 dsh（AI 在 dsh 里驱动）
   paperpilot dsh-config         只读诊断：打印 dsh 组合后配置（验证隔离 overlay）
   paperpilot backup             备份 data/ 为 zip
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -38,8 +38,104 @@ logging.basicConfig(
 )
 
 DEMO_XML = Path(__file__).resolve().parents[1] / "data" / "sample_arxiv.xml"
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# ⚠ 本文件在 `src/paperpilot/app/` ⇒ 项目根 = `parents[3]`。`config.py` 在 `src/paperpilot/`，
+# 那里的 `parents[2]` 才是项目根——照抄它会**少一层**，于是 `DSH_DIR` 指向 `<项目>/src/dsh`
+# （不存在）：两个 `--patch` 全被静默丢掉、插件根本不加载，而现象只是"面板打不开 / 会话头部
+# 什么都没有"。由 `_resolve_dsh_patches` 的响亮失败 + `tests/test_cli_startup.py` 的守卫钉住。
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DSH_DIR = PROJECT_ROOT / "dsh"
+
+
+def _ensure_port_free(host: str, port: int, label: str) -> None:
+    """预检端口可绑定；被占则**响亮失败**（不半启动）。
+
+    为何必要：Web 在后台线程跑 uvicorn，bind 失败只会在那个线程里报错然后静默死掉，
+    主流程却继续拉 MCP/cockpit/dsh ⇒ 留下“dsh 起了、Web 死了”的半残态（实测：
+    Errno 10048 端口被占）。先在启动前探一下，占了就把可操作的排障步骤说清再退。
+    """
+    import socket
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((host, port))
+    except OSError:
+        typer.echo(
+            f"❌ {label}端口 {host}:{port} 已被占用——多半是上一次 PaperPilot 没退干净，"
+            "或别的服务在用它。", err=True)
+        typer.echo(f"   查占用：netstat -ano | findstr :{port}   → 末列是 PID", err=True)
+        typer.echo("   释放它：taskkill /F /PID <pid>（确认那是残留的 PaperPilot/uvicorn 再杀）", err=True)
+        typer.echo("   或换端口：serve 用 --port；ai 改 config/settings.yaml 的 web.port"
+                   "（dsh 面板 webUrl 需同步）。", err=True)
+        raise typer.Exit(code=1) from None
+    finally:
+        probe.close()
+
+
+def _open_browser_when_ready(host: str, port: int, path: str = "",
+                             timeout: float = 25.0) -> None:
+    """后台轮询 Web 就绪后自动开浏览器——把“人面”变成前台可见（而非隐在后台）。
+
+    Web 本质是本地服务（无独立窗口），浏览器就是它的前台；不自动开用户就不知道
+    去哪用。轮询端口连上后 `webbrowser.open`；`--no-open` 可关。0.0.0.0 等回环用 127.0.0.1。
+    """
+    import socket
+    import threading
+    import time
+    import webbrowser
+
+    url_host = "127.0.0.1" if host in ("0.0.0.0", "", "*") else host
+    url = f"http://{url_host}:{port}/{path.lstrip('/')}"
+
+    def _wait_and_open() -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                socket.create_connection((url_host, port), timeout=0.3).close()
+            except OSError:
+                time.sleep(0.2)
+                continue
+            try:
+                webbrowser.open(url)
+            except Exception:  # noqa: BLE001 - 开不了浏览器不影响服务已起
+                pass
+            return
+
+    threading.Thread(target=_wait_and_open, daemon=True).start()
+
+
+def _dsh_patch_paths() -> tuple[list[Path], list[Path]]:
+    """dsh overlay patch：返回 ``(存在的, 缺失的)``。
+
+    顺序有意义（`isolate` 必须落在组合链**最后一层**，端口 `!!js` 表达式才生效），故保序。
+    """
+    wanted = (DSH_DIR / "cordis.source.patch.yml", DSH_DIR / "cordis.isolate.patch.yml")
+    return [p for p in wanted if p.exists()], [p for p in wanted if not p.exists()]
+
+
+def _resolve_dsh_patches() -> list[Path]:
+    """取 dsh overlay patch，**缺任何一份都响亮失败**（绝不静默少传）。
+
+    为什么不许静默过滤：**"少传了 patch"与"传了但没生效"在现象上一模一样**——插件不加载、
+    会话头部没有按钮、工具面是空的。静默过滤会把「No plugin」伪装成「正常启动」，是本仓
+    反复付出代价的那类失败。实测代价：`PROJECT_ROOT` 少一层 ⇒ 两个 patch 全被丢掉 ⇒
+    用户报的"监控面板打不开"（真根因不在面板）。
+    """
+    patches, missing = _dsh_patch_paths()
+    if missing:
+        typer.echo("❌ dsh overlay patch 缺失——缺了它插件根本不会加载（面板 / AI 工具全没有），故不启动：",
+                   err=True)
+        for path in missing:
+            typer.echo(f"   · {path}", err=True)
+        typer.echo(f"   项目根判定 = {PROJECT_ROOT}"
+                   "（若不对，就是本文件 PROJECT_ROOT 的层数写错）", err=True)
+        raise typer.Exit(code=1)
+    return patches
+
+
+def _dsh_argv(patches: list[Path], port: int, *, no_open: bool = False) -> str:
+    """拼 `dsh web` 的启动参数串（纯函数 ⇒ 判据能直接断言 patch 与端口真的在里面）。"""
+    args = "web" + "".join(f' --patch "{p}"' for p in patches) + f" --port {port}"
+    return args + (" --no-open" if no_open else "")
 
 
 def _pick_dsh_port(preferred: int = 3081, tries: int = 10) -> int:
@@ -66,24 +162,88 @@ def main(
     config: Path = typer.Option(None, "--config", "-c", help="配置文件路径"),
 ) -> None:
     if ctx.invoked_subcommand is None:
-        _serve(config)
+        _serve_impl(config)
 
 
-def _serve(config: Path | None) -> None:
+def _boot_stack(settings, *, open_gate: bool, with_cockpit: bool, log):
+    """建 container + **共享 mecha 栈**，起 MCP（AI 面）+ cockpit（监控面）后台线程。
+
+    三面（Web 人类面 / MCP AI 面 / cockpit 监控面）**共享一个栈**（同一 authority/
+    gate/history）——一个 data_dir 一个写租约，故必须同进程共栈。返回
+    ``(container, stack, mcp_host, cockpit)``；调用方负责收尾（stop/close）。
+    """
+    from ..mecha_adapter.hub import build_stack, make_host
+    from ..mecha_adapter.monitor import start_cockpit
+    from .container import build_container
+
+    container = build_container(settings)
+    stack = build_stack(container, settings.data_dir, "mecha")
+    if open_gate:
+        from mecha.authority import Mode
+        stack["authority"].switch_mode(Mode.AI, side="human")
+    root = Path(settings.data_dir).parent
+    mcp_host = make_host(stack, host=settings.mcp.host, port=0,
+                         port_file=str(root / ".mcp-port"), log=log)
+    mcp_host.start()
+    cockpit = None
+    if with_cockpit:
+        cockpit = start_cockpit(stack, host=settings.web.host, port=0,
+                                port_file=str(root / ".cockpit-port"), log=log)
+    return container, stack, mcp_host, cockpit
+
+
+def _serve_impl(config, host=None, port=None, open_gate=False, no_cockpit=False,
+                no_open=False) -> None:
+    """统一启动实体（被 no-arg 默认与 ``serve`` 命令共用；普通默认值，非 Option）。"""
     import uvicorn
 
     from ..config import load_settings
-    from .container import build_container
     from .scheduler import start_scheduler
     from .web import create_app
 
     settings = load_settings(config)
-    container = build_container(settings)
+    web_host = host or settings.web.host
+    web_port = port or settings.web.port
+    _ensure_port_free(web_host, web_port, "Web ")   # 预检：端口被占则不半启动
+    container, stack, mcp_host, cockpit = _boot_stack(
+        settings, open_gate=open_gate, with_cockpit=not no_cockpit, log=typer.echo)
     start_scheduler(container.pipeline, settings)
-    typer.echo(f"🌐 http://{settings.web.host}:{settings.web.port}  (AI: {container.ai_provider})")
-    uvicorn.run(
-        create_app(container), host=settings.web.host, port=settings.web.port, log_level="info"
-    )
+    typer.echo(f"🌐 Web（人类面）: http://{web_host}:{web_port}  (AI: {container.ai_provider})")
+    typer.echo(f"🔌 MCP（AI 面）: {mcp_host.url}  ← .mcp-port")
+    if cockpit is not None:
+        typer.echo(f"📊 cockpit（监控面）: {cockpit.url}  ← .cockpit-port")
+    typer.echo(f"🔐 写权模式: {stack['authority'].mode.value}"
+               "（Web 写自动取 human；AI 写需 --open-gate 或在监控面切换）")
+    if not no_open:
+        _open_browser_when_ready(web_host, web_port)   # 自动开浏览器 = 人面前台可见
+        typer.echo("🖥  已尝试打开浏览器（人面工作台）；未弹出就手动访问上面的 Web 地址。")
+    try:
+        uvicorn.run(create_app(container, stack), host=web_host, port=web_port, log_level="info")
+    except KeyboardInterrupt:
+        typer.echo("\n[serve] 收到 Ctrl+C，收尾…")
+    finally:
+        if cockpit is not None:
+            cockpit.stop()
+        mcp_host.stop()
+        stack["software"].close()
+
+
+@app.command()
+def serve(
+    config: Path = typer.Option(None, "--config", "-c", help="配置文件路径"),
+    host: str = typer.Option(None, "--host", help="Web 绑定地址（默认取 settings.web.host）"),
+    port: int = typer.Option(None, "--port", "-p", help="Web 端口（默认取 settings.web.port）"),
+    open_gate: bool = typer.Option(False, "--open-gate", help="启动即把写权开到 AI（默认 LOCKED；Web 写自动取 human）"),
+    no_cockpit: bool = typer.Option(False, "--no-cockpit", help="不起 cockpit 监控端点"),
+    no_open: bool = typer.Option(False, "--no-open", help="不自动开浏览器（人面前台）"),
+) -> None:
+    """统一启动入口：Web（人类面）+ mecha MCP（AI 面）+ cockpit（监控面）+ 每日调度，共享一个 mecha 栈。
+
+    人机同路：Web 写经 human 通道、AI 写经 ai 通道，同一道写权门 + 同一份审计。
+    dsh 经 `.mcp-port` 发现 MCP、侧边栏 iframe Web（含 `/monitor` 操作审计页）。
+    （无参数运行 `paperpilot` 等价于本命令。）
+    """
+    _serve_impl(config, host, port, open_gate, no_cockpit, no_open)
 
 
 @app.command()
@@ -210,19 +370,22 @@ def web(
 @app.command()
 def mcp(
     host: str = typer.Option("127.0.0.1", "--host"),
-    port: int = typer.Option(8780, "--port", "-p"),
-    stdio: bool = typer.Option(False, "--stdio", help="用 stdio 传输（默认 streamable-http）"),
+    port: int = typer.Option(0, "--port", "-p", help="0=自动选空闲端口（写 .mcp-port 供发现）"),
+    open_gate: bool = typer.Option(False, "--open-gate", help="启动即开 AI 写权（默认 LOCKED）"),
+    no_cockpit: bool = typer.Option(False, "--no-cockpit", help="不起 cockpit 监控端点"),
     config: Path = typer.Option(None, "--config", "-c"),
 ) -> None:
-    """起 MCP 语义通道（DSH 等 harness 经 .mcp-port 文件 attach；仅 localhost）。"""
-    from .. import mcp_server
+    """只起 mecha MCP 语义通道（headless，无 Web）；DSH 等 harness 经 .mcp-port attach。"""
+    from ..mecha_adapter import hub as mecha_hub
 
     argv = ["--host", host, "--port", str(port)]
-    if stdio:
-        argv.append("--stdio")
+    if open_gate:
+        argv.append("--open-gate")
+    if not no_cockpit:
+        argv.append("--cockpit")
     if config:
         argv += ["--config", str(config)]
-    raise typer.Exit(code=mcp_server.main(argv))
+    raise typer.Exit(code=mecha_hub.main(argv))
 
 
 @app.command()
@@ -251,49 +414,53 @@ def ai(
     import uvicorn
 
     from ..config import load_settings
-    from .container import build_container
+    from .scheduler import start_scheduler
     from .web import create_app
 
     settings = load_settings(config)
-    container = build_container(settings)
-
     if not settings.mcp.enabled:
         typer.echo("⚠ mcp.enabled=false：AI 模式需要 MCP 语义通道，仍继续启动…")
+    _ensure_port_free(settings.web.host, settings.web.port, "Web ")   # 预检：端口被占则不半启动
 
-    # 1) 后台：Web 面板（dsh 插件 iframe 它）
-    web_app = create_app(container)
+    # 1) 后台：MCP（AI 面）+ cockpit（监控面），共享一个 mecha 栈；AI 模式默认开闸到 AI
+    container, stack, mcp_host, cockpit = _boot_stack(
+        settings, open_gate=True, with_cockpit=True, log=typer.echo)
+    start_scheduler(container.pipeline, settings)
+    typer.echo(f"  MCP（AI 面）: {mcp_host.url}（.mcp-port 已写；dsh 插件据此发现）")
+    if cockpit is not None:
+        typer.echo(f"  cockpit（监控面）: {cockpit.url}（.cockpit-port 已写）")
+
+    # 2) 后台：Web 面板（dsh 侧边栏 iframe 它；含 /monitor 操作审计页）
+    web_app = create_app(container, stack)
     web_server = uvicorn.Server(
         uvicorn.Config(web_app, host=settings.web.host, port=settings.web.port, log_level="warning")
     )
     web_thread = threading.Thread(target=web_server.run, daemon=True)
     web_thread.start()
     typer.echo(f"  Web 面板: http://{settings.web.host}:{settings.web.port}（后台）")
+    if not no_open:
+        _open_browser_when_ready(settings.web.host, settings.web.port)   # 人面前台可见
 
-    # 2) 后台：MCP 语义通道（写 .mcp-port；dsh 插件据此发现）
-    from .. import mcp_server
-
-    mcp_port = mcp_server.find_free_port(settings.mcp.port)
-    mcp_server.write_port_file(mcp_port, container=container)
-    mcp_srv, _tools = mcp_server.create_server(container)
-    mcp_thread = threading.Thread(
-        target=lambda: asyncio.run(
-            mcp_server.run_streamable_http(mcp_srv, settings.mcp.host, mcp_port)
-        ),
-        daemon=True,
-    )
-    mcp_thread.start()
-    typer.echo(f"  MCP 语义通道: http://{settings.mcp.host}:{mcp_port}/mcp（端口文件已写）")
+    def _cleanup() -> None:
+        try:
+            if cockpit is not None:
+                cockpit.stop()
+            mcp_host.stop()
+            stack["software"].close()
+        except Exception:  # noqa: BLE001 - 收尾尽力
+            pass
 
     # 3) 前台：dsh harness（AI 界面 + 📄 PaperPilot 面板都在里面）
     dsh_exe = shutil.which("dsh")
-    patch = DSH_DIR / "cordis.source.patch.yml"
     if dsh_exe is None:
-        # 没有 dsh 也不空手而归：降级为纯 Web 模式（面板 + 每日调度照常）
-        typer.echo("⚠  PATH 里没有 dsh——降级为纯 Web 模式。")
+        # 没有 dsh 也不空手而归：Web + MCP + cockpit 已在后台跑，前台阻塞到 Ctrl+C
+        typer.echo("⚠  PATH 里没有 dsh——降级：Web + MCP + cockpit 已在后台跑。")
         typer.echo("   想用 AI 对话驱动，请先安装：npm i -g @deepseek-ai/dsh，再运行 paperpilot ai")
-        typer.echo(f"   Web 面板: http://{settings.web.host}:{settings.web.port}")
-        typer.echo(f"   MCP 语义通道仍在跑（http://{settings.mcp.host}:{mcp_port}/mcp），其它 harness 可 attach。")
-        _serve_forever(settings, container)
+        typer.echo(f"   Web 面板: http://{settings.web.host}:{settings.web.port}；其它 harness 可 attach MCP（{mcp_host.url}）。Ctrl+C 退出。")
+        try:
+            _wait_forever()
+        finally:
+            _cleanup()
         return
     if DSH_DIR.is_dir() and not (DSH_DIR / "node_modules").is_dir():
         typer.echo("[launcher] dsh/node_modules 缺失 → 自动 npm install（首次约 15-60s）…")
@@ -308,12 +475,9 @@ def ai(
         except Exception as exc:  # noqa: BLE001
             typer.echo(f"⚠ npm install 失败：{exc}（dsh 可能起不来）")
 
-    isolate = DSH_DIR / "cordis.isolate.patch.yml"
-    patches = [p for p in (patch, isolate) if p.exists()]
+    patches = _resolve_dsh_patches()   # 缺 patch 响亮失败，绝不静默少传（见该函数说明）
     port = dsh_port or _pick_dsh_port()
-    dsh_args = "web" + "".join(f' --patch "{p}"' for p in patches) + f" --port {port}"
-    if no_open:
-        dsh_args += " --no-open"
+    dsh_args = _dsh_argv(patches, port, no_open=no_open)
     env = None
     if debug_home:
         home = PROJECT_ROOT / ".dsh-debug"
@@ -334,42 +498,27 @@ def ai(
             typer.echo("  Web 面板与 MCP 通道仍在后台运行：http://127.0.0.1:8080")
     except KeyboardInterrupt:
         typer.echo("\n[launcher] 收到 Ctrl+C，收尾…")
+    finally:
+        _cleanup()
 
 
 @app.command("dsh-config")
 def dsh_config() -> None:
     """只读诊断：打印 dsh **组合后**配置（验证隔离 overlay 是否生效，《并存原理》§9.4①）。
 
-    期望看到：webserver 行带 `!!js ctx.webStartup.port` 表达式；remote-web-ui /
-    mcp-energy-level / mcp-re0-mecha 行带 `disabled: true`。不起服务、不改任何文件。
+    期望看到：`paperpilot` 条目在列；webserver 行带 `!!js ctx.webStartup.port` 表达式；
+    remote-web-ui / mcp-energy-level / mcp-re0-mecha 行带 `disabled: true`。
+    不起服务、不改任何文件。**patch 缺一份就响亮失败**——否则"没传"与"传了没生效"
+    在 dump 里不可区分（前者曾把 No plugin 伪装成正常启动）。
     """
     dsh_exe = shutil.which("dsh")
     if dsh_exe is None:
         typer.echo("⚠ PATH 里没有 dsh——先 npm i -g @deepseek-ai/dsh")
         raise typer.Exit(code=1)
-    patches = [DSH_DIR / "cordis.source.patch.yml", DSH_DIR / "cordis.isolate.patch.yml"]
-    args = "web" + "".join(f' --patch "{p}"' for p in patches if p.exists()) + " --dump-config"
+    patches = _resolve_dsh_patches()
+    args = "web" + "".join(f' --patch "{p}"' for p in patches) + " --dump-config"
     rc = subprocess.run(f'"{dsh_exe}" {args}', shell=True).returncode
     raise typer.Exit(code=rc)
-
-
-def _serve_forever(settings, container) -> None:
-    """dsh 缺席时的降级运行：Web + 每日调度（阻塞到 Ctrl+C）。"""
-    import uvicorn
-
-    from .scheduler import start_scheduler
-    from .web import create_app
-
-    start_scheduler(container.pipeline, settings)
-    try:
-        uvicorn.run(
-            create_app(container),
-            host=settings.web.host,
-            port=settings.web.port,
-            log_level="info",
-        )
-    except KeyboardInterrupt:
-        typer.echo("\n[launcher] 收到 Ctrl+C，收尾…")
 
 
 def _wait_forever() -> None:

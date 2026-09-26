@@ -383,3 +383,94 @@ def test_unknown_config_key_is_teachable(tmp_path):
     _container, stack = _stack(tmp_path)
     out = _call(stack["tools"], "set_config", key="scoring.thresholdX", value=0.5)
     assert out["ok"] is False and out["error"]["kind"] == "unknown_key"
+
+
+# ======================================================== 设计师复审回归（三项修复）
+def test_write_reason_reaches_domain_journal(tmp_path):
+    """复审①：操作者的 reason 必须落进**域 journal**（repo.events），不只是 mecha 审计。
+
+    能红：若 reason 未在命令 required 里声明，会被 RESERVED_ARGS 剥掉 → 域 journal
+    的 reason 为空，此断言失败。
+    """
+    container, stack = _stack(tmp_path)
+    tools = stack["tools"]
+    _call(tools, "add_note", arxiv_id="2608.01101", content="x", reason="因为要复核")
+    events = container.repo.events_since(since_seq=0, actor="ai", op="add_note")
+    assert "因为要复核" in [e["reason"] for e in events["events"]]
+    # mecha History 审计侧同一 reason（两份 journal 的 reason 维度互引不断裂）
+    audits = [e for e in stack["history"].events() if e.key == "command.add_note"]
+    assert audits and audits[-1].reason == "因为要复核"
+
+
+def test_gate_config_override_does_not_mutate_shared_settings(tmp_path):
+    """复审②：gate 配置经**线程局部覆盖**作用于 run，**不改共享 settings**（并发安全）。
+
+    能红：旧的 mutate-restore 会在运行窗口内改 container.settings（并发的人类路径
+    误读 AI 配置）；现改为线程局部覆盖，共享 settings 始终不变。
+    """
+    container, stack = _stack(tmp_path)
+    tools = stack["tools"]
+    original_max = container.settings.scoring.max_papers
+    _call(tools, "set_config", key="scoring.max_papers", value=1)
+    assert stack["gate"].snapshot["scoring.max_papers"] == 1
+    out = _call(tools, "run_pipeline", force=True)
+    assert out["ok"] and out["selected"] <= 1          # gate 配置对本次 run 生效
+    # 共享 settings 未被就地改：并发的 Web/scheduler/CLI 路径不会误读到 gate 值
+    assert container.settings.scoring.max_papers == original_max
+
+
+def test_undo_result_ref_cross_references_undone_seq(tmp_path):
+    """复审③：undo 命令的 result_ref 带 ``undone_seq``（最该被追溯的撤销不断互引）。
+
+    能红：_REF_KEYS 写成 ``undid_seq`` 时 result_ref=None，此断言失败。
+    """
+    _container, stack = _stack(tmp_path)
+    tools = stack["tools"]
+    _call(tools, "add_note", arxiv_id="2608.01101", content="待撤销")
+    out = _call(tools, "undo_change", seq=0)
+    assert out["ok"]
+    audits = [e for e in stack["history"].events() if e.key == "command.undo_change"]
+    assert audits, "undo 应落一条命令审计"
+    ref = audits[-1].value["result_ref"]
+    assert ref is not None and ref.get("undone_seq") is not None
+
+
+# ============================================= 从旧 test_journal/test_mcp_* 迁移的覆盖
+def test_write_attributed_to_ai_and_undoable(tmp_path):
+    """（迁自 test_journal）写入归因 actor=ai + reason 落域 journal；undo 可撤销。"""
+    container, stack = _stack(tmp_path)
+    tools = stack["tools"]
+    out = _call(tools, "star_paper", arxiv_id="2608.01101", reason="AI 觉得值得收藏")
+    assert out["ok"] and out["star"] is True
+    events = container.repo.events_since(since_seq=0, actor="ai", op="star_paper")
+    assert events["events"] and events["events"][0]["reason"] == "AI 觉得值得收藏"
+    undone = _call(tools, "undo_change", seq=0, reason="撤销收藏")
+    assert undone["ok"] and undone["op"] == "star_paper"
+    detail = _call(tools, "read_paper", arxiv_id="2608.01101")
+    assert detail["reading"]["star"] is False
+
+
+def test_undo_irreversible_is_teachable(tmp_path):
+    """（迁自 test_journal）撤销不可逆操作（简报定稿）→ 可教学拒绝。"""
+    _container, stack = _stack(tmp_path)
+    tools = stack["tools"]
+    _call(tools, "run_pipeline", force=True, reason="AI 跑批")
+    activity = _call(tools, "read_activity", op="save_briefing", limit=5)
+    assert activity["events"], "定稿应落一条 save_briefing 事件"
+    seq = activity["events"][0]["seq"]
+    out = _call(tools, "undo_change", seq=seq, reason="想撤")
+    assert out["ok"] is False and out["error"]["kind"] == "irreversible"
+    assert out["error"]["hint"]
+
+
+def test_read_capability_catch_all_has_hint(tmp_path, monkeypatch):
+    """（迁自 test_journal）未分类异常的回程也必须可教学（带 hint）。"""
+    container, stack = _stack(tmp_path)
+
+    def boom(_arxiv_id):
+        raise ValueError("模拟未分类错误")
+
+    monkeypatch.setattr(container.repo, "get_paper", boom)
+    out = _call(stack["tools"], "read_paper", arxiv_id="2608.01101")
+    assert out["ok"] is False and out["error"]["kind"] == "ValueError"
+    assert out["error"]["hint"], "兜底错误必须带 hint"

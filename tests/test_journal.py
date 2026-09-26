@@ -8,8 +8,6 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -197,69 +195,3 @@ def test_events_since_filters(loaded):
     # diff-since-seq：从 last_seq 之后没有新事件
     nothing = loaded.events_since(since_seq=all_events["last_seq"], limit=50)
     assert nothing["count"] == 0
-
-
-# ---------------------------------------------------------------- MCP 工具面
-def test_mcp_writes_are_attributed_to_ai(tmp_path):
-    from paperpilot.app.container import build_container
-    from paperpilot.mcp_server import create_server
-
-    container = build_container(make_settings_for(tmp_path))
-    container.repo.upsert_papers(parse_atom(SAMPLE_XML.read_text(encoding="utf-8")))
-    _srv, tools = create_server(container)
-
-    out = json.loads(tools["star_paper"](arxiv_id="2608.01101", reason="AI 觉得值得收藏"))
-    assert out["ok"] and out["star"] is True
-
-    activity = json.loads(tools["get_activity"](limit=10))
-    star_events = [e for e in activity["events"] if e["op"] == "star_paper"]
-    assert star_events and star_events[0]["actor"] == "ai"
-    assert star_events[0]["reason"] == "AI 觉得值得收藏"
-
-    # undo 工具：撤销 AI 自己的收藏
-    out = json.loads(tools["undo"](seq=0, reason="撤销收藏"))
-    assert out["ok"] and out["op"] == "star_paper"
-    detail = json.loads(tools["get_paper"](arxiv_id="2608.01101"))
-    assert detail["reading"]["star"] is False
-
-
-def test_mcp_undo_irreversible_teachable(tmp_path):
-    from paperpilot.app.container import build_container
-    from paperpilot.mcp_server import create_server
-
-    container = build_container(make_settings_for(tmp_path))
-    container.repo.upsert_papers(parse_atom(SAMPLE_XML.read_text(encoding="utf-8")))
-    _srv, tools = create_server(container)
-    json.loads(tools["run_pipeline"](force=True, reason="AI 跑批"))
-
-    activity = json.loads(tools["get_activity"](op="save_briefing", limit=5))
-    assert activity["events"]
-    out = json.loads(tools["undo"](seq=activity["events"][0]["seq"], reason="想撤"))
-    assert out["ok"] is False
-    assert out["error"]["kind"] == "irreversible"
-    assert out["error"]["hint"]
-
-
-def test_mcp_catch_all_error_has_hint(tmp_path, monkeypatch):
-    """P2：未分类异常的回程也必须可教学。"""
-    from paperpilot.app.container import build_container
-    from paperpilot.mcp_server import create_server
-
-    container = build_container(make_settings_for(tmp_path))
-    container.repo.upsert_papers(parse_atom(SAMPLE_XML.read_text(encoding="utf-8")))
-    _srv, tools = create_server(container)
-
-    def boom(_arxiv_id):
-        raise ValueError("模拟未分类错误")
-
-    monkeypatch.setattr(container.repo, "get_paper", boom)
-    out = json.loads(tools["get_paper"](arxiv_id="2608.01101"))
-    assert out["ok"] is False
-    assert out["error"]["kind"] == "ValueError"
-    assert out["error"]["hint"], "兜底错误必须带 hint"
-
-
-def make_settings_for(tmp_path):
-    from .conftest import make_settings
-
-    return make_settings(tmp_path / "data")

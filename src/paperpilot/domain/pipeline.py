@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import uuid
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -52,6 +54,30 @@ log = logging.getLogger("paperpilot.pipeline")
 # 交给 AI 评审的候选上限（防 context 爆炸；回程体积纪律同 Energy Level I4）
 _MAX_REVIEW_CANDIDATES = 40
 _REVIEW_ABSTRACT_CHARS = 700
+
+#: 本次运行（当前线程）的配置覆盖：线程隔离，**不改共享 settings**。
+#: 供 mecha 适配层把 Gate 里的配置态权威地作用于单次 Engine.run，而不污染
+#: Web「立即运行」/scheduler/CLI 等并发线程读到的人类配置（settings.yaml）。
+_CONFIG_OVERRIDE = threading.local()
+
+
+@contextmanager
+def pipeline_config_override(*, scoring=None, lookback_days: int | None = None):
+    """在当前线程临时覆盖评分/回溯配置（None = 不覆盖）；退出即还原。
+
+    线程局部 ⇒ 并发运行互不干扰（无锁、无共享可变状态）。覆盖对象应是
+    ``ScoringCfg`` 的副本（如 ``settings.scoring.model_copy(update=…)``），
+    调用方不要传共享实例再去改它。
+    """
+    prev_scoring = getattr(_CONFIG_OVERRIDE, "scoring", None)
+    prev_lookback = getattr(_CONFIG_OVERRIDE, "lookback_days", None)
+    _CONFIG_OVERRIDE.scoring = scoring
+    _CONFIG_OVERRIDE.lookback_days = lookback_days
+    try:
+        yield
+    finally:
+        _CONFIG_OVERRIDE.scoring = prev_scoring
+        _CONFIG_OVERRIDE.lookback_days = prev_lookback
 
 
 @dataclass
@@ -97,6 +123,17 @@ class DailyPipelineService:
         self.notifier = notifier
         self.blocked_authors = blocked_authors
         self.ai_provider = ai_provider
+
+    # ---- 生效配置（线程局部覆盖优先，否则回落共享 settings）----
+    def _eff_scoring(self):
+        """本次运行生效的评分配置：线程局部覆盖优先，无覆盖则用 settings.scoring。"""
+        override = getattr(_CONFIG_OVERRIDE, "scoring", None)
+        return self.settings.scoring if override is None else override
+
+    def _eff_lookback_days(self) -> int:
+        """本次运行生效的回溯天数：线程局部覆盖优先，无覆盖则用 settings。"""
+        override = getattr(_CONFIG_OVERRIDE, "lookback_days", None)
+        return self.settings.lookback_days if override is None else override
 
     # ================================================================== 一键全流程
     def run(
@@ -342,7 +379,7 @@ class DailyPipelineService:
         candidates: list[tuple[Topic, list[Paper]]] = []
         for topic in self.repo.enabled_topics():
             papers = self.repo.candidates_for_topic(
-                topic, lookback_days=self.settings.lookback_days
+                topic, lookback_days=self._eff_lookback_days()
             )
             if papers:
                 candidates.append((topic, papers))
@@ -434,12 +471,13 @@ class DailyPipelineService:
         for paper, topic, score in best.values():
             by_topic.setdefault(topic.id, []).append((paper, score))
 
+        scoring = self._eff_scoring()
         base_policy = SelectionPolicy(
-            threshold=self.settings.scoring.threshold,
-            quota_per_topic=self.settings.scoring.quota_per_topic,
-            max_papers=self.settings.scoring.max_papers,
-            max_per_author=self.settings.scoring.max_per_author,
-            must_read_cap=self.settings.scoring.must_read_cap,
+            threshold=scoring.threshold,
+            quota_per_topic=scoring.quota_per_topic,
+            max_papers=scoring.max_papers,
+            max_per_author=scoring.max_per_author,
+            must_read_cap=scoring.must_read_cap,
         )
         selected: list[tuple[Paper, Topic, RelevanceScore]] = []
         archived: list[tuple[Paper, Topic, RelevanceScore]] = []

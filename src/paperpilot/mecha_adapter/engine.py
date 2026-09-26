@@ -15,6 +15,7 @@ from mecha.errors import GateDenied, UnknownKey
 from mecha.surface import Engine, ExecutionContext
 
 from .. import capabilities
+from ..domain.pipeline import pipeline_config_override
 
 #: 可写标量配置键的类型/值域（Phase 2 迁入 Gate；单一来源在此声明）。
 #: 变长配置（主题列表）不在此列——它走命令，不走 flat-KV 门（交接文档 §7 Phase 2）。
@@ -71,12 +72,11 @@ class PaperPilotEngine(Engine):
                     "selected": 0, "error": {"kind": "cancelled",
                                              "message": "运行前已请求取消"}}
         context.report_progress(0.1, "pipeline start")
-        # 配置态归 Gate（Scheme E）：把 gate 快照里的标量叠加到本次运行，让
-        # set_config 真正对流水线生效（否则 gate 配置只是装饰 = 假绿）。叠加是
-        # 临时的（跑完还原 settings）——gate 是 AI 运行路径的配置权威，settings.yaml
-        # 是人类路径（Web/CLI）与启动种子的来源；二者分叉记进 n=3 报告。
-        restore = self._apply_gate_config()
-        try:
+        # 配置态归 Gate（Scheme E）：把 gate 快照的标量作为**本次运行的线程局部
+        # 覆盖**传给流水线——线程隔离、**不改共享 settings**，故 Web「立即运行」/
+        # scheduler/CLI 并发运行不会误读到 AI 的 gate 配置（消除旧 mutate-restore 的竞争窗口）。
+        scoring, lookback = self._gate_config_override()
+        with pipeline_config_override(scoring=scoring, lookback_days=lookback):
             res = capabilities.invoke(
                 self._container, "run_pipeline",
                 date=str(spec.get("date") or ""),
@@ -84,8 +84,6 @@ class PaperPilotEngine(Engine):
                 actor=str(spec.get("actor") or "ai"),
                 reason=str(spec.get("reason") or ""),
             )
-        finally:
-            restore()
         context.report_progress(1.0, "pipeline done")
         # 回执必须含 run_output_required 键（失败信封也要补齐，surface.run 会校验）。
         out = dict(res)
@@ -95,28 +93,27 @@ class PaperPilotEngine(Engine):
 
     # ---- 配置叠加（run 的内部助手）----
 
-    def _apply_gate_config(self):
-        """把 gate 快照里的标量配置叠加到 settings，返回还原回调（无 gate 则空操作）。"""
-        if self._gate is None:
-            return lambda: None
-        snap = self._gate.snapshot
-        s = self._container.settings
-        targets = (("lookback_days", s, "lookback_days"),
-                   ("scoring.threshold", s.scoring, "threshold"),
-                   ("scoring.quota_per_topic", s.scoring, "quota_per_topic"),
-                   ("scoring.max_papers", s.scoring, "max_papers"),
-                   ("scoring.max_per_author", s.scoring, "max_per_author"),
-                   ("scoring.must_read_cap", s.scoring, "must_read_cap"))
-        saved: list[tuple] = []
-        for key, obj, attr in targets:
-            if key in snap and snap[key] is not None:
-                saved.append((obj, attr, getattr(obj, attr)))
-                setattr(obj, attr, snap[key])
+    def _gate_config_override(self):
+        """从 gate 快照造本次运行的配置覆盖（scoring 副本 + lookback）；无 gate 则 (None, None)。
 
-        def restore() -> None:
-            for obj, attr, old in reversed(saved):
-                setattr(obj, attr, old)
-        return restore
+        **不改共享 settings**：返回 ``ScoringCfg`` 的副本，交
+        ``pipeline_config_override`` 做线程局部覆盖（并发安全）。
+        """
+        if self._gate is None:
+            return None, None
+        snap = self._gate.snapshot
+        settings = self._container.settings
+        lookback = snap.get("lookback_days")
+        updates: dict[str, object] = {}
+        for key, attr in (("scoring.threshold", "threshold"),
+                          ("scoring.quota_per_topic", "quota_per_topic"),
+                          ("scoring.max_papers", "max_papers"),
+                          ("scoring.max_per_author", "max_per_author"),
+                          ("scoring.must_read_cap", "must_read_cap")):
+            if key in snap and snap[key] is not None:
+                updates[attr] = snap[key]
+        scoring = settings.scoring.model_copy(update=updates) if updates else None
+        return scoring, lookback
 
     # ---- 必实现 ③：summary ----
 

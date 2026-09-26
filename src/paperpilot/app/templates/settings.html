@@ -4,12 +4,15 @@
 <h1>设置</h1>
 
 <h2>运行状态</h2>
+<p class="muted">“跑批”= <b>无人值守的一条龙</b>（抓论文→打分→精读→生成今日日报），按上面“AI 档位”用引擎：
+  <code>unified</code>=后台直连 LLM API、<code>heuristic</code>=本地关键词打分（不联网也能出报），
+  <b>都不需要你在对话框里发起</b>。想跟 AI 逐篇评审协作，去 dsh（对话轨：prepare→submit→finalize）。</p>
 <div class="card">
   <div class="row" style="align-items:center;">
     <div style="flex:2;">
       <div class="kv"><b>AI 档位</b><code>{{ container.ai_provider }}</code>
         {% if container.ai_note %}<span class="muted">（{{ container.ai_note }}）</span>{% endif %}</div>
-      <div class="kv"><b>最近一次运行</b>
+      <div class="kv"><b>最近一次跑批</b>
         {% if last_run %}
           {{ last_run.started_at.strftime("%Y-%m-%d %H:%M") }} · {{ last_run.status }}
           {% if last_run.error %}<span style="color:var(--warn)">{{ last_run.error }}</span>{% endif %}
@@ -18,12 +21,13 @@
       <div class="kv"><b>库内论文</b>
         {% for k, v in counts.items() %}<span class="chip">{{ k }} {{ v }}</span>{% endfor %}
       </div>
-      <div class="kv"><b>调度</b>每天 {{ settings.schedule.daily_at }}{{ "（已启用）" if settings.schedule.enabled else "（未启用）" }}</div>
+      <div class="kv"><b>定时</b>每天 {{ settings.schedule.daily_at }}{{ "（已启用，自动出报）" if settings.schedule.enabled else "（未启用）" }}</div>
     </div>
     <div style="flex:1; text-align:right;">
       <form method="post" action="/settings/run">
-        <button>{{ "立即跑批" }}{{ "（进行中…）" if container.run_state.running else "" }}</button>
+        <button>{{ "立即生成今日日报" }}{{ "（进行中…）" if container.run_state.running else "" }}</button>
       </form>
+      <div class="muted" style="margin-top:6px;">等价于手动触发一次定时任务</div>
     </div>
   </div>
 </div>

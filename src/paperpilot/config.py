@@ -80,7 +80,11 @@ class WebCfg(BaseModel):
 
 
 class MCPCfg(BaseModel):
-    """MCP 语义通道（DSH 等 harness 的接入点；仅 localhost）。"""
+    """MCP 语义通道（mecha 投影；DSH 等 harness 的接入点，仅 localhost）。
+
+    实际端口由 mecha ``McpEndpoint`` 自动选（port=0）并写 ``.mcp-port`` 供发现；
+    ``host`` 供绑定地址，``enabled`` 控制 AI 模式是否提醒。``port`` 为兼容保留（当前不钉端口）。
+    """
 
     enabled: bool = True
     host: str = "127.0.0.1"
