@@ -1,8 +1,8 @@
 """Web=human 侧写权接线测试（统一启动 stack 传入时）。
 
 验证：Web 的论文库写经 mecha 命令面（human 通道 + 写权门 + 双 journal 审计）、
-`/monitor` 操作审计页渲染、写权模式切换（人类侧开闸）。stack=None 的回退路径
-（直调 retrieval）由 test_web.py 覆盖。
+**`/settings` 的写权模式卡**（2026-09-26 从 `/monitor` 页搬来）、写权模式切换（人类侧开闸，
+**口令 + fail-closed**）。stack=None 的回退路径（直调 retrieval）由 test_web.py 覆盖。
 """
 
 from __future__ import annotations
@@ -64,25 +64,32 @@ def test_web_add_note_gated(tmp_path):
     assert container.repo.events_since(since_seq=0, actor="human", op="add_note")["count"] >= 1
 
 
-def test_monitor_page_renders_operator_audit(tmp_path):
-    """/monitor 渲染操作者审计面（写权模式 + 概括 + 近期命令审计）。"""
+def test_settings_shows_write_mode_card(tmp_path):
+    """写权模式卡在 `/settings` 上（原 `/monitor` 页退役后搬到这里）：显示当前模式 + 口令框。
+
+    ⚠ 原 `test_monitor_page_renders_operator_audit` 测的是"服务端渲染的审计视图"——
+    该视图**已退役**（AI 监控改走 dsh 共享资产的原生 tab）⇒ 那条判据随之删除；
+    命令审计仍在（mecha History / cockpit 端点 / dsh 面板），只是**不再由 Web 渲染**。
+    """
     client, _container, stack = _gated(tmp_path)
-    client.post("/papers/2608.01101/star", follow_redirects=False)
-    page = client.get("/monitor")
+    client.post("/papers/2608.01101/star", follow_redirects=False)   # Web 写 ⇒ 自动取 human
+    page = client.get("/settings")
     assert page.status_code == 200
-    assert "操作审计" in page.text
-    assert "human" in page.text                 # 写权模式已被 Web 写取到 human
-    assert "command.star_paper" in page.text     # 命令审计可见
+    assert "写权模式" in page.text
+    assert "human" in page.text
+    assert "/monitor/mode" in page.text          # 控制端点路径未动（只换 UI 落点）
+    assert "控制口令" in page.text
 
 
-def test_monitor_page_without_stack_is_honest(tmp_path):
-    """无 stack（独立 Web）时 /monitor 如实报未接监控面，不假装空。"""
+def test_settings_without_stack_is_honest(tmp_path):
+    """无 stack（独立 Web）时，写权卡如实报'未接监控面'，不假装有个可切的模式。"""
     settings = make_settings(tmp_path / "data")
     container = build_container(settings)
     client = TestClient(create_app(container))     # 不传 stack
-    page = client.get("/monitor")
+    page = client.get("/settings")
     assert page.status_code == 200
     assert "未接监控面" in page.text
+    assert "/monitor/mode" not in page.text        # 没有可点的控件（不发无意义的请求）
 
 
 def test_mode_switch_grants_ai_then_human_write_preempts(tmp_path, control_token):
@@ -151,16 +158,30 @@ def test_mode_switch_fails_closed_when_no_token_published(tmp_path, monkeypatch)
     assert "口令不对" in resp_wrong.text
 
 
-def test_monitor_page_reports_control_token_state(tmp_path, control_token):
-    """有口令时：页面**要**口令，并把边界（挡进程不挡 AI）写在明面上。"""
+def test_settings_reports_control_token_state(tmp_path, control_token):
+    """有口令时：`/settings` 那张卡**要**口令，并把边界（挡进程不挡 AI）写在明面上。"""
     client, _container, _stack = _gated(tmp_path)
-    page = client.get("/monitor").text
+    page = client.get("/settings").text
     assert "控制口令" in page
     assert "挡不住能读你文件的 AI" in page
 
 
-def test_monitor_page_reports_missing_token(tmp_path, monkeypatch):
-    """无口令时：页面如实说"会被一律拒绝"（fail-closed 让人看得见）。"""
+def test_settings_reports_missing_token(tmp_path, monkeypatch):
+    """无口令时：如实说"会被一律拒绝"（fail-closed 让人看得见）。"""
     monkeypatch.setattr(ct, "control_token_path", lambda: tmp_path / "no-such-token")
     client, _container, _stack = _gated(tmp_path)
-    assert "未发布控制口令" in client.get("/monitor").text
+    assert "未发布控制口令" in client.get("/settings").text
+
+
+def test_old_monitor_view_is_gone(tmp_path):
+    """⭐ `/monitor` 视图**确实退役了**（不是"忘了删"）：404，且导航里没有它的链接。
+
+    这条守的是**删除类改动**的收尾（R14/R13）：删掉的东西**不该还能被访问**，
+    也不该在导航/文档里留悬空入口。
+    """
+    client, _container, _stack = _gated(tmp_path)
+    assert client.get("/monitor").status_code == 404
+    nav = client.get("/").text
+    assert 'href="/monitor"' not in nav
+    # 唯一还活着的 /monitor* 是**控制端点**（POST；GET 一律 405/404，不是页面）
+    assert client.get("/monitor/mode").status_code in (404, 405)
