@@ -18,6 +18,18 @@ declare module '@deepseek-ai/cordis' {
       toggleSidebar?(): void
     }
     /**
+     * 右栏页签服务（dsh web client 提供）。**监控面板走它**（原生 tab，dsh 自管页签与布局）：
+     * `openTab` 打开我们的页签；`closeTab` 在切回「📄 简报」时关掉它（两面板互斥，见 client/index.ts）。
+     */
+    sidebarRight?: {
+      openTab?(id: string): void
+      closeTab?(id: string): void
+    }
+    /** 注册右栏页签类型（`title()` 给 dsh 画页签名；`kind` 与 `sidebar.right.pane.tab` 的 key 对应）。 */
+    sidebarRightTabs?: {
+      register?(spec: { id: string; kind: string; title: () => string }): unknown
+    }
+    /**
      * **scoped effect**：等 `deps` 里的服务就绪再跑回调，**回调返回值即 disposer**。
      * 与顶层 `export const inject` 的区别是"缺服务只是这段不跑"，而不是整个插件不激活
      * （后者会把"面板没有 web 服务"升级成"AI 工具也没了"）。

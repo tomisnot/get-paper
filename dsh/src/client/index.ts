@@ -10,14 +10,20 @@
  * 跨 scope（按钮 session / iframe root）的模式状态由模块级 mode-store 桥接；
  * 注册与副作用都经 `ctx.effect` 可逆。
  *
- * ## ⚠「◈ 监控」不在这里了（**另一个面，另一种形态**）
+ * ## 两个面（**两种形态，所以互斥**）
  *
- * AI 监控面板**不再是本插件的 iframe 视图**：它改走共享资产 `dsh-panel/` 的**原生 tab**
- * （数据层 `panelData.ts`、呈现 `MonitorTabBody.tsx`，用户点名"几乎完全复用 EL，布局也是"）。
- * 本文件**故意不保留**它的旧链（旧的 Web `/monitor` 页 + iframe + `panel-state`/`panel-probe`
- * 的 monitor 视图）——**留着就是两套视图并存的漂移源**。
- * ⚠ **两个面板共用右栏 ⇒ 必须互斥**：抄装监控 tab 时，`openCockpit` 里先
- * `setPanelMode(false)`（收起本 iframe），点 📄简报 时先 `sidebarRight.closeTab(...)`。
+ * * **📄 简报**（可视化面）= **本文件的 iframe 链**：`openRightbar` 打开右栏 + 把 PaperPilot
+ *   Web 挂进右栏列（`[data-rightbar-col]`）+ 自动关左栏；再点 → 复原。地址走同源只读路由
+ *   （见下），判定在 `panel-state.ts`，两跳可达性在 `panel-probe.ts`。
+ * * **◈ 监控**（AI 干了什么）= **共享资产 `dsh-panel/` 的原生页签**：数据层 `panel-data.ts`、
+ *   呈现 `panel-view.ts`、壳 `MonitorTabBody.tsx`（**本项目只提供参数块**）。注册形状抄 EL。
+ *
+ * ⚠ **两面板共用右栏 ⇒ 必须互斥**（D1 裁决）：开监控先 `setPanelMode(false)` 收起 iframe；
+ * 打开简报先 `sidebarRight.closeTab(...)` 关掉页签。**两种东西同时开会打架，这是设计不是缺陷。**
+ *
+ * 贡献：① 会话头部「📄 简报」「◈ 监控」两个按钮（`conversation.session.header.actions`）；
+ * ② 右栏页签类型 + body（`sidebarRightTabs` / `sidebar.right.pane.tab`）；③ 简报面板的 CSS
+ * 与 iframe 挂载/取址。跨 scope 的模式状态由模块级 mode-store 桥接；注册与副作用经 `ctx.effect` 可逆。
  *
  * ## 地址**不再**来自注入的 bootstrap
  *
@@ -35,19 +41,28 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { BriefingPanel } from './BriefingPanel.tsx'
 import { PANEL_MODE_CSS } from './panel-mode-css.ts'
-import { getPanelMode, subscribePanelMode } from './mode-store.ts'
+import { getPanelMode, setPanelMode, subscribePanelMode } from './mode-store.ts'
 import { PANEL_CONFIG } from '../panel/panel-config.ts'
 import { assertNever, fetchMonitorBase } from '../panel/monitor-client.ts'
+import { MonitorTabBody } from '../panel/MonitorTabBody.tsx'
+import { MonitorButton, type MonitorInjected } from './MonitorButton.tsx'
 import { probeReachable } from './panel-probe.ts'
 import { renderPanel, type PanelRender } from './panel-state.ts'
 
 /** Cordis 插件名（与 host 半一致）。 */
 export const name = 'paperpilot'
 
-/** 需要 web client 的服务：slots（挂按钮）+ layout（开/关右栏、关左栏）。
+/** 需要 web client 的服务：slots（挂按钮）+ layout（开/关右栏、关左栏）
+ *  + `sidebarRight` / `sidebarRightTabs`（**监控面板走 dsh 原生页签**）。
  *  Cordis ctx 是代理：未在 inject 声明的服务一访问就抛
- *  "cannot get property X without inject"，故 layout 必须在此声明。 */
-export const inject = ['slots', 'layout']
+ *  "cannot get property X without inject"，故用到的必须在此声明。
+ *  ⚠ 与 EL 同款**顶层 inject**（D2 裁决：保持与参考同形，"几乎完全复用 EL"是目标）。
+ *  已知隐患（已记账、另批一次修两家）：**缺任一服务 ⇒ 整个 client 插件不激活**
+ *  （面板与简报按钮一起消失），而不是"只少一个能力"。 */
+export const inject = ['slots', 'layout', 'sidebarRight', 'sidebarRightTabs']
+
+/** 监控面板的右栏页签 id；`kind` 与 `sidebar.right.pane.tab` 的 key **必须一致**。 */
+const MONITOR_TAB_ID = 'pp-monitor'
 
 /** 错误态自动重试间隔（展示刷新，非正确性依赖）。 */
 const RETRY_MS = 2500
@@ -65,6 +80,35 @@ export async function apply(ctx: Context): Promise<void> {
       ctx.slots.register(
         { name: 'conversation.session.header.actions', id: 'pp-briefing', order: 200 },
         BriefingPanel,
+      ))
+
+    // ---- ⭐ AI 监控 = **共享资产的原生页签**（抄 EL 的注册形状；布局在 panel-view.ts 里） ----
+    // 「◈ 监控」按钮：**先收起简报面板**（D1 互斥）→ 开右栏 → 打开我们的页签。
+    // 按钮不自己开合（宿主侧动作），与 EL 的 `buttons.tsx` 同形。
+    const disposeMonitorBtn = ctx.slots.inject('conversation.session.header.actions', () =>
+      ctx.slots.register(
+        { name: 'conversation.session.header.actions', id: MONITOR_TAB_ID, order: 201,
+          label: '◈ 监控',
+          inject: (): MonitorInjected => ({
+            openCockpit: () => {
+              setPanelMode(false)                       // D1：互斥——先把简报 iframe 收掉
+              ctx.layout?.openRightbar?.(true, false)
+              try { ctx.sidebarRight?.openTab?.(MONITOR_TAB_ID) } catch { /* 降级：右栏开了但没切页签 */ }
+            },
+          }) } as never,
+        MonitorButton,
+      ))
+
+    // 页签类型 + body：**数据/呈现全部来自共享资产**（`panel-data.ts` / `panel-view.ts` /
+    // `MonitorTabBody.tsx`），本项目只提供参数块（路由 / 端口文件 / 标题）。零 react 判据落在
+    // 资产那四份自测里；`.tsx` 壳只过 typecheck。
+    const releaseTabType = ctx.sidebarRightTabs?.register?.({
+      id: MONITOR_TAB_ID, kind: MONITOR_TAB_ID, title: () => PANEL_CONFIG.TITLE,
+    }) ?? null
+    const disposeTabBody = ctx.slots.inject('sidebar.right.pane.tab', () =>
+      ctx.slots.register(
+        { name: 'sidebar.right.pane.tab', key: MONITOR_TAB_ID } as never,
+        MonitorTabBody as never,
       ))
 
     // ---- 模式副作用：右栏=PaperPilot 简报 iframe + 左栏自动关 ----
@@ -184,6 +228,9 @@ export async function apply(ctx: Context): Promise<void> {
     const unsub = subscribePanelMode(() => {
       const on = getPanelMode()
       if (on) {
+        // D1 互斥的另一半：**打开简报面板时先关掉监控页签**——两者是两种东西
+        // （iframe + CSS 重排三列 vs dsh 原生页签），同时开会打架。
+        try { ctx.sidebarRight?.closeTab?.(MONITOR_TAB_ID) } catch { /* 降级 */ }
         // 运行版 dsh(0.1.5-rc.2) 的 ctx.layout 是 openRightbar/closeRightbar（非 openDetails）；
         // 全部可选链：API 缺失时降级不崩整站。openRightbar(true,false)=预留右栏 grid track。
         ctx.layout?.openRightbar?.(true, false)
@@ -207,9 +254,12 @@ export async function apply(ctx: Context): Promise<void> {
     return () => {
       unsub()
       unmountPanel()
+      if (disposeTabBody) { try { disposeTabBody() } catch { /* ignore */ } }
+      if (typeof releaseTabType === 'function') { try { releaseTabType() } catch { /* ignore */ } }
+      try { disposeMonitorBtn?.() } catch { /* ignore */ }
       try { disposeBtn?.() } catch { /* ignore */ }
       style.remove()
       document.documentElement.removeAttribute('data-pp-panel')
     }
-  }, 'paperpilot: briefing panel')
+  }, 'paperpilot: briefing iframe + monitor tab')
 }
