@@ -40,7 +40,7 @@ flowchart TB
         S1[DailyPipelineService]
         S2[RetrievalService]
         S3[ProfileService]
-        S4[Scheduler + CLI]
+        S4[CLI 入口]
     end
 
     subgraph L3["领域层 · Domain（纯业务，无 IO）"]
@@ -60,7 +60,7 @@ flowchart TB
     I3 -.->|未来替换| AIU[统一 AI 框架 Adapter]
 ```
 
-**依赖方向单向向内**：Infra 实现 Domain 定义的 Port；Domain 不认识 arXiv、SQLite、HTTP。Scheduler 只负责「什么时候跑」，跑什么完全由 DailyPipelineService 决定。
+**依赖方向单向向内**：Infra 实现 Domain 定义的 Port；Domain 不认识 arXiv、SQLite、HTTP。
 
 ### 2.1 每日数据流
 
@@ -102,7 +102,6 @@ arXiv API ──► ArxivFetcher ──► PaperNormalizer ──► SQLite(pape
 | `infra.render.BriefRenderer` | Briefing → Markdown/HTML | `Briefing` → str |
 | `infra.notify.Notifier` | Webhook/邮件推送（默认关闭） | `Briefing` → 发送结果 |
 | `app.web` | FastAPI 路由 + Jinja2 模板 + HTMX | HTTP ↔ Service |
-| `app.scheduler` | APScheduler 每日任务；CLI 手动入口 | 时钟/命令 → Pipeline |
 
 ---
 
@@ -362,7 +361,7 @@ erDiagram
 | `/settings/run` | 触发一次运行 | HTMX POST，进度条轮询 |
 | `/healthz` | 健康检查 | 供 CLI/调度器探测 |
 
-运行方式：`paperpilot web` → `http://127.0.0.1:8080`；`paperpilot run daily` 跑当天流水线；`paperpilot fetch --days 3` 补抓。定时用进程内 APScheduler（默认 07:30），失效时用 Windows 任务计划/cron 调 CLI 兜底。
+运行方式：`paperpilot web` → `http://127.0.0.1:8080`；`paperpilot run daily` 跑当天流水线；`paperpilot fetch --days 3` 补抓。无常驻定时（2026-09-26 用户裁决删调度器）：想看日报就打开软件点「立即生成」或到 dsh 让 AI 跑——脉冲式，用完即走。
 
 ---
 
@@ -372,9 +371,9 @@ erDiagram
 Get Paper/
 ├── README.md
 ├── docs/                     ← 文档：PRINCIPLES.md（宪法）→ SPEC.md（要实现什么）→ DESIGN.md（本文档）；GAPS.md
-├── pyproject.toml            ← 依赖 (fastapi, uvicorn, sqlalchemy, jinja2, httpx, feedparser, apscheduler, pydantic, pyyaml, ruff, pytest)
+├── pyproject.toml            ← 依赖 (fastapi, uvicorn, sqlalchemy, jinja2, httpx, feedparser, pydantic, pyyaml, ruff, pytest)
 ├── config/
-│   └── settings.yaml         ← 主题、阈值、AI provider、通知、调度
+│   └── settings.yaml         ← 主题、阈值、AI provider、通知
 ├── src/paperpilot/
 │   ├── __init__.py
 │   ├── config.py             ← pydantic-settings 加载 yaml/env
@@ -394,7 +393,6 @@ Get Paper/
 │   │   ├── container.py      ← DI 绑定：Port → 实现（按 settings.ai.provider）
 │   │   ├── web.py            ← FastAPI 路由
 │   │   ├── templates/ + static/
-│   │   ├── scheduler.py
 │   │   └── cli.py            ← typer/argparse CLI
 │   └── main.py
 ├── tests/                    ← 单测 + 契约测试（Mock LLM 返回固定 JSON）
@@ -470,7 +468,7 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 | 端口文件发现（T4：harness 绝不拉起权威） | `mcp_server.py` + `paperpilot ai` | `.mcp-port` 由 launcher 写，DSH 插件据此 attach |
 
 同时按 OpenAI 兼容协议实现了 `UnifiedAIAdapter`（DeepSeek 默认后端）作为**程序化辅轨**，
-供无对话的定时任务使用；DSH/MCP 为主轨。
+供无对话的程序化使用；DSH/MCP 为主轨。
 
 ### 17.1 交付物与设计文档的对应关系
 
@@ -515,7 +513,7 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 
 - **活体跑 `paperpilot ai`**：真 `dsh web --patch` 加载插件 → `mcp__paperpilot__*` 可调；
   杀服务再起 → 工具自动恢复（host 半已单测覆盖，client 半面板需浏览器活体确认）。
-- BibTeX 导出、笔记增强、`paperpilot backup` 定时化、连续无人值守运行观察。
+- BibTeX 导出、笔记增强、`paperpilot backup`。
 - 语义检索（`QAPort` 二期）：等 AI 框架 embedding 能力或本地模型。
 
 ---

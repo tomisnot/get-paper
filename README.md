@@ -2,7 +2,7 @@
 
 arXiv 每日文献情报系统：**抓取 → AI 智能筛选 → AI 结构化精读 → 每日简报（本地 Web）**。
 
-每天定时把关注领域的新论文筛完、读完、写成简报，早上打开浏览器就能看；
+想看日报时打开软件，让 AI 把关注领域的新论文筛完、读完、写成简报（脉冲式，无常驻定时）；
 同时沉淀一个可全文检索的个人论文库，支持收藏、笔记、BibTeX 导出（规划中）。
 
 > **文档三层**：[`PRINCIPLES.md`](docs/PRINCIPLES.md)（项目宪法 / 基调）→ [`SPEC.md`](docs/SPEC.md)（要实现什么）→ [`DESIGN.md`](docs/DESIGN.md)（怎么实现）；决策冲突时以 `PRINCIPLES.md` 为准。
@@ -115,7 +115,7 @@ paperpilot ai       # 同上但后台跑，前台起 dsh（AI 在 dsh 里驱动�
 
 **归因与记录仪**（24 个工具，写入全部留痕）：
 
-- 所有写入工具接受 `reason`（为什么）；写入带 `actor`（ai/human/scheduler）进 **append-only 事件总线**
+- 所有写入工具接受 `reason`（为什么）；写入带 `actor`（ai/human）进 **append-only 事件总线**
   （DB 触发器钉死只增不改：任何 UPDATE/DELETE 都被拒绝）；写同时经 mecha 命令面审计进 History（与 dsh call_id 互引）；
 - `read_activity(since_seq/actor/op)` 读「谁、何时、为什么、改了什么」（diff-since-seq + 过滤 + 体积闸）；
   Web 侧对应只读页 `/activity`（域数据）；操作审计看 **dsh 右栏「◈ 监控」面板**（原 `/monitor` 页已退役）；
@@ -123,7 +123,7 @@ paperpilot ai       # 同上但后台跑，前台起 dsh（AI 在 dsh 里驱动�
   抓取入库/简报定稿**不可逆**，undo 会明确拒绝并说明原因，不静默；
 - 不可逆操作、未分类异常都带可教学 hint（第一次错就能改对）。
 
-无人对话时（定时任务）：`paperpilot run` 走程序化档——配了 API key 就用
+不走对话、程序化使用时：`paperpilot run` 走程序化档——配了 API key 就用
 `unified`（OpenAI 兼容，DeepSeek 默认），没配就 `heuristic` 本地 Mock，**任何一档流程都完整**。
 
 
@@ -144,10 +144,6 @@ scoring:
 ai:
   provider: auto          # auto | unified | heuristic | off
 
-schedule:
-  enabled: true
-  daily_at: "07:30"
-
 topics:
   - name: 大模型推理与 Test-Time Compute
     categories: [cs.CL, cs.AI]
@@ -162,10 +158,10 @@ topics:
 ## AI 接入（两轨，见 docs/DESIGN.md §17）
 
 **主轨 = DSH/MCP**（`paperpilot ai`，上面那节）：AI 对话、模型管理、UI 全部复用 DSH，
-PaperPilot 暴露 17 个语义工具。错误可教学（`{ok:false, error:{kind,hint,suggest}}`）、
+PaperPilot 暴露 31 个语义工具（经 mecha v2 命令/门/审计投影）。错误可教学（`{ok:false, error:{kind,hint,suggest}}`）、
 回程过体积闸（截断必带「截了多少/完整数据去哪看」）、工具与 CLI/Web 走同一批 service。
 
-**辅轨 = 程序化 LLM**（定时任务无人对话时）：`infra/ai/unified.py` 的 `UnifiedAIAdapter`
+**辅轨 = 程序化 LLM**（无对话的程序化使用，如批量脚本）：`infra/ai/unified.py` 的 `UnifiedAIAdapter`
 按 OpenAI 兼容协议直连（DeepSeek 默认，换后端只改 `ai.base_url` + `ai.model`）：
 
 - 配了 key（`ai.api_key` 或 `PAPERPILOT_API_KEY`/`DEEPSEEK_API_KEY`）→ `unified` 档；
@@ -195,7 +191,6 @@ src/paperpilot/
 ├── app/
 │   ├── container.py       # DI 绑定（换 AI 实现只改这里）
 │   ├── web.py + templates/# FastAPI + Jinja2，无 CDN 依赖（含「记录仪」只读页）
-│   ├── scheduler.py       # APScheduler 每日任务
 │   └── cli.py             # typer CLI（含 ai 模式 launcher）
 └── data/sample_arxiv.xml  # demo 样例（离线）
 dsh/                       # DSH 插件（Cordis）：自愈 MCP 桥 + 工具注册 + 📄简报面板
