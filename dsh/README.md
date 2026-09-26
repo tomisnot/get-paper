@@ -29,13 +29,32 @@ src/client/*               CLIENT 半：📄简报 开关 + 右栏 iframe + 错�
 types/dsh-shims.d.ts       本地最小类型 shim（@deepseek-ai/* 是宿主提供的 peer，本地装不到）
 ```
 
-> ⚠ **「◈ 监控」（AI 干了什么）不在本目录的 client 代码里**（2026-09-26 改向）：用户裁决
-> 「几乎完全复用 EL，布局也是」⇒ 它将走**共享资产 `dsh-panel/` 的原生 tab**（数据层
-> `MonitorData` + 呈现 `MonitorTabBody`，由 M 提升进资产后**参数化**再抄）。
-> **旧的"Web `/monitor` 页 + iframe"那条链已删**（`MonitorButton.tsx`、`mode-store` 的
-> panelPath 维度、`panel.test.ts` 的 monitor 视图用例；Web 侧的 `/monitor` 页与模板也删了）。
-> ⚠ **两个面板共用右栏 ⇒ 必须互斥**：原生 tab 与"iframe + CSS 重排三列"是两种东西，
-> `openCockpit` 里先收起简报面板、点 📄简报 时先关 tab。
+> ## ⭐「◈ 监控」= **共享资产的原生页签**（2026-09-26 抄装，用户裁决"几乎完全复用 EL，布局也是"）
+>
+> 监控面板**不是本插件的 iframe 视图**：它由 `src/panel/` 的共享资产提供——
+> 数据层 `panel-data.ts`、呈现 `panel-view.ts`（含 `TAB_CSS` = **布局本体**）、壳
+> `MonitorTabBody.tsx`（唯一需要 react 的地方，3s 轮询 + `dangerouslySetInnerHTML`）。
+> 本项目只提供**参数块**（`ROUTE_PATH` / `PORT_FILE` / `TITLE`）。注册形状抄 EL：
+> `sidebarRightTabs.register({id, kind, title})` + `sidebar.right.pane.tab` slot，
+> `inject` 加 `sidebarRight` / `sidebarRightTabs`（**顶层**，与 EL 同形）。
+>
+> ⚠ **两个面板共用右栏 ⇒ 互斥**（有意行为，不是 bug）：◈监控是 **dsh 原生页签**（布局由 dsh
+> 管），📄简报是 **iframe + CSS 重排三列**（本项目自有）⇒ 同时开会打架。规则：
+> `openCockpit` 先 `setPanelMode(false)`；打开简报先 `sidebarRight.closeTab(...)`。
+>
+> ⚠ **`TABS` 刻意不填**（页签用共享默认「飞行记录仪 | 配置态」= 与 EL 一致）：资产自测
+> `panel-data.test.ts` 的 `tabLabel` 用例**把中性默认写死**却读项目参数块 ⇒ **一填 `TABS` 共享自测必红**
+> （已报资产侧，待其"期望值从参数块派生"后再填 PaperPilot 自己的文案）。
+>
+> ⚠ **当前 `npm run typecheck` 是红的，红在资产**：`panel-data.ts` 用了 `Ev` / `ConfigWire`
+> （定义在 `panel-view.ts`）却**没 import** ⇒ 4 条 `TS2304`。资产自测只做**类型剥离**、不做类型
+> 检查 ⇒ mecha 自己的门禁看不见；**消费者的 `npm run typecheck` 就是这条契约的验收面**（已报，
+> 等上游加 `import type { ConfigWire, Ev } from './panel-view.ts'` 后重抄+复绿；**本仓不就地打补丁**：
+> 那会破坏"除参数块外逐字一致"）。
+>
+> **浏览器安全**：资产已把 `node:*` 边界**结构化**（`routes.ts` 浏览器安全 / 只有 `monitor-url.ts`
+> 碰 `node:fs`），并有 import 闭包守卫；**本项目再加一条**——从**本项目**的 `client/index.ts`
+> 出发走一遍闭包，断言零 `node:` 且裸包只许 `react`（此前"没撞上 EL 那个事故"只是树摇的运气）。
 
 ## 面板地址：**同源只读路由**（不回落、现读、读不到就报错）
 
