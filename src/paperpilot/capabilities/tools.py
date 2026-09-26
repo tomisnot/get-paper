@@ -60,6 +60,14 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
                   "categories": "arXiv 分类白名单，逗号分隔", "description": "主题描述",
                   "exclude_keywords": "排除词，逗号分隔", "quota": "每主题配额",
                   "threshold": "入选评分阈值", "reason": "一句话中文说明新增原因"},
+    "update_topic": {"name": "要改的主题名（必填）",
+                     "description": "新描述；省略=不动",
+                     "keywords": "新关键词，逗号分隔；省略=不动（替换而非追加）",
+                     "categories": "新分类白名单，逗号分隔；省略=不动",
+                     "exclude_keywords": "新排除词，逗号分隔；省略=不动",
+                     "authors": "关注作者，逗号分隔（命中者基线分加成）；省略=不动",
+                     "quota": "新配额；负数=不动", "threshold": "新阈值 0-1；负数=不动",
+                     "reason": "一句话中文说明改的原因"},
     "set_topic_enabled": {"name": "主题名", "enabled": "True 启用 / False 停用",
                           "reason": "一句话中文说明原因"},
     "mark_read": {"arxiv_id": "论文 arXiv 编号；可逗号分隔多篇（逐篇处理，坏 id 不伤其余）",
@@ -393,6 +401,45 @@ def build_registry(container) -> Registry:
         save_settings(settings)
         repo.sync_topics(settings.topics, actor=actor, reason=reason or f"新增主题「{name}」")
         return ok(added=name, total_topics=len(settings.topics))
+
+    @reg.tool(name="update_topic", kind="write",
+              description="更新既有主题（W7，AI 自助调优闭环）：只改传入的字段，省略=不动；"
+                          "列表字段为**替换**语义、逗号分隔；暂不支持清空列表。"
+                          "启用/停用请用 set_topic_enabled（职责不重叠）。")
+    def update_topic(name: str, description: str = "", keywords: str = "",
+                     categories: str = "", exclude_keywords: str = "", authors: str = "",
+                     quota: int = -1, threshold: float = -1.0,
+                     actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        idx = next((i for i, t in enumerate(settings.topics) if t.name == name), None)
+        if idx is None:
+            return err("unknown_topic", f"没有主题「{name}」",
+                       hint="update_topic 只能改已有主题；新增用 add_topic",
+                       suggest=[t.name for t in settings.topics][:8])
+        topic = settings.topics[idx]
+        changed: dict[str, object] = {}
+        if description:
+            topic.description = description
+            changed["description"] = description
+        for fld, raw in (("keywords", keywords), ("categories", categories),
+                         ("exclude_keywords", exclude_keywords), ("authors", authors)):
+            if raw:
+                setattr(topic, fld, _split(raw))
+                changed[fld] = _split(raw)
+        if quota >= 1:
+            topic.quota = int(quota)
+            changed["quota"] = topic.quota
+        if 0.0 <= threshold <= 1.0:
+            topic.threshold = float(threshold)
+            changed["threshold"] = topic.threshold
+        if not changed:
+            return err("no_fields", "未传任何要改的字段（全部省略）",
+                       hint="至少传一个：keywords/categories/exclude_keywords/"
+                            "authors/quota/threshold/description")
+        save_settings(settings)
+        repo.sync_topics(settings.topics, actor=actor,
+                         reason=reason or f"更新主题「{name}」")
+        return ok(topic=name, changed=sorted(changed), total_topics=len(settings.topics),
+                  hint="已写回配置事实源并同步打分镜像；authors 命中作者的论文基线分会获得加成")
 
     @reg.tool(name="set_topic_enabled", kind="write",
               description="启用/停用某主题（写回 YAML）。")

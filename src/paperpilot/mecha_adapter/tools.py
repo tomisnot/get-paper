@@ -111,6 +111,10 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
     ToolDecl("add_topic", "add_topic", "write",
              "新增研究主题（即时生效）。keywords/categories/exclude_keywords 用逗号分隔。",
              omit=("actor",)),
+    ToolDecl("update_topic", "update_topic", "write",
+             "更新既有主题：只改传入的字段（列表逗号分隔、替换语义，省略=不动；"
+             "quota/threshold 负数=不动）。启用/停用请用 set_topic_enabled。",
+             omit=("actor",)),
     ToolDecl("set_topic_enabled", "set_topic_enabled", "write",
              "启用或停用某个研究主题。",
              omit=("actor",)),

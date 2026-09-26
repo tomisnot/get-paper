@@ -19,19 +19,20 @@ from .test_mecha_adapter import (
 
 
 def test_declaration_equals_projection(tmp_path):
-    """25 能力声明 + 6 非能力面 = 31 投影，两侧逐字对齐（不多不少、不错映射）。
+    """26 能力声明 + 6 非能力面 = 32 投影，两侧逐字对齐（不多不少、不错映射）。
 
-    R2 补 list_briefings/delete_briefing，实用工单补 fetch_paper_by_id（cap 22→25）；
-    mecha 投影中 list_briefings 因命名律（禁 list_）改名 query_briefings，与 query_topics 同构。
+    R2 补 list_briefings/delete_briefing，实用工单补 fetch_paper_by_id/update_topic
+    （cap 22→26）；mecha 投影中 list_briefings 因命名律（禁 list_）改名 query_briefings，
+    与 query_topics 同构。
     """
     _c, stack = _stack(tmp_path)
     projected = {s["name"] for s in stack["tools"].schemas()}
     caps = set(registry_for(stack["container"]).names())
 
-    assert caps == set(TOOL_TO_CAPABILITY.values())        # 能力侧恰 25（能力名）
-    assert len(caps) == 25
+    assert caps == set(TOOL_TO_CAPABILITY.values())        # 能力侧恰 26（能力名）
+    assert len(caps) == 26
     assert projected == set(TOOL_TO_CAPABILITY) | NON_CAPABILITY_TOOLS   # 投影 = mecha 名 + 非能力面
-    assert projected == EXPECTED_TOOLS and len(projected) == 31
+    assert projected == EXPECTED_TOOLS and len(projected) == 32
     for mecha_name, cap in TOOL_TO_CAPABILITY.items():     # 每个 mecha 名 → 存在的能力
         assert cap in caps, f"{mecha_name} 映射到不存在的能力 {cap}"
         assert mecha_name in projected, f"{mecha_name} 未出现在投影面"
