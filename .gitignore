@@ -24,6 +24,8 @@ dsh/node_modules/
 dsh/lib/
 .mcp-port
 .cockpit-port
+# Web 端口发现文件（dsh 面板的地址来源；运行期状态，每次启动重写）
+.web-port
 
 # 运行时数据（补充：下载 PDF / 生成简报 / 评审中间态 / mecha journal+artifacts）
 data/pdfs/

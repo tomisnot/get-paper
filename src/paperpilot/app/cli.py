@@ -45,6 +45,66 @@ DEMO_XML = Path(__file__).resolve().parents[1] / "data" / "sample_arxiv.xml"
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DSH_DIR = PROJECT_ROOT / "dsh"
 
+#: Web 的**端口发现文件**（项目根，与 `.mcp-port` / `.cockpit-port` 同级）。
+#: ⚠ 必须与 dsh 插件参数块 `dsh/src/panel/panel-config.ts` 的 `PANEL_CONFIG.PORT_FILE`
+#: 一致——两边各写一份就是"漂移即面板空白"，故 `tests/test_cli_startup.py` 有一条判据
+#: 直接读那个 .ts 比对。
+WEB_PORT_FILE = ".web-port"
+
+
+def _web_port_path(settings) -> Path:
+    """Web 端口发现文件路径（项目根；`data_dir` 的父目录）。"""
+    return Path(settings.data_dir).parent / WEB_PORT_FILE
+
+
+def _publish_web_port(port_file: Path, port: int) -> None:
+    """发布 Web 端口：**先清陈旧、再写自己的**（规则来自框架 `mecha.portfile`）。
+
+    为什么先清（`expected=None` 无条件删）：`terminate()` / `taskkill /F` 不跑 Python 的
+    `finally` ⇒ "起时写、止时删"不能只靠收尾；此刻本进程已装配成功（同一个项目根不可能
+    还有别的活宿主）⇒ 该文件必属死进程，删它不会误伤。
+    """
+    from mecha.portfile import clear_port_file, write_port_file
+
+    clear_port_file(port_file)
+    write_port_file(port_file, port)
+
+
+def _unpublish_web_port(port_file: Path, port: int) -> None:
+    """收尾：**只删仍是自己写的那个端口**的文件（别误删接管者刚写的新端口）。"""
+    from mecha.portfile import clear_port_file
+
+    clear_port_file(port_file, expected=port)
+
+
+def _publish_web_port_when_ready(host: str, port: int, port_file: Path,
+                                 *, timeout: float = 25.0) -> None:
+    """**端口真的在听之后**才发布端口文件（后台线程，尽力而为）。
+
+    为什么不"启动前就写"：写了但还没 listen ⇒ 面板拿到一个连不上的地址，与"权威没起来"
+    显示成"连上了但空白"是同一族假绿。起不来就**不写** ⇒ 地址路由 503 + 可读错误
+    （面板显示"地址不详 + 为什么"），而不是给个死地址。
+    0.0.0.0 等回环绑定按 127.0.0.1 探活。
+    """
+    import socket
+    import threading
+    import time
+
+    probe_host = "127.0.0.1" if host in ("0.0.0.0", "", "*") else host
+
+    def _wait_and_publish() -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                socket.create_connection((probe_host, port), timeout=0.3).close()
+            except OSError:
+                time.sleep(0.2)
+                continue
+            _publish_web_port(port_file, port)
+            return
+
+    threading.Thread(target=_wait_and_publish, daemon=True).start()
+
 
 def _ensure_port_free(host: str, port: int, label: str) -> None:
     """预检端口可绑定；被占则**响亮失败**（不半启动）。
@@ -204,7 +264,9 @@ def _serve_impl(config, host=None, port=None, open_gate=False, no_cockpit=False,
     settings = load_settings(config)
     web_host = host or settings.web.host
     web_port = port or settings.web.port
+    web_port_file = _web_port_path(settings)
     _ensure_port_free(web_host, web_port, "Web ")   # 预检：端口被占则不半启动
+    _publish_web_port_when_ready(web_host, web_port, web_port_file)
     container, stack, mcp_host, cockpit = _boot_stack(
         settings, open_gate=open_gate, with_cockpit=not no_cockpit, log=typer.echo)
     start_scheduler(container.pipeline, settings)
@@ -212,6 +274,7 @@ def _serve_impl(config, host=None, port=None, open_gate=False, no_cockpit=False,
     typer.echo(f"🔌 MCP（AI 面）: {mcp_host.url}  ← .mcp-port")
     if cockpit is not None:
         typer.echo(f"📊 cockpit（监控面）: {cockpit.url}  ← .cockpit-port")
+    typer.echo(f"🧭 dsh 面板发现: {web_port_file.name} ← {web_port}（同源路由读它，不回落默认端口）")
     typer.echo(f"🔐 写权模式: {stack['authority'].mode.value}"
                "（Web 写自动取 human；AI 写需 --open-gate 或在监控面切换）")
     if not no_open:
@@ -226,6 +289,7 @@ def _serve_impl(config, host=None, port=None, open_gate=False, no_cockpit=False,
             cockpit.stop()
         mcp_host.stop()
         stack["software"].close()
+        _unpublish_web_port(web_port_file, web_port)
 
 
 @app.command()
@@ -354,7 +418,7 @@ def web(
     port: int = typer.Option(8080, "--port", "-p"),
     config: Path = typer.Option(None, "--config", "-c"),
 ) -> None:
-    """只启动 Web（不带每日调度）。"""
+    """只启动 Web（不带每日调度；不接 mecha 栈 ⇒ `/monitor` 页如实报「未接监控面」）。"""
     import uvicorn
 
     from ..config import load_settings
@@ -363,8 +427,14 @@ def web(
 
     settings = load_settings(config)
     container = build_container(settings)
+    web_port_file = _web_port_path(settings)
+    _publish_web_port_when_ready(host, port, web_port_file)
     typer.echo(f"🌐 http://{host}:{port}  (AI: {container.ai_provider})")
-    uvicorn.run(create_app(container), host=host, port=port, log_level="info")
+    typer.echo(f"🧭 dsh 面板发现: {web_port_file.name} ← {port}（同源路由读它）")
+    try:
+        uvicorn.run(create_app(container), host=host, port=port, log_level="info")
+    finally:
+        _unpublish_web_port(web_port_file, port)
 
 
 @app.command()
@@ -406,8 +476,9 @@ def ai(
 
     **并存隔离**（mecha-sdk《DSH-实例并存原理.md》§9）：除插件源 patch 外再挂
     `dsh/cordis.isolate.patch.yml`（进程级最后一层）——禁掉钉端口/回写共享 profile 的
-    remote-web-ui 与别项目的 MCP client，并还原 webserver 端口表达式；端口自动从
-    3081 选（3080 留给官方 dsh）⇒ 本实例与官方/其他项目的 dsh 互不影响。
+    `remote-web-ui`、并还原 webserver 端口表达式；端口自动从 3081 选（3080 留给官方
+    dsh）⇒ 本实例与官方/其他项目的 dsh 互不影响。（该 overlay **只写本实例需要的隔离**，
+    不列举别家的插件 id。）
     """
     import threading
 
@@ -421,6 +492,8 @@ def ai(
     if not settings.mcp.enabled:
         typer.echo("⚠ mcp.enabled=false：AI 模式需要 MCP 语义通道，仍继续启动…")
     _ensure_port_free(settings.web.host, settings.web.port, "Web ")   # 预检：端口被占则不半启动
+    web_port_file = _web_port_path(settings)
+    _publish_web_port_when_ready(settings.web.host, settings.web.port, web_port_file)
 
     # 1) 后台：MCP（AI 面）+ cockpit（监控面），共享一个 mecha 栈；AI 模式默认开闸到 AI
     container, stack, mcp_host, cockpit = _boot_stack(
@@ -429,6 +502,8 @@ def ai(
     typer.echo(f"  MCP（AI 面）: {mcp_host.url}（.mcp-port 已写；dsh 插件据此发现）")
     if cockpit is not None:
         typer.echo(f"  cockpit（监控面）: {cockpit.url}（.cockpit-port 已写）")
+    typer.echo(f"  dsh 面板发现: {web_port_file.name} ← {settings.web.port}"
+               "（插件经同源只读路由读它，不回落默认端口）")
 
     # 2) 后台：Web 面板（dsh 侧边栏 iframe 它；含 /monitor 操作审计页）
     web_app = create_app(container, stack)
@@ -449,6 +524,8 @@ def ai(
             stack["software"].close()
         except Exception:  # noqa: BLE001 - 收尾尽力
             pass
+        finally:
+            _unpublish_web_port(web_port_file, settings.web.port)
 
     # 3) 前台：dsh harness（AI 界面 + 📄 PaperPilot 面板都在里面）
     dsh_exe = shutil.which("dsh")
@@ -488,7 +565,9 @@ def ai(
     typer.echo(f"  · 隔离 overlay 已挂：本实例端口 {port}（官方 3080 不受影响、共享 profile 不被回写）")
     typer.echo("  · dsh 起来后会打开浏览器 = AI 界面；📄 PaperPilot 面板在会话头部按钮里")
     try:
-        rc = subprocess.run(f'"{dsh_exe}" {dsh_args}', shell=True, env=env)
+        # cwd = 项目根：`--patch` 与插件的三个端口发现文件（`.mcp-port` / `.web-port` /
+        # `.cockpit-port`）都是**相对 cwd** 的约定 ⇒ 钉住 cwd 才不会"在别处运行就全部找不到"。
+        rc = subprocess.run(f'"{dsh_exe}" {dsh_args}', shell=True, env=env, cwd=str(PROJECT_ROOT))
         if rc != 0:
             typer.echo(f"[launcher] ⚠ dsh 退出码 {rc}。常见原因：")
             typer.echo("  1) node_modules 缺依赖：cd dsh && npm install 后重试；")
@@ -507,7 +586,7 @@ def dsh_config() -> None:
     """只读诊断：打印 dsh **组合后**配置（验证隔离 overlay 是否生效，《并存原理》§9.4①）。
 
     期望看到：`paperpilot` 条目在列；webserver 行带 `!!js ctx.webStartup.port` 表达式；
-    remote-web-ui / mcp-energy-level / mcp-re0-mecha 行带 `disabled: true`。
+    `remote-web-ui` 行带 `disabled: true`（该条是**本实例的**威胁：钉端口 + 回写共享 profile）。
     不起服务、不改任何文件。**patch 缺一份就响亮失败**——否则"没传"与"传了没生效"
     在 dump 里不可区分（前者曾把 No plugin 伪装成正常启动）。
     """
