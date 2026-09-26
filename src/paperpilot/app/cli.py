@@ -325,7 +325,8 @@ def serve(
     """统一启动入口：Web（人类面）+ mecha MCP（AI 面）+ cockpit（监控面）+ 每日调度，共享一个 mecha 栈。
 
     人机同路：Web 写经 human 通道、AI 写经 ai 通道，同一道写权门 + 同一份审计。
-    dsh 经 `.mcp-port` 发现 MCP、侧边栏 iframe Web（含 `/monitor` 操作审计页）。
+    dsh 经 `.mcp-port` 发现 MCP；右栏「📄简报」iframe Web 可视化面、「◈监控」是原生面板
+    （mecha cockpit；原 `/monitor` 视图页已退役，写权模式卡在 Web 的 `/settings`）。
     （无参数运行 `paperpilot` 等价于本命令。）
     """
     _serve_impl(config, host, port, open_gate, no_cockpit, no_open)
@@ -439,7 +440,7 @@ def web(
     port: int = typer.Option(8080, "--port", "-p"),
     config: Path = typer.Option(None, "--config", "-c"),
 ) -> None:
-    """只启动 Web（不带每日调度；不接 mecha 栈 ⇒ `/monitor` 页如实报「未接监控面」）。"""
+    """只启动 Web（不带每日调度；不接 mecha 栈 ⇒ `/settings` 的写权卡如实报「未接监控面」）。"""
     import uvicorn
 
     from ..config import load_settings
@@ -527,7 +528,7 @@ def ai(
                "（插件经同源只读路由读它，不回落默认端口）")
     _publish_and_announce_control_token()
 
-    # 2) 后台：Web 面板（dsh 侧边栏 iframe 它；含 /monitor 操作审计页）
+    # 2) 后台：Web 面板（dsh 右栏「📄简报」iframe 它；写权模式卡在 /settings）
     web_app = create_app(container, stack)
     web_server = uvicorn.Server(
         uvicorn.Config(web_app, host=settings.web.host, port=settings.web.port, log_level="warning")

@@ -38,6 +38,12 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         ctx.setdefault("msg", request.query_params.get("msg", ""))
         return templates.TemplateResponse(request, template, ctx)
 
+    def _authority_mode() -> str | None:
+        """当前写权模式（无栈 ⇒ None）：设置页那张「写权模式」卡用它显示现状。"""
+        if stack is None:
+            return None
+        return str(getattr(stack["authority"].mode, "value", stack["authority"].mode))
+
     def _gated(cmd: str, **args) -> str:
         """经门（human 通道）写一个命令；返回给用户的消息串（空串=成功无提示）。"""
         from ..mecha_adapter.hub import human_write
@@ -178,6 +184,15 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
     # ---------------------------------------------------------------- 设置
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request):
+        """人类控制面：运行状态 / **写权模式（含控制口令）** / 全局参数 / 主题。
+
+        ⚠ 写权切换这张卡原在 `/monitor` 页上；**面板视图退役后搬到这里**
+        （AI 监控改走 dsh 原生 tab）。**控制端点 `POST /monitor/mode` 的路径与鉴权未动**——
+        只换了它的 UI 落点与重定向目标（不这样搬，"删掉面板页"就会顺手把人类切写权的
+        唯一入口也删掉：口令输入框只在那个页面上）。
+        """
+        from .control_token import read_control_token
+
         s = container.settings
         return render(
             request,
@@ -185,6 +200,8 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
             settings=s,
             last_run=container.repo.last_run(),
             counts=container.repo.counts_by_status(),
+            mode=_authority_mode(),
+            control_ready=read_control_token() is not None,
         )
 
     @app.post("/settings/topics")
@@ -278,40 +295,11 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
             since_seq=since_seq,
         )
 
-    @app.get("/monitor", response_class=HTMLResponse)
-    def monitor_page(request: Request):
-        """操作者监控面（mecha cockpit 的人话视图，供 dsh 侧边栏 iframe 挂载）。
-
-        与 `/activity`（域数据面 = repo.events）互补：本页是 **操作者审计面** =
-        mecha History（command.<name> 审计 + 配置态 KV）+ 概括（可被原始证伪）。
-        无 stack（独立测试）时如实报“未接监控面”，不假装空。
-        """
-        from .control_token import read_control_token
-
-        control_ready = read_control_token() is not None
-        if stack is None:
-            return render(request, "monitor.html", view=None, mode=None,
-                          events=[], config=None, stack_ready=False,
-                          control_ready=control_ready)
-        from mecha.cockpit import (
-            MonitorSource,
-            activity_records,
-            config_tree,
-            monitor_summary_payload,
-        )
-
-        from ..mecha_adapter.monitor import config_schema_rows
-
-        source = MonitorSource.from_software(
-            stack["software"], schema_rows=config_schema_rows)
-        view = monitor_summary_payload(stack["monitor"].read())
-        events = activity_records(source)[-60:][::-1]      # 近 60 条，新的在上
-        config = config_tree(source)
-        mode = getattr(stack["authority"].mode, "value", stack["authority"].mode)
-        return render(request, "monitor.html", view=view, mode=str(mode),
-                      events=events, config=config, stack_ready=True,
-                      control_ready=control_ready)
-
+    # ------------------------------------------------- 写权控制端点（人类侧，口令 + side=human）
+    # ⚠ `GET /monitor` 那个**服务端渲染的审计视图已退役**（2026-09-26）：
+    # AI 监控改走 **dsh 共享资产的原生 tab**（`dsh-panel/`），Web 侧不再需要第二套视图
+    # ⇒ 删页 + 删模板，**但控制端点 `POST /monitor/mode` 原样保留**（它不是面板，是
+    # 人类控制端点；路径不动，UI 落点搬到 `/settings`）。
     @app.post("/monitor/mode")
     def switch_write_mode(target: str = Form("locked"), token: str = Form("")):
         """人类侧切写权模式：**口令 + 服务端钉 actor=human**（两道都要）。
@@ -323,9 +311,11 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
 
         **fail-closed**：口令文件不存在 / 口令空 / 不匹配 ⇒ **403 + 可读错误**，
         **绝不静默放行**（控制端点没有"默认放开"这一档）。
+
+        成功/未接栈都重定向到 **`/settings`**（本卡的新落点；`/monitor` 已不存在）。
         """
         if stack is None:
-            return RedirectResponse("/monitor?msg=未接监控面", status_code=303)
+            return RedirectResponse("/settings?msg=未接监控面", status_code=303)
         from urllib.parse import quote
 
         from .control_token import verify_control_token
@@ -347,7 +337,7 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
                     "也可以直接看 <code>~/.paperpilot/control-token</code>"
                     "（<b>刻意放在仓外</b>：本机制挡的是本机其他进程，"
                     "挡不住能读你文件的 AI——这条边界是明说的，不是默认的）。</p>"
-                    "<p><a href='/monitor'>← 回到操作审计页</a></p>"
+                    "<p><a href='/settings'>← 回到设置页（写权模式卡在那儿）</a></p>"
                     "</div>"),
             )
 
@@ -357,7 +347,7 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
             msg = f"写权已切到 {target}"
         except Exception as exc:  # noqa: BLE001 - 展示可教学拒绝（含非法 target）
             msg = f"切换失败：{exc}"
-        return RedirectResponse(f"/monitor?msg={quote(msg)}", status_code=303)
+        return RedirectResponse(f"/settings?msg={quote(msg)}", status_code=303)
 
     # ---------------------------------------------------------------- 健康检查
     @app.get("/healthz")

@@ -32,6 +32,36 @@
   </div>
 </div>
 
+<h2>写权模式</h2>
+{# 这张卡原先在 `/monitor` 页上。面板视图退役后搬到这里（人类控制面）。
+   ⚠ 控制端点 `POST /monitor/mode` 的路径与鉴权一行未动——只换了 UI 落点与重定向目标。 #}
+<div class="card">
+  <div class="kv">
+    <b>当前</b>
+    {% if mode %}<span class="chip {% if mode == 'ai' %}worth{% elif mode == 'human' %}must{% endif %}">{{ mode }}</span>
+      <span class="muted">locked=谁都不可写 · human=Web 侧 · ai=AI 侧（单写权，人类侧开闸）</span>
+    {% else %}<span class="muted">未接监控面（本 Web 未经统一启动入口装配 mecha 栈）</span>{% endif %}
+  </div>
+  {% if mode %}
+    <form method="post" action="/monitor/mode" class="actions">
+      <input type="password" name="token" placeholder="控制口令" autocomplete="off" style="min-width:16em"
+             title="启动 serve/ai 时控制台打印的那个口令（仓外 ~/.paperpilot/control-token）">
+      <button type="submit" name="target" value="ai" class="ghost">授予 AI 写权</button>
+      <button type="submit" name="target" value="human" class="ghost">取回 human</button>
+      <button type="submit" name="target" value="locked" class="ghost">锁定</button>
+    </form>
+    {% if control_ready %}
+      <div class="muted">需要**控制口令**（启动 <code>serve</code>/<code>ai</code> 时控制台打印、
+        存于仓外 <code>~/.paperpilot/control-token</code>）。⚠ 它挡的是**本机其他进程**，
+        **挡不住能读你文件的 AI**——这条边界是明说的，别当它是防 AI 的墙。</div>
+    {% else %}
+      <div class="warn">本实例**未发布控制口令** ⇒ 写权切换会被一律拒绝（fail-closed，
+        不会默认放开）。用 <code>paperpilot serve</code> / <code>paperpilot ai</code> 启动即可获得口令。</div>
+    {% endif %}
+    <div class="muted">Web 写会自动取 human；要让 dsh 里的 AI 写，先“授予 AI 写权”并别在 Web 上写。</div>
+  {% endif %}
+</div>
+
 <h2>全局参数</h2>
 <div class="card">
   <form method="post" action="/settings/general">
