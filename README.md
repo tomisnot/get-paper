@@ -28,13 +28,13 @@ arXiv 每日文献情报系统：**抓取 → AI 智能筛选 → AI 结构化�
 **两种用法（两个“前门”，都是前台可见）：**
 
 - **人面（你自己用）** = Web 工作台。起服务后**自动弹浏览器**到 `http://127.0.0.1:8080`：
-  看今日简报 / 检索论文库 / 标已读收藏笔记 / 下 PDF / 改主题参数 / 跑批 / 看“操作审计”。
+  看今日简报 / 检索论文库 / 标已读收藏笔记 / 下 PDF / 改主题参数 / 跑批 / 切写权模式（`/settings`）。
 - **AI 面（对话驱动）** = dsh（复用现成 harness）。在 dsh 里跟 AI 说“看看今天候选、帮我评审生成简报”；
-  dsh 侧边栏还能一键开“📄简报 / ◈监控”（都是 Web 的视图）。
+  dsh 右栏另有「📄 简报」（PaperPilot Web 可视化面）与「◈ 监控」（AI 干了什么 = mecha cockpit 原生面板）。
 
 > Web 本质是本地服务（无独立窗口），“前台”就是浏览器；所以启动时会**自动帮你打开**（`--no-open` 可关）。
 > “人面写”与“AI 面写”走**同一道写权门**（单写权：默认 LOCKED，人在 Web 上写会自动取 human，
-> 要让 AI 写就在“操作审计”页点“授予 AI 写权”）。
+> 要让 AI 写就在 Web 的 **`/settings` → 写权模式**卡上点“授予 AI 写权”，需控制口令）。
 
 手动方式（等价）：
 
@@ -70,7 +70,12 @@ paperpilot call <能力> -p k=v  # 调用一个能力，输出统一信封 JSON�
 paperpilot backup          # 打包 data/ 到 backups/
 ```
 
-Web 页面：`/` 今日简报 · `/digest/{date}` 历史简报 · `/papers` 论文库检索 · `/papers/{arxiv_id}` 详情与笔记 · `/activity` **记录仪**（域数据面：repo.events 的 before→after + undo） · `/monitor` **操作审计**（mecha cockpit：写权模式 + 命令审计 + 配置态，可被原始证伪） · `/settings` 主题与参数管理、手动触发跑批。
+Web 页面：`/` 今日简报 · `/digest/{date}` 历史简报 · `/papers` 论文库检索 · `/papers/{arxiv_id}` 详情与笔记 · `/activity` **记录仪**（域数据面：repo.events 的 before→after + undo） · `/settings` 主题与参数管理、手动触发跑批、**写权模式（含控制口令）**。
+
+> ⚠ **`/monitor` 页已退役**（2026-09-26）：AI 监控改走 **dsh 右栏的原生面板**（共享资产
+> `dsh-panel/`，抄自 EL 的布局）——**Web 侧不再有第二套审计视图**。
+> **`POST /monitor/mode` 控制端点仍在**（人类控制端点，路径与鉴权未动），它的 UI 落点搬到了
+> `/settings` 的「写权模式」卡。
 
 ## AI 接入：mecha v2 操作者无关层（`paperpilot` / `serve` / `ai`）
 
@@ -82,7 +87,8 @@ DSH（AI 对话/管理/UI） ──MCP(streamable-http, 仅 localhost)──▶ 
         └── dsh/ 插件（Cordis）──────────────────────────────────────┘
               · 自愈 MCP 桥：服务重启自动重连重试（治 dsh stock 桥的永久 404 死区）
               · 工具原生注册：mcp__paperpilot__* 供 AI 调用
-              · 「📄 简报 / ◈ 监控」按钮：PaperPilot Web 挂进 dsh 右栏（含 `/monitor` 操作审计页 = cockpit）
+              · 「📄 简报」按钮：PaperPilot Web（可视化面）挂进 dsh 右栏
+              · 「◈ 监控」页签：AI 干了什么（mecha cockpit 的原生面板，抄自 EL 布局）
                 地址走**同源只读路由** `/paperpilot/monitor-url` ← 读项目根 `.web-port`（Web 真 listen 后才写）
                 ⇒ 换端口自愈；**读不到就显可读错误，绝不空白、绝不回落默认端口**
 ```
@@ -112,7 +118,7 @@ paperpilot ai       # 同上但后台跑，前台起 dsh（AI 在 dsh 里驱动�
 - 所有写入工具接受 `reason`（为什么）；写入带 `actor`（ai/human/scheduler）进 **append-only 事件总线**
   （DB 触发器钉死只增不改：任何 UPDATE/DELETE 都被拒绝）；写同时经 mecha 命令面审计进 History（与 dsh call_id 互引）；
 - `read_activity(since_seq/actor/op)` 读「谁、何时、为什么、改了什么」（diff-since-seq + 过滤 + 体积闸）；
-  Web 侧对应只读页 `/activity`（域数据）与 `/monitor`（mecha 操作审计）；
+  Web 侧对应只读页 `/activity`（域数据）；操作审计看 **dsh 右栏「◈ 监控」面板**（原 `/monitor` 页已退役）；
 - 写错了 `undo_change(seq=0)` 撤销最近一条可逆操作（按事件的 before 快照回写）；
   抓取入库/简报定稿**不可逆**，undo 会明确拒绝并说明原因，不静默；
 - 不可逆操作、未分类异常都带可教学 hint（第一次错就能改对）。

@@ -40,7 +40,8 @@ echo ------------------------------------------------------------
 echo   启动中...
 echo   Web 面板:  http://127.0.0.1:8080
 echo   MCP 通道:  自动端口，见 .mcp-port（dsh 自动发现）
-echo   监控面:    Web 的 /monitor 页（操作审计 = mecha cockpit）
+echo   监控面:    dsh 右栏「监控」页签（原生面板 = mecha cockpit）
+echo   写权切换:  Web 的 /settings 页（写权模式卡，需控制口令）
 echo   AI 界面:   dsh 起来后会自动打开浏览器
 echo.
 echo   首次使用：在 dsh 里对 AI 说

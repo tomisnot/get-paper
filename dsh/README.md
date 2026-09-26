@@ -23,11 +23,19 @@ src/host/mcp-session-http.ts  唯一 import @modelcontextprotocol/sdk：每次�
 src/host/register-tools.ts MCP 工具 → ctx.tools.register（照 dsh mcp-client/tools.ts 的两阶段 swap）
 src/host/config.ts         端点解析（mcpUrl / .mcp-port / 默认 8780）
 src/panel/*                面板共享资产（**逐字复制**自 mecha 参考实现，只有 panel-config.ts 是本项目的值）
-src/client/panel-address.ts 取面板地址：同源 fetch 地址路由 → {base}（React 无关，可 Node 直接单测）
-src/client/panel-state.ts  面板状态判定：要么可用绝对地址、要么可读错误（**没有"空白"这一态**）
-src/client/*               CLIENT 半：📄简报 / ◈监控 开关 + 右栏 iframe + 错误卡 + 面板模式 CSS
+src/client/panel-state.ts  **简报 iframe** 的状态判定：要么可用绝对地址、要么可读错误（**没有"空白"这一态**）
+src/client/panel-probe.ts  **简报 iframe** 的两跳可达性探测（跨源读不到内层 DOM ⇒ 挂之前探 /healthz）
+src/client/*               CLIENT 半：📄简报 开关 + 右栏 iframe + 错误卡 + 面板模式 CSS
 types/dsh-shims.d.ts       本地最小类型 shim（@deepseek-ai/* 是宿主提供的 peer，本地装不到）
 ```
+
+> ⚠ **「◈ 监控」（AI 干了什么）不在本目录的 client 代码里**（2026-09-26 改向）：用户裁决
+> 「几乎完全复用 EL，布局也是」⇒ 它将走**共享资产 `dsh-panel/` 的原生 tab**（数据层
+> `MonitorData` + 呈现 `MonitorTabBody`，由 M 提升进资产后**参数化**再抄）。
+> **旧的"Web `/monitor` 页 + iframe"那条链已删**（`MonitorButton.tsx`、`mode-store` 的
+> panelPath 维度、`panel.test.ts` 的 monitor 视图用例；Web 侧的 `/monitor` 页与模板也删了）。
+> ⚠ **两个面板共用右栏 ⇒ 必须互斥**：原生 tab 与"iframe + CSS 重排三列"是两种东西，
+> `openCockpit` 里先收起简报面板、点 📄简报 时先关 tab。
 
 ## 面板地址：**同源只读路由**（不回落、现读、读不到就报错）
 
