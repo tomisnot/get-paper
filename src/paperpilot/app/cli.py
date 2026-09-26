@@ -216,6 +216,26 @@ def _pick_dsh_port(preferred: int = 3081, tries: int = 10) -> int:
     return preferred
 
 
+def _publish_and_announce_control_token() -> None:
+    """生成并打印**人工控制口令**（`POST /monitor/mode` 切写权用）。
+
+    ⚠ **刻意存在仓外**（`~/.paperpilot/control-token`）：它挡的是**本机其他进程**，
+    **挡不住有权读你文件的 AI**。放仓外是为了让"AI 不能自授权"这条边界**尽量真的成立**
+    （AI 的文件访问通常被限在工作区）；放项目根则会让"服务端钉 `actor=human`"退化成
+    "AI 的写被记成人的写"——比没有鉴权更坏。写失败不抛：控制端点 fail-closed 兜住。
+    """
+    from .control_token import control_token_path, publish_control_token
+
+    try:
+        token = publish_control_token()
+    except OSError as exc:  # noqa: BLE001 - 家目录不可写只影响控制端点，别拦启动
+        typer.echo(f"⚠ 控制口令写入失败（{exc}）⇒ 写权切换会 fail-closed 一律拒绝。", err=True)
+        return
+    typer.echo(f"🔑 人工控制口令（切写权用）: {token}")
+    typer.echo(f"   —— 存于仓外 {control_token_path()}")
+    typer.echo("   —— ⚠ 它挡的是**本机其他进程**，挡不住能读你文件的 AI（这条边界是明说的）")
+
+
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -275,6 +295,7 @@ def _serve_impl(config, host=None, port=None, open_gate=False, no_cockpit=False,
     if cockpit is not None:
         typer.echo(f"📊 cockpit（监控面）: {cockpit.url}  ← .cockpit-port")
     typer.echo(f"🧭 dsh 面板发现: {web_port_file.name} ← {web_port}（同源路由读它，不回落默认端口）")
+    _publish_and_announce_control_token()
     typer.echo(f"🔐 写权模式: {stack['authority'].mode.value}"
                "（Web 写自动取 human；AI 写需 --open-gate 或在监控面切换）")
     if not no_open:
@@ -504,6 +525,7 @@ def ai(
         typer.echo(f"  cockpit（监控面）: {cockpit.url}（.cockpit-port 已写）")
     typer.echo(f"  dsh 面板发现: {web_port_file.name} ← {settings.web.port}"
                "（插件经同源只读路由读它，不回落默认端口）")
+    _publish_and_announce_control_token()
 
     # 2) 后台：Web 面板（dsh 侧边栏 iframe 它；含 /monitor 操作审计页）
     web_app = create_app(container, stack)

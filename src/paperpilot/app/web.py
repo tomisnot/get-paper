@@ -286,9 +286,13 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         mecha History（command.<name> 审计 + 配置态 KV）+ 概括（可被原始证伪）。
         无 stack（独立测试）时如实报“未接监控面”，不假装空。
         """
+        from .control_token import read_control_token
+
+        control_ready = read_control_token() is not None
         if stack is None:
             return render(request, "monitor.html", view=None, mode=None,
-                          events=[], config=None, stack_ready=False)
+                          events=[], config=None, stack_ready=False,
+                          control_ready=control_ready)
         from mecha.cockpit import (
             MonitorSource,
             activity_records,
@@ -305,18 +309,47 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         config = config_tree(source)
         mode = getattr(stack["authority"].mode, "value", stack["authority"].mode)
         return render(request, "monitor.html", view=view, mode=str(mode),
-                      events=events, config=config, stack_ready=True)
+                      events=events, config=config, stack_ready=True,
+                      control_ready=control_ready)
 
     @app.post("/monitor/mode")
-    def switch_write_mode(target: str = Form("locked")):
-        """人类侧切写权模式（单写权：只有 side=human 能切，AI 不能自解锁）。
+    def switch_write_mode(target: str = Form("locked"), token: str = Form("")):
+        """人类侧切写权模式：**口令 + 服务端钉 actor=human**（两道都要）。
 
-        serve 默认 LOCKED：用本控制把写权授予 AI（target=ai）才能让 dsh 里的 AI 写；
-        取回 human / 锁定同理。Web 写会自动取 human，故授予 AI 后别在 Web 上写。
+        ⚠ **边界（如实写，不假装在防）**：这个口令挡的是**本机其他进程**，
+        **挡不住有权读你文件的 AI**（它能读到 `~/.paperpilot/control-token`）。
+        它存在的意义是让"控制端点不是谁都能按"成立，**不是**"AI 不能自授权"——
+        后者靠口令放在**仓外**（AI 的文件访问通常被限在工作区）来尽量成立。
+
+        **fail-closed**：口令文件不存在 / 口令空 / 不匹配 ⇒ **403 + 可读错误**，
+        **绝不静默放行**（控制端点没有"默认放开"这一档）。
         """
         if stack is None:
             return RedirectResponse("/monitor?msg=未接监控面", status_code=303)
         from urllib.parse import quote
+
+        from .control_token import verify_control_token
+
+        if not verify_control_token(token):
+            detail = ("本实例未发布控制口令（`paperpilot serve` / `ai` 启动时会打印一个，"
+                      "存在用户家目录 `~/.paperpilot/control-token`）"
+                      if not token else "口令不对")
+            return HTMLResponse(
+                status_code=403,
+                content=(
+                    "<!doctype html><meta charset='utf-8'>"
+                    "<title>403 写权切换被拒</title>"
+                    "<div style='font:14px/1.7 system-ui;max-width:44em;margin:3em auto'>"
+                    "<h1 style='font-size:18px'>403：写权切换被拒</h1>"
+                    f"<p>{detail}。</p>"
+                    "<p>控制端点采取 <b>fail-closed</b>：没有口令就一律拒绝，不会默认放开。"
+                    "口令在启动 `paperpilot serve` / `paperpilot ai` 的那个控制台里，"
+                    "也可以直接看 <code>~/.paperpilot/control-token</code>"
+                    "（<b>刻意放在仓外</b>：本机制挡的是本机其他进程，"
+                    "挡不住能读你文件的 AI——这条边界是明说的，不是默认的）。</p>"
+                    "<p><a href='/monitor'>← 回到操作审计页</a></p>"
+                    "</div>"),
+            )
 
         from mecha.authority import Mode
         try:
