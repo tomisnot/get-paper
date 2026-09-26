@@ -289,5 +289,36 @@ def test_w6_settings_default_and_no_keywords_fallback(tmp_path):
     assert qs and "AND" not in qs[-1]                            # 退回纯分类 OR
 
 
+# ---------------------------------------------- 同日两版日报：一天只认一行（实测 bug）
+def test_same_day_two_finalizations_read_as_one_briefing(tmp_path):
+    """能红：同日重跑定稿（旧行 superseded）⇒ 列表/日期高亮只认一条；删除删整天；
+    undo 回滚的是当时那份（latest）。不误报：别的日期不受影响。"""
+    _c, reg = _reg(tmp_path)
+    repo = _c.repo
+
+    def mk(markdown: str) -> None:
+        repo.save_briefing(date="2098-01-02", run_id=f"r-{markdown}", title="T",
+                           markdown=markdown, stats={"items": []}, ai_enabled=False,
+                           actor="test", reason="同日二版")
+        repo.save_briefing(date="2098-01-03", run_id="other", title="T2",
+                           markdown="# 别的一天", stats={"items": []},
+                           ai_enabled=False, actor="test", reason="对照日")
+
+    mk("# v1")
+    mk("# v2")
+    same_day = [b for b in repo.briefings(limit=30) if b.date == "2098-01-02"]
+    assert len(same_day) == 1, f"同日冒出 {len(same_day)} 行：高亮/删除都会双打"
+    dates = [b.date for b in repo.briefings(limit=30)]
+    assert len(dates) == len(set(dates)), "日期列表重复——chip 会一起亮"
+
+    out = reg.invoke("delete_briefing", date="2098-01-02")
+    assert out["ok"] and out["deleted"] == 2        # 一把删整天（含历史行），语义自洽
+    assert [b.date for b in repo.briefings(limit=30)] == ["2098-01-03"]   # 对照日不动
+    und = reg.invoke("undo", seq=0)
+    assert und["ok"] and und.get("op") == "delete_briefing"
+    back = [b for b in repo.briefings(limit=30) if b.date == "2098-01-02"]
+    assert len(back) == 1 and back[0].markdown == "# v2"   # 回滚的是当时那份
+
+
 if __name__ == "__main__":        # 方便单跑
     raise SystemExit(pytest.main([__file__, "-q"]))

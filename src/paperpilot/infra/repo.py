@@ -663,9 +663,19 @@ class PaperRepository:
             )
 
     def briefings(self, *, limit: int = 30) -> list[Briefing]:
+        """当前简报列表：**一天只认一行**。
+
+        `save_briefing` 重跑时会把旧行标 `superseded` 留在库里作历史；若把它们
+        一起当条目端出去，同日就会"两篇日报"——日期高亮双份、管理表两行共命运
+        （用户实测：同删同亮）。superseded 是内部历史，不是可管理对象。"""
         with self.sf() as s:
             return list(
-                s.scalars(select(Briefing).order_by(Briefing.date.desc()).limit(limit))
+                s.scalars(
+                    select(Briefing)
+                    .where(Briefing.status != "superseded")
+                    .order_by(Briefing.date.desc())
+                    .limit(limit)
+                )
             )
 
     def delete_briefing(self, date: str, *, actor: str = "human",
