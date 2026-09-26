@@ -94,6 +94,9 @@ class Settings(BaseModel):
     lookback_days: int = 7
     arxiv_categories: list[str] = Field(default_factory=lambda: ["cs.CL", "cs.AI", "cs.LG"])
     max_results_per_query: int = 50
+    # W6（抓取去噪）：全局兜底查询是否叠加"各主题关键词并集"过滤；
+    # 关掉（False）则退回"分类 OR 取最新"的宽进模式（也可靠 topic 查询兼容主题无 keywords）。
+    fetch_global_fallback: bool = True
     scoring: ScoringCfg = Field(default_factory=ScoringCfg)
     ai: AICfg = Field(default_factory=AICfg)
     notify: NotifyCfg = Field(default_factory=NotifyCfg)

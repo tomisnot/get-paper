@@ -22,6 +22,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { PANEL_CONFIG } from '../panel/panel-config.ts'
 import { MonitorTabBody } from '../panel/MonitorTabBody.tsx'
 import { MonitorButton, type MonitorInjected } from './MonitorButton.tsx'
+import { ReviewSopButton } from './ReviewSopButton.tsx'
 
 /** Cordis 插件名（与 host 半一致）。 */
 export const name = 'paperpilot'
@@ -50,6 +51,13 @@ export async function apply(ctx: Context): Promise<void> {
         MonitorButton,
       ))
 
+    // 「☀ 评审今日」（D1）：把固定评审 SOP 一键复制进剪贴板（零宿主 API 假设）。
+    const disposeSopBtn = ctx.slots.inject('conversation.session.header.actions', () =>
+      ctx.slots.register(
+        { name: 'conversation.session.header.actions', id: 'pp-review-sop', order: 202 },
+        ReviewSopButton,
+      ))
+
     // 页签类型 + body：零 react 判据在资产自测里；.tsx 壳只过 typecheck。
     const releaseTabType = ctx.sidebarRightTabs?.register?.({
       id: MONITOR_TAB_ID, kind: MONITOR_TAB_ID, title: () => PANEL_CONFIG.TITLE,
@@ -61,6 +69,7 @@ export async function apply(ctx: Context): Promise<void> {
       ))
 
     return () => {
+      try { disposeSopBtn?.() } catch { /* ignore */ }
       if (disposeTabBody) { try { disposeTabBody() } catch { /* ignore */ } }
       if (typeof releaseTabType === 'function') { try { releaseTabType() } catch { /* ignore */ } }
       try { disposeMonitorBtn?.() } catch { /* ignore */ }

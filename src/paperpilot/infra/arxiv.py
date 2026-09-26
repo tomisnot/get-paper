@@ -153,9 +153,13 @@ def _date_window(since: datetime | None, until: datetime | None) -> str:
 
 
 def build_queries(
-    topics: Sequence, categories: Sequence[str] = ()
+    topics: Sequence, categories: Sequence[str] = (), *, global_fallback: bool = True
 ) -> list[str]:
-    """主题 query + 全局分类兜底 query。"""
+    """主题 query + 全局兜底 query。
+
+    W6（抓取去噪）：兜底查询**关键词化**——分类 OR 再 AND 各主题关键词的并集，
+    不再无脑取泛 AI 分类最新 N 篇（实测：技术主题的兜底把候选池灌成噪声）。
+    主题全无 keywords 时退回旧行为（分类 OR）；`global_fallback=False` 则不拼兜底。"""
     queries: list[str] = []
     for topic in topics:
         tq = _or_cats(topic.categories)
@@ -164,12 +168,20 @@ def build_queries(
         query = " AND ".join(p for p in parts if p)
         if query and query not in queries:
             queries.append(query)
+    if not global_fallback:
+        return queries
     all_cats = list(dict.fromkeys([*categories, *[c for t in topics for c in t.categories]]))
     cat_query = _or_cats(all_cats)
-    if cat_query:
+    all_kws = list(dict.fromkeys([k for t in topics for k in (t.keywords or []) if k.strip()]))
+    kw_query = _or_keywords(all_kws)
+    if cat_query and kw_query:
+        wrapped = f"({cat_query}) AND ({kw_query})"
+    elif cat_query:
         wrapped = f"({cat_query})"
-        if wrapped not in queries:
-            queries.append(wrapped)
+    else:
+        wrapped = ""
+    if wrapped and wrapped not in queries:
+        queries.append(wrapped)
     return queries
 
 
@@ -361,11 +373,13 @@ class ArxivClient:
         since: datetime | None = None,
         until: datetime | None = None,
         max_per_query: int = 50,
+        global_fallback: bool = True,
     ) -> list[NormalizedPaper]:
-        """按主题 + 全局分类抓取候选，按 arxiv_id 去重（保留高版本）。"""
+        """按主题 + 全局兜底抓取候选，按 arxiv_id 去重（保留高版本）。"""
         window = _date_window(since, until)
         by_id: dict[str, NormalizedPaper] = {}
-        for base_query in build_queries(topics, categories):
+        for base_query in build_queries(topics, categories,
+                                        global_fallback=global_fallback):
             query = f"{base_query} AND {window}" if window else base_query
             try:
                 papers = self.collect(query, max_per_query=max_per_query)

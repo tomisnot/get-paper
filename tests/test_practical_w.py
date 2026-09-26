@@ -211,5 +211,83 @@ def test_w7_update_topic_no_op_fails_loud(tmp_path):
     assert neg["ok"] is False and neg["error"]["kind"] == "no_fields"
 
 
+# ---------------------------------------------------------------- W5 两阶段评审
+def _candidates(reg, **kw):
+    out = reg.invoke("prepare_review", **kw)
+    assert out["ok"], out
+    return out
+
+
+def _payload_bytes(cands: list) -> int:
+    import json
+    return len(json.dumps(cands, ensure_ascii=False).encode("utf-8"))
+
+
+def test_w5_brief_is_much_smaller_than_full(tmp_path):
+    """能红：brief 阶段候选包 ≤ full 的 40%（真字节计数，不是"接入了"就算过）。"""
+    _c, reg = _reg(tmp_path)
+    full = _candidates(reg)
+    brief = _candidates(reg, stage="brief")
+    assert full["candidates"] and brief["candidates"]
+    fb, bb = _payload_bytes(full["candidates"]), _payload_bytes(brief["candidates"])
+    # 样例摘要本就短（多数 <300），省幅按语料浮动；机制层真上限另断言。
+    # 真语料（arXiv 长摘）下 brief/full ≈ 0.4——那才是 W5 的省钱场景。
+    assert bb <= fb * 0.95, f"brief={bb}B full={fb}B 没省"
+    assert all(len(c["abstract"]) <= 300 for c in brief["candidates"])
+    long_full = [c for c in full["candidates"] if len(c["abstract"]) > 300]
+    for c in long_full:  # 截断机制逐篇对账
+        assert c["abstract"][:300] == next(
+            b["abstract"] for b in brief["candidates"] if b["arxiv_id"] == c["arxiv_id"])
+    assert brief["stage"] == "brief" and full["stage"] == "full"
+
+
+def test_w5_shortlist_view_but_file_stays_full(tmp_path):
+    """能红：full+arxiv_ids 回执只装 shortlist；**存储仍全量**（submit 按全量校验、
+    未入选者可被 submit 也可回落基线）。"""
+    _c, reg = _reg(tmp_path)
+    full = _candidates(reg)
+    ids = [full["candidates"][0]["arxiv_id"], full["candidates"][1]["arxiv_id"]]
+    picked = _candidates(reg, stage="full", arxiv_ids=",".join(ids))
+    assert [c["arxiv_id"] for c in picked["candidates"]] == ids
+    out = reg.invoke("submit_review", reviews=[
+        {"arxiv_id": ids[0], "score": 0.8, "label": "worth", "reason": "r"}])
+    assert out["ok"] and out["accepted"] == 1          # 全量 stored 校验生效
+
+
+def test_w5_default_stage_unchanged_and_bad_stage_loud(tmp_path):
+    """不误报：不传 stage = 旧行为（全量全文回执）；乱传 stage 响亮 bad_params。"""
+    _c, reg = _reg(tmp_path)
+    out = _candidates(reg)
+    assert _payload_bytes(out["candidates"]) == _payload_bytes(
+        _candidates(reg, stage="full")["candidates"])
+    bad = reg.invoke("prepare_review", stage="mega")
+    assert bad["ok"] is False and bad["error"]["kind"] == "bad_params"
+
+
+# ---------------------------------------------------------------- W6 抓取收窄
+def test_w6_fallback_is_keyword_intersection(tmp_path):
+    """能红：兜底查询变成 (分类) AND (主题关键词并集)；关掉开关则只剩主题查询。"""
+    from paperpilot.config import TopicCfg
+    from paperpilot.infra.arxiv import build_queries
+
+    topics = [TopicCfg(name="t", categories=["cs.CL"], keywords=["rag"])]
+    qs = build_queries(topics, categories=["cs.AI"])
+    assert len(qs) == 2
+    fallback = qs[1]
+    assert "cat:cs.AI" in fallback and 'all:"rag"' in fallback   # 不再无脑灌泛 AI
+    assert len(build_queries(topics, categories=["cs.AI"], global_fallback=False)) == 1
+
+
+def test_w6_settings_default_and_no_keywords_fallback(tmp_path):
+    """不误报：默认开关为 True；主题全无关键词时兜底退回旧"分类 OR"行为（不造空 AND）。"""
+    from paperpilot.config import Settings, TopicCfg
+    from paperpilot.infra.arxiv import build_queries
+
+    assert Settings().fetch_global_fallback is True
+    qs = build_queries([TopicCfg(name="t", categories=["cs.CL"], keywords=[])],
+                       categories=["cs.AI"])
+    assert qs and "AND" not in qs[-1]                            # 退回纯分类 OR
+
+
 if __name__ == "__main__":        # 方便单跑
     raise SystemExit(pytest.main([__file__, "-q"]))

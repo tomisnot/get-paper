@@ -54,6 +54,8 @@ log = logging.getLogger("paperpilot.pipeline")
 # 交给 AI 评审的候选上限（防 context 爆炸；回程体积纪律同 Energy Level I4）
 _MAX_REVIEW_CANDIDATES = 40
 _REVIEW_ABSTRACT_CHARS = 700
+#: W5 两阶段评审：brief 阶段的短摘长度（粗筛只看标题+短摘，省 ~2/3 评审 input）。
+_BRIEF_ABSTRACT_CHARS = 300
 
 #: 合法标签的单一事实源（N9）：越界不静默降级，而是进 rejected。
 _RELEVANT_LABELS = ("must_read", "worth", "skip")
@@ -180,7 +182,7 @@ class DailyPipelineService:
     # ================================================================== 分段驱动（MCP/AI）
     def prepare_review(
         self, when: date | None = None, *, actor: str = "ai", reason: str = "",
-        requeue: bool = False,
+        requeue: bool = False, stage: str = "full", arxiv_ids: tuple[str, ...] = (),
     ) -> PreparedReview:
         """阶段 1-3：候选 → 硬规则 → 基线分（heuristic）。落 review 文件，等外部评审。
 
@@ -223,17 +225,26 @@ class DailyPipelineService:
         floor = float(getattr(self._eff_scoring(), "review_floor", 0.0) or 0.0)
         above = [x for x in unique_ranked if x[2].score >= floor]
         floor_applied = {"floor": floor, "kept": len(above), "total": len(unique_ranked)}
+        # W5 两阶段：brief ⇒ 只给标题+短摘（粗筛）；full+arxiv_ids ⇒ 回执只装 shortlist
+        # 的全文摘要（**review 文件仍存全量**，submit 按全量校验、finalize 行为不变）。
+        brief = stage == "brief"
+        cut = _BRIEF_ABSTRACT_CHARS if brief else _REVIEW_ABSTRACT_CHARS
+        wanted = {x.strip() for x in arxiv_ids if x.strip()}
         candidates = [
             {
                 "arxiv_id": paper.arxiv_id,
                 "title": paper.title,
                 "primary_category": paper.primary_category,
                 "topic": topic.name,
-                "abstract": (paper.abstract or "")[:_REVIEW_ABSTRACT_CHARS],
+                "abstract": (paper.abstract or "")[:cut],
                 "baseline": score.model_dump(),
             }
             for paper, topic, score in above[:_MAX_REVIEW_CANDIDATES]
         ]
+        if wanted:
+            view = [c for c in candidates if c["arxiv_id"] in wanted]
+        else:
+            view = candidates
         # ⭐ 空池诊断：不再静默 ok:true+candidates:[]；不写 review 文件。
         if not candidates:
             diagnosis = self._diagnose_empty_review(
@@ -248,7 +259,7 @@ class DailyPipelineService:
             )
             return PreparedReview(
                 date=date_str, run_id=run_id,
-                payload={"date": date_str, "run_id": run_id,
+                payload={"date": date_str, "run_id": run_id, "stage": stage,
                          "_empty_diagnosis": diagnosis},
             )
 
@@ -268,12 +279,19 @@ class DailyPipelineService:
                 }
                 for t in topics.values()
             ],
-            "candidates": candidates,
+            "candidates": view,
+            "stage": stage,
             "how_to_review": (
+                ("【粗筛】只看标题+短摘：挑出值得精评的 ≤15 篇，回 "
+                 "prepare_review(date=…, stage='full', arxiv_ids='id1,id2,…') 拉全文摘要，"
+                 "再逐篇精评后 submit_review（提交按全量候选校验，未评的回落基线分）。")
+                if brief else
                 "逐篇判断与用户研究兴趣的相关性：score∈[0,1]、label∈"
                 "{must_read,worth,skip}、reason 用一句中文说明；对你想入选的篇目额外给 "
                 "summary{tldr,problem,method,results,novelty,keywords}（只依据给定摘要，不得编造）。"
-                "完成后调用 submit_review 一次性提交全部评审。"
+                + (f"本轮只精评 shortlist 内 {len(view)} 篇（其余存而未评，finalize 回落基线）。"
+                   if wanted else "")
+                + "完成后调用 submit_review 一次性提交全部评审。"
             ),
         }
         self._save_review_file(date_str, run_id, unique_ranked)

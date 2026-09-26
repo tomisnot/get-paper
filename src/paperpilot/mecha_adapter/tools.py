@@ -97,7 +97,9 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
              "下载论文 PDF 到本地库并归档（幂等：已下载直接返回本地路径）。",
              omit=("actor",)),
     ToolDecl("prepare_review", "prepare_review", "write",
-             "评审阶段1：取过规则后的候选清单（含主题画像、摘要截断、基线分），等待评审。",
+             "评审阶段1：取过规则后的候选清单（含主题画像、摘要截断、基线分），等待评审。"
+             "两阶段（W5 省 token）：stage=brief 只看标题+短摘粗筛，再 stage=full+arxiv_ids "
+             "拉 shortlist 全文精评；池子空时 requeue=True 可原班人马再审。",
              omit=("actor",)),
     ToolDecl("submit_review", "submit_review", "write",
              "评审阶段2：提交对候选的评审。reviews=[{arxiv_id,score,label,reason,tags?,summary?}]。",

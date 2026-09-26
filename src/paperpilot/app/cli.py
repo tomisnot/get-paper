@@ -241,6 +241,12 @@ def main(
     ctx: typer.Context,
     config: Path = typer.Option(None, "--config", "-c", help="配置文件路径"),
 ) -> None:
+    # GBK 控制台炸弹（实测）：typer echo 打 emoji（🟢/⚪️/🌐/📦）在 cp936 直接
+    # UnicodeEncodeError——与 hub.main 同款处置：stdout/stderr 统一 UTF-8 + replace。
+    import sys
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
     if ctx.invoked_subcommand is None:
         _serve_impl(config)
 
@@ -644,20 +650,6 @@ def backup(config: Path = typer.Option(None, "--config", "-c")) -> None:
     typer.echo(f"📦 备份完成: {target}")
 
 
-@app.command(name="topics")
-def topics_cmd(config: Path = typer.Option(None, "--config", "-c")) -> None:
-    """列出当前配置的研究主题。"""
-    from ..config import load_settings
-
-    settings = load_settings(config)
-    for t in settings.topics:
-        flag = "🟢" if t.enabled else "⚪️"
-        typer.echo(
-            f"{flag} {t.name}（分类 {','.join(t.categories) or '不限'} · "
-            f"关键词 {len(t.keywords)} 个 · quota {t.quota} · 阈值 {t.threshold}）"
-        )
-
-
 @app.command(name="tools")
 def tools_cmd(
     config: Path = typer.Option(None, "--config", "-c"),
@@ -741,3 +733,64 @@ def _write_briefing_file(settings, date_str: str, markdown: str) -> None:
     out_dir = settings.data_dir / "briefings"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"{date_str}.md").write_text(markdown, encoding="utf-8")
+
+
+@app.command("topics")
+def topics_cmd(
+    action: str = typer.Argument("list", help="list | add | update（delete 在 Web 设置页）"),
+    name: str = typer.Option("", "--name", help="主题名（add/update 必填）"),
+    keywords: str = typer.Option("", "--keywords", help="关键词，逗号分隔"),
+    categories: str = typer.Option("", "--categories", help="arXiv 分类，逗号分隔"),
+    exclude_keywords: str = typer.Option("", "--exclude-keywords"),
+    authors: str = typer.Option("", "--authors", help="关注作者（仅 update）"),
+    description: str = typer.Option("", "--description"),
+    quota: int = typer.Option(-1, "--quota"),
+    threshold: float = typer.Option(-1.0, "--threshold"),
+    json_out: bool = typer.Option(False, "--json", help="输出能力信封原文"),
+    config: Path = typer.Option(None, "--config", "-c"),
+) -> None:
+    """主题管理（W10）：list/add/update 与 MCP/Web 走**同一能力层**（actor=human，
+    YAML 单一事实源）；delete 在 Web 设置页（人类侧管理动作）。"""
+    import json as _json
+
+    from ..config import load_settings
+
+    settings_obj = load_settings(config)
+    if action == "list":
+        if not json_out:                       # 保留旧版人读形态（🟢/⚪️ 一眼看启用）
+            for t in settings_obj.topics:
+                flag = "🟢" if t.enabled else "⚪️"
+                typer.echo(
+                    f"{flag} {t.name}（分类 {','.join(t.categories) or '不限'} · "
+                    f"关键词 {len(t.keywords)} 个 · quota {t.quota} · 阈值 {t.threshold}）"
+                )
+            raise typer.Exit(0)
+        from .. import capabilities
+        from .container import build_container
+        res = capabilities.registry_for(build_container(settings_obj)).invoke("list_topics")
+        typer.echo(_json.dumps(res, ensure_ascii=False, default=str))
+        raise typer.Exit(0 if res.get("ok") else 1)
+    if action not in ("add", "update"):
+        typer.echo(f"未知 action：{action}（list|add|update）")
+        raise typer.Exit(2)
+    if not name:
+        typer.echo(f"{action} 需要 --name")
+        raise typer.Exit(2)
+    from .. import capabilities
+    from .container import build_container
+
+    reg = capabilities.registry_for(build_container(settings_obj))
+    if action == "add":
+        res = reg.invoke(
+            "add_topic", name=name, keywords=keywords, categories=categories,
+            exclude_keywords=exclude_keywords, description=description,
+            quota=4 if quota < 1 else quota,
+            threshold=0.6 if threshold < 0 else threshold,
+            actor="human", reason="CLI topics add")
+    else:
+        res = reg.invoke(
+            "update_topic", name=name, keywords=keywords, categories=categories,
+            exclude_keywords=exclude_keywords, authors=authors, description=description,
+            quota=quota, threshold=threshold, actor="human", reason="CLI topics update")
+    typer.echo(_json.dumps(res, ensure_ascii=False, default=str, indent=None if json_out else 2))
+    raise typer.Exit(0 if res.get("ok") else 1)

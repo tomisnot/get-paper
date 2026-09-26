@@ -45,6 +45,10 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "prepare_review": {"date": "日期 ISO 格式（省略=今天）",
                        "requeue": "适用：池子被上轮消费光、想原班人马再审——把近 lookback 内 "
                                   "archived/in_briefing 拉回 new 重新出题（可 undo 回退）",
+                       "stage": "full（默认，全文摘要直接评）| brief（W5 粗筛：标题+300字短摘，"
+                                "选完 shortlist 再用 stage=full+arxiv_ids 拉全文）",
+                       "arxiv_ids": "逗号分隔的 shortlist（配合 stage=full 使用：回执只装这些篇目的全文摘要；"
+                                    "省略=全量回执）",
                        "reason": "一句话中文说明目的"},
     "submit_review": {"reviews": "评审列表 [{arxiv_id,score,label,reason,…}]",
                       "date": "评审对应日期 ISO 格式（省略=今天）",
@@ -253,6 +257,7 @@ def build_registry(container) -> Registry:
             papers = client.fetch_candidates(
                 topics=settings.topics, categories=settings.arxiv_categories,
                 since=datetime.utcnow() - timedelta(days=max(1, int(days))),
+                global_fallback=settings.fetch_global_fallback,
             )
         finally:
             client.close()
@@ -306,11 +311,16 @@ def build_registry(container) -> Registry:
               description="阶段1：取过规则后的候选清单（含主题画像+摘要截断+基线分），等外部评审。"
                           "同一天想再跑一遍评审可 requeue=True（把近 lookback 内 archived/in_briefing "
                           "拉回 new 再审；走可逆事件，undo 一键回退，旧简报行仍在库中）。")
-    def prepare_review(date: str = "", requeue: bool = False,
+    def prepare_review(date: str = "", requeue: bool = False, stage: str = "full",
+                       arxiv_ids: str = "",
                        actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        if stage not in ("full", "brief"):
+            return err("bad_params", f"stage 只能是 full|brief，收到 {stage!r}",
+                       hint="两阶段评审：先 stage='brief' 粗筛，再 stage='full'+arxiv_ids 精评")
         prepared = pipeline.prepare_review(
             _parse_date(date), actor=actor, reason=reason or "外部请求评审候选",
-            requeue=requeue,
+            requeue=requeue, stage=stage,
+            arxiv_ids=tuple(x.strip() for x in arxiv_ids.replace("，", ",").split(",") if x.strip()),
         )
         payload = prepared.payload
         diag = payload.get("_empty_diagnosis")
