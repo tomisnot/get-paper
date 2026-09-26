@@ -76,6 +76,7 @@
   .flash { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; border-radius: 8px;
            padding: 8px 12px; font-size: 13px; margin-bottom: 14px; }
 </style>
+{% block head_extra %}{% endblock %}
 </head>
 <body>
 <nav>
@@ -83,6 +84,7 @@
   <a href="/">今日简报</a>
   <a href="/papers">论文库</a>
   <a href="/activity">记录仪</a>
+  <a href="/monitor">操作审计</a>
   <a href="/settings">设置</a>
   <span class="spacer"></span>
   <span class="muted">{{ container.settings.data_dir.name }} · AI: {{ container.ai_provider }}</span>

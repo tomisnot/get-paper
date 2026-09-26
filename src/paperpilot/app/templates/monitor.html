@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}操作审计 · PaperPilot{% endblock %}
+{% block head_extra %}{% if stack_ready %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
+{% block content %}
+<h1>操作审计面</h1>
+<p class="muted">
+  mecha 操作者审计面（History 的只读投影）：谁、何时、经哪条命令改了什么。与
+  <a href="/activity">记录仪</a>（域数据 before→after + undo）互补——本页看“操作流水”，记录仪看“数据变化”。
+</p>
+
+{% if not stack_ready %}
+  <div class="warn">未接监控面：本 Web 实例未经统一启动入口（<code>paperpilot serve</code>）装配 mecha 栈，故无操作审计。用 <code>paperpilot serve</code> 启动即可看到本页数据。</div>
+{% else %}
+  <div class="card">
+    <div class="row">
+      <div>
+        <h3>写权模式</h3>
+        <div class="kv"><span class="chip {% if mode == 'ai' %}worth{% elif mode == 'human' %}must{% endif %}">{{ mode }}</span>
+        <span class="muted">locked=谁都不可写 · human=Web 侧 · ai=AI 侧（单写权，人类侧开闸）</span></div>
+        <form method="post" action="/monitor/mode" class="actions">
+          <button type="submit" name="target" value="ai" class="ghost">授予 AI 写权</button>
+          <button type="submit" name="target" value="human" class="ghost">取回 human</button>
+          <button type="submit" name="target" value="locked" class="ghost">锁定</button>
+        </form>
+        <div class="muted">Web 写会自动取 human；要让 dsh 里的 AI 写，先“授予 AI 写权”并别在 Web 上写。</div>
+      </div>
+      <div>
+        <h3>概括</h3>
+        <div class="kv">
+          <span class="stat">写操作 {{ view.summary.write_count }}</span>
+          <span class="stat">失败 {{ view.summary.failed_writes }}</span>
+          {% if view.summary.last_command %}<span class="stat">最近 {{ view.summary.last_command }}</span>{% endif %}
+        </div>
+        {% if view.summary.threshold %}<div class="kv"><b>阈值</b>{{ view.summary.threshold.value }} <span class="muted">（对账 {{ view.summary.threshold.target }}）</span></div>{% endif %}
+        {% if view.summary.max_papers %}<div class="kv"><b>单期上限</b>{{ view.summary.max_papers.value }}</div>{% endif %}
+        {% if view.summary.lookback_days %}<div class="kv"><b>回溯天数</b>{{ view.summary.lookback_days.value }}</div>{% endif %}
+      </div>
+    </div>
+    {% if view.disputed %}
+      <div class="warn">⚠ 概括与原始史不一致（原始赢）：{{ view.dispute_reason }}</div>
+    {% else %}
+      <div class="muted" style="margin-top:8px">✓ 概括可被原始史对账（无存疑）</div>
+    {% endif %}
+  </div>
+
+  <h2>近期操作（新→旧，最多 60 条）</h2>
+  {% if events %}
+  <table>
+    <thead><tr><th>seq</th><th>操作者</th><th>键 / 命令</th><th>值</th><th>call_id</th></tr></thead>
+    <tbody>
+    {% for e in events %}
+      <tr>
+        <td class="muted">{{ e.seq }}</td>
+        <td><span class="chip {% if e.actor == 'ai' %}worth{% elif e.actor == 'human' %}must{% endif %}">{{ e.actor }}</span></td>
+        <td><code>{{ e.target }}</code></td>
+        <td><details class="json-d"><summary>查看</summary><pre class="json">{{ e.value | prettyjson }}</pre></details></td>
+        <td class="muted">{{ e.call_id or "—" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <div class="empty">还没有操作审计事件（配置种子除外）。AI 或 Web 写一次后即可见。</div>
+  {% endif %}
+
+  {% if config %}
+  <h2>配置态（Gate 快照）</h2>
+  <p class="muted">schema 声明 {{ config.n_keys }} 键 · 快照实有 {{ config.n_snapshot_keys }} 键（差值即命令审计等非配置键，见下方 orphans）。</p>
+  {% for family, prefixes in config.groups.items() %}
+    <h3>{{ family }}</h3>
+    <table>
+      <tbody>
+      {% for grp in prefixes %}{% for row in grp.rows %}
+        <tr><td><code>{{ row.name }}</code></td><td>{{ row.value }}</td><td class="muted">{{ row.desc }}</td></tr>
+      {% endfor %}{% endfor %}
+      </tbody>
+    </table>
+  {% endfor %}
+  {% if config.orphans %}
+    <h3>其它键（审计事件等）</h3>
+    <table><tbody>
+    {% for o in config.orphans %}<tr><td><code>{{ o.name }}</code></td><td><details class="json-d"><summary>查看</summary><pre class="json">{{ o.value | prettyjson }}</pre></details></td></tr>{% endfor %}
+    </tbody></table>
+  {% endif %}
+  {% endif %}
+{% endif %}
+{% endblock %}

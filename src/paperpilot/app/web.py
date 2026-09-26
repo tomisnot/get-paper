@@ -18,11 +18,18 @@ from .container import Container, run_in_background
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 
-def create_app(container: Container) -> FastAPI:
+def create_app(container: Container, stack: dict | None = None) -> FastAPI:
+    """建 FastAPI 应用。
+
+    ``stack`` = mecha 共享栈（由统一启动入口 ``paperpilot serve`` 传入）。给了它，
+    人类面的论文库写就走**同一道门**（human 通道 + authority + 审计进 cockpit）；
+    不给（如独立测试）则回退到直调 retrieval/capabilities（向后兼容）。
+    """
     app = FastAPI(title="PaperPilot", docs_url=None, redoc_url=None)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["prettyjson"] = _pretty_json
     app.state.container = container
+    app.state.stack = stack
     app.state.templates = templates
 
     def render(request: Request, template: str, **ctx) -> HTMLResponse:
@@ -30,6 +37,16 @@ def create_app(container: Container) -> FastAPI:
         ctx.setdefault("container", container)
         ctx.setdefault("msg", request.query_params.get("msg", ""))
         return templates.TemplateResponse(request, template, ctx)
+
+    def _gated(cmd: str, **args) -> str:
+        """经门（human 通道）写一个命令；返回给用户的消息串（空串=成功无提示）。"""
+        from ..mecha_adapter.hub import human_write
+
+        res = human_write(stack, cmd, **args)
+        if res.get("is_error"):
+            info = res["error"].get("info", {})
+            return f"操作被拒（{info.get('kind', 'error')}）：{res['error'].get('message', '')}"
+        return ""
 
     # ---------------------------------------------------------------- 简报
     @app.get("/", response_class=HTMLResponse)
@@ -82,45 +99,70 @@ def create_app(container: Container) -> FastAPI:
         return render(request, "paper_detail.html", detail=detail, arxiv_id=arxiv_id)
 
     # ---------------------------------------------------------------- 论文动作
+    # 有 stack（统一启动）→ 经 mecha 命令面（human 通道 + 写权门 + 审计）；否则直调（向后兼容）。
     @app.post("/papers/{arxiv_id}/read")
     def toggle_read(arxiv_id: str):
-        container.retrieval.toggle_read(arxiv_id)
-        return RedirectResponse(_back(arxiv_id), status_code=303)
+        if stack is None:
+            container.retrieval.toggle_read(arxiv_id)
+            return RedirectResponse(_back(arxiv_id), status_code=303)
+        detail = container.retrieval.detail(arxiv_id)
+        cur = bool(detail and detail.get("reading") and detail["reading"].read)
+        msg = _gated("mark_read", arxiv_id=arxiv_id, read=not cur, reason="Web 切换已读态")
+        return RedirectResponse(_back(arxiv_id, msg), status_code=303)
 
     @app.post("/papers/{arxiv_id}/star")
     def toggle_star(arxiv_id: str):
-        container.retrieval.star(arxiv_id)
-        return RedirectResponse(_back(arxiv_id), status_code=303)
+        if stack is None:
+            container.retrieval.star(arxiv_id)
+            return RedirectResponse(_back(arxiv_id), status_code=303)
+        msg = _gated("star_paper", arxiv_id=arxiv_id, reason="Web 收藏/取消收藏")
+        return RedirectResponse(_back(arxiv_id, msg), status_code=303)
 
     @app.post("/papers/{arxiv_id}/skip")
     def mark_skip(arxiv_id: str):
-        container.retrieval.skip(arxiv_id)
-        return RedirectResponse(_back(arxiv_id), status_code=303)
+        if stack is None:
+            container.retrieval.skip(arxiv_id)
+            return RedirectResponse(_back(arxiv_id), status_code=303)
+        msg = _gated("skip_paper", arxiv_id=arxiv_id, reason="Web 标记不感兴趣")
+        return RedirectResponse(_back(arxiv_id, msg), status_code=303)
 
     @app.post("/papers/{arxiv_id}/note")
     def add_note(arxiv_id: str, content: str = Form(...)):
-        container.retrieval.add_note(arxiv_id, content)
-        return RedirectResponse(_back(arxiv_id), status_code=303)
+        if stack is None:
+            container.retrieval.add_note(arxiv_id, content)
+            return RedirectResponse(_back(arxiv_id), status_code=303)
+        msg = _gated("add_note", arxiv_id=arxiv_id, content=content, reason="Web 添加笔记")
+        return RedirectResponse(_back(arxiv_id, msg), status_code=303)
 
     @app.post("/notes/{note_id}/delete")
     def delete_note(note_id: int, arxiv_id: str = Form(...)):
+        # 无对应命令（删笔记是人类独有的管理操作、不与 AI 争写）：保持直调。
         container.retrieval.delete_note(note_id)
         return RedirectResponse(_back(arxiv_id), status_code=303)
 
-    # ---------------------------------------- 下载归档（经中性能力层，界面②调 Python API）
+    # ---------------------------------------- 下载归档（经中性能力层/命令面）
     @app.post("/papers/{arxiv_id}/download")
     def download_paper(arxiv_id: str, next_url: str = Form("")):
-        from urllib.parse import quote
-
-        result = registry_for(container).invoke(
-            "download_paper", arxiv_id=arxiv_id, actor="human", reason="Web 界面下载归档"
-        )
-        if result.get("ok"):
-            msg = "已下载归档到本地" + ("（此前已下载）" if result.get("cached") else "")
-        else:
-            msg = f"下载失败：{result.get('error', {}).get('message', '未知错误')}"
         target = next_url or _back(arxiv_id)
-        return RedirectResponse(f"{target}?msg={quote(msg)}", status_code=303)
+        if stack is None:
+            result = registry_for(container).invoke(
+                "download_paper", arxiv_id=arxiv_id, actor="human", reason="Web 界面下载归档"
+            )
+            if result.get("ok"):
+                msg = "已下载归档到本地" + ("（此前已下载）" if result.get("cached") else "")
+            else:
+                msg = f"下载失败：{result.get('error', {}).get('message', '未知错误')}"
+            return RedirectResponse(_with_msg(target, msg), status_code=303)
+        from ..mecha_adapter.hub import human_write
+
+        res = human_write(stack, "download_paper", arxiv_id=arxiv_id, reason="Web 界面下载归档")
+        if res.get("is_error"):
+            info = res["error"].get("info", {})
+            msg = f"下载失败：{res['error'].get('message', '')}（{info.get('kind', '')}）"
+        else:
+            value = res.get("value", {})
+            msg = "已下载归档到本地" + ("（此前已下载）" if value.get("cached") else "")
+        return RedirectResponse(_with_msg(target, msg), status_code=303)
 
     @app.get("/papers/{arxiv_id}/pdf")
     def local_pdf(arxiv_id: str):
@@ -214,13 +256,15 @@ def create_app(container: Container) -> FastAPI:
 
     @app.post("/settings/run")
     def trigger_run():
-        started = run_in_background(container, actor="human", reason="Web 设置页手动触发")
+        started = run_in_background(
+            container, stack=stack, actor="human", reason="Web 设置页手动触发"
+        )
         msg = "已开始跑批，请稍后刷新查看简报" if started else "已有跑批任务在进行中"
         return RedirectResponse(f"/settings?msg={msg}", status_code=303)
 
     @app.get("/activity", response_class=HTMLResponse)
     def activity_page(request: Request, actor: str = "", op: str = "", since_seq: int = 0):
-        """记录仪（L5 监控面 = 事件总线的只读投影；GAPS.md §3）。"""
+        """记录仪（域数据面 = repo.events 的 before→after delta + undo；L5 监控面）。"""
         events = container.repo.events_since(
             since_seq=since_seq, actor=actor, op=op, limit=100
         )
@@ -233,6 +277,54 @@ def create_app(container: Container) -> FastAPI:
             op=op,
             since_seq=since_seq,
         )
+
+    @app.get("/monitor", response_class=HTMLResponse)
+    def monitor_page(request: Request):
+        """操作者监控面（mecha cockpit 的人话视图，供 dsh 侧边栏 iframe 挂载）。
+
+        与 `/activity`（域数据面 = repo.events）互补：本页是 **操作者审计面** =
+        mecha History（command.<name> 审计 + 配置态 KV）+ 概括（可被原始证伪）。
+        无 stack（独立测试）时如实报“未接监控面”，不假装空。
+        """
+        if stack is None:
+            return render(request, "monitor.html", view=None, mode=None,
+                          events=[], config=None, stack_ready=False)
+        from mecha.cockpit import (
+            MonitorSource,
+            activity_records,
+            config_tree,
+            monitor_summary_payload,
+        )
+
+        from ..mecha_adapter.monitor import config_schema_rows
+
+        source = MonitorSource.from_software(
+            stack["software"], schema_rows=config_schema_rows)
+        view = monitor_summary_payload(stack["monitor"].read())
+        events = activity_records(source)[-60:][::-1]      # 近 60 条，新的在上
+        config = config_tree(source)
+        mode = getattr(stack["authority"].mode, "value", stack["authority"].mode)
+        return render(request, "monitor.html", view=view, mode=str(mode),
+                      events=events, config=config, stack_ready=True)
+
+    @app.post("/monitor/mode")
+    def switch_write_mode(target: str = Form("locked")):
+        """人类侧切写权模式（单写权：只有 side=human 能切，AI 不能自解锁）。
+
+        serve 默认 LOCKED：用本控制把写权授予 AI（target=ai）才能让 dsh 里的 AI 写；
+        取回 human / 锁定同理。Web 写会自动取 human，故授予 AI 后别在 Web 上写。
+        """
+        if stack is None:
+            return RedirectResponse("/monitor?msg=未接监控面", status_code=303)
+        from urllib.parse import quote
+
+        from mecha.authority import Mode
+        try:
+            stack["authority"].switch_mode(Mode(target), side="human")
+            msg = f"写权已切到 {target}"
+        except Exception as exc:  # noqa: BLE001 - 展示可教学拒绝（含非法 target）
+            msg = f"切换失败：{exc}"
+        return RedirectResponse(f"/monitor?msg={quote(msg)}", status_code=303)
 
     # ---------------------------------------------------------------- 健康检查
     @app.get("/healthz")
@@ -265,10 +357,20 @@ def _today() -> str:
     return date.today().isoformat()
 
 
-def _back(arxiv_id: str) -> str:
+def _back(arxiv_id: str, msg: str = "") -> str:
     from urllib.parse import quote
 
-    return f"/papers/{quote(arxiv_id)}"
+    return _with_msg(f"/papers/{quote(arxiv_id)}", msg)
+
+
+def _with_msg(url: str, msg: str) -> str:
+    """把提示消息拼到重定向 URL 的 ?msg=（空消息不拼）。"""
+    if not msg:
+        return url
+    from urllib.parse import quote
+
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}msg={quote(msg)}"
 
 
 def _split_csv(value: str) -> list[str]:
