@@ -136,4 +136,44 @@
     <div style="margin-top:12px;"><button type="submit">添加主题</button></div>
   </form>
 </div>
+
+<h2>简报管理</h2>
+<p class="muted">与主题平行：这里列历史简报，支持手动删除。删除走**与论文写同一道门**（human 通道 +
+  写权 + 审计），且**可撤销**——事件存了 markdown+stats 快照，在 <a href="/activity">/activity</a>
+  页可一键 undo（或让 AI 调 <code>undo_change(seq=0)</code>）。同一天多版本会一并删（<code>briefing_for_date</code>
+  本就只读最新行）。</p>
+<div class="card">
+  {% if briefings %}
+  <table style="width:100%; border-collapse:collapse; font-size:14px;">
+    <thead><tr style="text-align:left; color:var(--muted, #666);">
+      <th style="padding:4px 8px;">日期</th>
+      <th style="padding:4px 8px;">run_id</th>
+      <th style="padding:4px 8px;">入选</th>
+      <th style="padding:4px 8px;">AI</th>
+      <th style="padding:4px 8px;">状态</th>
+      <th style="padding:4px 8px; text-align:right;">操作</th>
+    </tr></thead>
+    <tbody>
+      {% for b in briefings %}
+      <tr style="border-top:1px solid var(--line, #eee);">
+        <td style="padding:4px 8px;"><a href="/digest/{{ b.date }}">{{ b.date }}</a></td>
+        <td style="padding:4px 8px;"><code>{{ b.run_id }}</code></td>
+        <td style="padding:4px 8px;">{{ (b.stats or {}).get("items", []) | length }}</td>
+        <td style="padding:4px 8px;">{{ "是" if b.ai_enabled else "否" }}</td>
+        <td style="padding:4px 8px;"><span class="chip">{{ b.status }}</span></td>
+        <td style="padding:4px 8px; text-align:right;">
+          <form method="post" action="/settings/briefings/delete" style="display:inline;">
+            <input type="hidden" name="date" value="{{ b.date }}">
+            <button class="ghost" type="submit"
+                    onclick="return confirm('删除 {{ b.date }} 的简报？可在 /activity 页 undo。')">删除</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="muted">还没有简报——先跑一次上面“立即生成今日日报”，或走 dsh 三段评审协议。</div>
+  {% endif %}
+</div>
 {% endblock %}

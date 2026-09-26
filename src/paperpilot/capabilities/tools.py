@@ -40,10 +40,15 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "undo": {"seq": "要撤销的事件序号（0=最近一条可逆）", "reason": "一句话中文说明撤销原因"},
     "fetch_papers": {"days": "回溯天数", "reason": "一句话中文说明本次抓取目的"},
     "download_paper": {"arxiv_id": "论文 arXiv 编号", "reason": "一句话中文说明下载原因"},
-    "prepare_review": {"date": "日期 ISO 格式（省略=今天）", "reason": "一句话中文说明目的"},
+    "prepare_review": {"date": "日期 ISO 格式（省略=今天）",
+                       "requeue": "True=把近 lookback 内 archived/in_briefing 拉回 new 再审（可 undo）",
+                       "reason": "一句话中文说明目的"},
     "submit_review": {"reviews": "评审列表 [{arxiv_id,score,label,reason,…}]",
                       "date": "评审对应日期 ISO 格式（省略=今天）",
                       "reason": "一句话中文说明目的"},
+    "list_briefings": {"limit": "最多返回条数（1-60，默认 14）"},
+    "delete_briefing": {"date": "简报日期 ISO 格式（必填；先 list_briefings 确认）",
+                        "reason": "一句话中文说明删除原因"},
     "finalize_briefing": {"date": "日期 ISO 格式（省略=今天）", "force": "已定稿时是否强制重跑",
                           "reason": "一句话中文说明目的"},
     "run_pipeline": {"date": "日期 ISO 格式（省略=今天）", "force": "已存在时是否强制重跑",
@@ -266,12 +271,24 @@ def build_registry(container) -> Registry:
         return ok(arxiv_id=arxiv_id, path=str(dest), bytes=n, cached=False)
 
     @reg.tool(name="prepare_review", kind="write",
-              description="阶段1：取过规则后的候选清单（含主题画像+摘要截断+基线分），等外部评审。")
-    def prepare_review(date: str = "", actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+              description="阶段1：取过规则后的候选清单（含主题画像+摘要截断+基线分），等外部评审。"
+                          "同一天想再跑一遍评审可 requeue=True（把近 lookback 内 archived/in_briefing "
+                          "拉回 new 再审；走可逆事件，undo 一键回退，旧简报行仍在库中）。")
+    def prepare_review(date: str = "", requeue: bool = False,
+                       actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
         prepared = pipeline.prepare_review(
-            _parse_date(date), actor=actor, reason=reason or "外部请求评审候选"
+            _parse_date(date), actor=actor, reason=reason or "外部请求评审候选",
+            requeue=requeue,
         )
-        return ok(**prepared.payload)
+        payload = prepared.payload
+        diag = payload.get("_empty_diagnosis")
+        if diag:
+            # 空池：不再静默 ok:true+candidates:[]；把真相+出路回成标准 err 信封。
+            return err(str(diag.get("kind") or "empty_pool"),
+                       str(diag.get("reason") or "候选池为空"),
+                       hint=str(diag.get("hint") or ""),
+                       suggest=list(diag.get("suggests") or []))
+        return ok(**payload)
 
     @reg.tool(name="submit_review", kind="write",
               description="阶段2：提交对候选的评审。reviews=[{arxiv_id,score,label,reason,tags?,summary?}]；"
@@ -306,6 +323,34 @@ def build_registry(container) -> Registry:
         return ok(date=result.date, run_id=result.run_id, fetched=result.fetched,
                   after_rules=result.after_rules, selected=result.selected,
                   reused=result.reused, degraded=result.degraded)
+
+    @reg.tool(name="list_briefings", kind="read",
+              description="列出已归档的简报（日期/run_id/入选篇数/是否 AI/状态），按日期倒序。"
+                          "与 read_digest 分工：本工具给管理面（有哪些日报可删）；read_digest 给阅读面。")
+    def list_briefings(limit: int = 14) -> dict:
+        rows = repo.briefings(limit=max(1, min(int(limit), 60)))
+        return ok(count=len(rows), briefings=[
+            {"date": b.date, "run_id": b.run_id, "status": b.status,
+             "selected": (len(b.stats.get("items", []))
+                          if isinstance(b.stats, dict) else 0),
+             "ai_enabled": bool(b.ai_enabled)}
+            for b in rows
+        ])
+
+    @reg.tool(name="delete_briefing", kind="write", reversible=True,
+              description="删除指定日期的简报（同日多版本一并删）。可撤销——事件存了 markdown+stats 快照，"
+                          "undo_change(seq=0) 一键重建。Web 设置页的「删简报」按钮与此同源。")
+    def delete_briefing(date: str, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        if not date:
+            return err("bad_params", "date 必填",
+                       hint="先 list_briefings 看有哪些日期")
+        res = repo.delete_briefing(date, actor=actor,
+                                   reason=reason or f"删除简报（{date}）")
+        if res.get("already"):
+            return err("no_briefing", f"{date} 没有简报可删",
+                       hint="先 list_briefings 确认日期（拼写、年份）")
+        return ok(date=date, deleted=res.get("deleted"),
+                  note="可用 undo_change(seq=0) 撤销（事件回滚会重建简报行）")
 
     @reg.tool(name="add_topic", kind="write",
               description="新增研究主题（写回 config/settings.yaml，即时生效）。keywords/categories 用逗号分隔。")

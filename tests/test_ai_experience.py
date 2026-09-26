@@ -255,3 +255,111 @@ def test_submit_job_respects_project_concurrency_limit(tmp_path, monkeypatch):
     assert _call(tools, "submit_job")["ok"] is True          # 2/2
     third = _call(tools, "submit_job")                       # 3rd ⇒ 超限
     assert third["ok"] is False and third["error"]["kind"] == "job_limit"
+
+
+# ================================================================ R2 追加（2026-09-26）
+# 用户第二轮实测反馈：prepare_review 空池静默 ok:true+[]、Web 无简报管理、
+# cancel_job 已终态仍回“取消已登记”。前两个与 N1/N2 同族（diagnosability），后一个是
+# proprioception。下面五条判据沿用“能红 + 不误报”对偶纪律。
+
+
+def _drain_pool(reg):
+    """把当前 new 池一轮消费完（prepare → submit → finalize force）。"""
+    date_str, cands = _prepared_cands(reg)
+    reviews = [{"arxiv_id": c["arxiv_id"], "score": 0.7,
+                "label": "worth", "reason": "r"} for c in cands]
+    reg.invoke("submit_review", date=date_str, reviews=reviews)
+    fin = reg.invoke("finalize_briefing", date=date_str, force=True)
+    assert fin["ok"], fin
+    return date_str, cands
+
+
+# ------------------------------------------------ R2-1 空池诊断（与 N1/N2 同族）
+def test_prepare_review_empty_pool_returns_diagnostic_not_silent_ok(tmp_path):
+    """能红：上一轮把池消费完 ⇒ 再 prepare 不再静默 ok:true+candidates:[]，
+    而是回 err(kind=empty_pool) + hint 给出路（requeue/fetch_papers/lookback）。"""
+    _c, reg = _reg(tmp_path)
+    date_str, _cands = _drain_pool(reg)
+    second = reg.invoke("prepare_review", date=date_str)
+    assert second["ok"] is False, f"空池应响亮失败，实得：{second}"
+    err = second["error"]
+    assert err["kind"] == "empty_pool", err
+    hint = err.get("hint", "")
+    assert ("requeue" in hint or "fetch_papers" in hint
+            or "lookback_days" in hint), hint
+
+
+def test_prepare_review_no_false_diagnosis_when_pool_has_new(tmp_path):
+    """不误报：池里还有 new ⇒ prepare 应正常 ok:true（不拿“empty”误伤）。"""
+    _c, reg = _reg(tmp_path)
+    out = reg.invoke("prepare_review")
+    assert out["ok"] is True, f"非空池不应诊断：{out}"
+    assert out.get("candidates"), "candidates 非空"
+
+
+# --------------------------------------------------- R2-2 再审回炉 requeue
+def test_prepare_review_requeue_flips_archived_back_to_new(tmp_path):
+    """能红：空池后 requeue=True ⇒ reopen_by_status 把近 lookback 内 archived/in_briefing
+    拉回 new，候选重新非空 + 回执带 requeue_flipped 计数。"""
+    _c, reg = _reg(tmp_path)
+    date_str, _cands = _drain_pool(reg)
+    assert reg.invoke("prepare_review", date=date_str)["ok"] is False
+    again = reg.invoke("prepare_review", date=date_str, requeue=True)
+    assert again["ok"] is True, f"requeue 应能拉起候选：{again}"
+    assert again.get("candidates"), "requeue 后候选非空"
+    assert int(again.get("requeue_flipped") or 0) > 0
+
+
+# ---------------------------------------- R2-3 删简报与 undo 回滚（Web 同构后端）
+def test_delete_briefing_roundtrip_with_undo(tmp_path):
+    """能红：delete_briefing 写可逆事件；undo(seq=0) 从 before 快照重建 markdown+stats。"""
+    container, reg = _reg(tmp_path)
+    repo = container.repo
+    repo.save_briefing(
+        date="2099-01-01", run_id="t-run", title="测试",
+        markdown="# 测试正文", stats={"items": [{"arxiv_id": "x"}]},
+        ai_enabled=False, actor="test", reason="测试建简报",
+    )
+    assert repo.briefing_for_date("2099-01-01") is not None
+    out = reg.invoke("delete_briefing", date="2099-01-01", reason="测试删")
+    assert out["ok"] and int(out.get("deleted") or 0) >= 1
+    assert repo.briefing_for_date("2099-01-01") is None, "删后行应不在"
+    und = reg.invoke("undo", seq=0, reason="测试撤销删除")
+    assert und["ok"] is True, und
+    assert und.get("op") == "delete_briefing", und
+    restored = repo.briefing_for_date("2099-01-01")
+    assert restored is not None and restored.markdown == "# 测试正文"
+
+
+def test_delete_briefing_unknown_date_is_teaching_err(tmp_path):
+    """不误报：删不存在的日期 ⇒ err(no_briefing) + hint 引 list_briefings，
+    不静默 ok:true deleted=0。"""
+    _c, reg = _reg(tmp_path)
+    out = reg.invoke("delete_briefing", date="1999-01-01")
+    assert out["ok"] is False, out
+    assert out["error"]["kind"] == "no_briefing", out
+    assert "list_briefings" in out["error"].get("hint", "")
+
+
+# ------------------------------------------------- R2-4 cancel_job 已终态如实文案
+def test_cancel_job_terminal_state_is_honestly_reported(tmp_path):
+    """能红：对已 done 的 job 调 cancel_job ⇒ note 里说“无需取消”、不再说“取消已登记”。"""
+    import time
+
+    _c, stack = _stack(tmp_path, open_ai=True)
+    tools = stack["tools"]
+
+    def _noop(_ctx):
+        return {"ok": True}
+
+    job = stack["jobs"].submit(_noop, command="noop", cancel_supported=True)
+    for _ in range(200):
+        if stack["jobs"].get(job.id).state.value == "done":
+            break
+        time.sleep(0.02)
+    assert stack["jobs"].get(job.id).state.value == "done"
+    res = tools.execute("cancel_job", {"job_id": job.id})
+    assert res["is_error"] is False, res
+    note = res["value"].get("note", "")
+    assert "无需取消" in note, note
+    assert "取消已登记" not in note, f"对终态 job 不应仍说‘已登记’：{note}"

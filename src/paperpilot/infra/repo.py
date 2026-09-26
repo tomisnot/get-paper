@@ -219,10 +219,21 @@ class PaperRepository:
                     paper.status = item["status"]
             return snapshot
 
+        if op == "delete_briefing":
+            # 重加被删的简报行（before 存了 markdown+stats，可完整还原最新一份）
+            s.add(Briefing(
+                date=before.get("date"), run_id=before.get("run_id"),
+                title=before.get("title", ""), markdown=before.get("markdown", ""),
+                stats=dict(before.get("stats") or {}),
+                ai_enabled=bool(before.get("ai_enabled")),
+                status=before.get("status", "draft"),
+            ))
+            return {"restored_briefing_date": before.get("date")}
+
         raise AIError(
             f"操作 {op} 不支持撤销",
             kind="unsupported_undo",
-            hint="目前支持：阅读态/笔记/主题同步/状态重置的撤销",
+            hint="目前支持：阅读态/笔记/主题同步/状态重置/删简报的撤销",
         )
 
     # ---------------------------------------------------------------- topics
@@ -401,6 +412,28 @@ class PaperRepository:
                     after={"arxiv_id": row.arxiv_id, "status": status},
                 )
                 s.commit()
+
+    def reopen_by_status(self, *, from_statuses: tuple[str, ...],
+                         to_status: str = "new",
+                         within_days: int | None = None,
+                         actor: str = "human", reason: str = "") -> dict:
+        """按状态批量回退（再审回炉：archived/in_briefing → new）。
+
+        不重复写事件——先查 ids，再委托已有的 `reset_statuses(arxiv_ids, status, ...)`
+        （它写的 `op=reset_statuses` 事件已接上 `_restore` 的现成分支，能一键 undo）。
+        `within_days` 限缩到 `first_seen_at >= utcnow - N`：不把远古存量也拉回洗劫新
+        一轮评审。空匹配 ⇒ 不产生事件。
+        """
+        cutoff = utcnow() - timedelta(days=within_days) if within_days else None
+        with self.sf() as s:
+            stmt = select(Paper.arxiv_id).where(Paper.status.in_(list(from_statuses)))
+            if cutoff is not None:
+                stmt = stmt.where(Paper.first_seen_at >= cutoff)
+            ids = list(s.scalars(stmt).all())
+        if not ids:
+            return {"ok": True, "flipped": 0}
+        flipped = self.reset_statuses(ids, status=to_status, actor=actor, reason=reason)
+        return {"ok": True, "flipped": int(flipped)}
 
     def record_download(
         self, paper: Paper, path: str, *, actor: str = "system", reason: str = ""
@@ -634,6 +667,38 @@ class PaperRepository:
             return list(
                 s.scalars(select(Briefing).order_by(Briefing.date.desc()).limit(limit))
             )
+
+    def delete_briefing(self, date: str, *, actor: str = "human",
+                        reason: str = "") -> dict:
+        """删除指定日期的简报（Web 管理 & 命令面共用）。可逆：`_restore` 重建行。
+
+        同日多版本旧历史（`save_briefing` 会把旧行标 superseded）一并删——
+        `briefing_for_date` 本就总取最新一行，保留历史不影响面板。
+        快照写入 before 中存最新一行的 markdown+stats，供 undo 一键重建。
+        """
+        with self.sf() as s:
+            rows = list(s.scalars(
+                select(Briefing).where(Briefing.date == date)
+            ).all())
+            if not rows:
+                return {"ok": True, "date": date, "deleted": 0, "already": True}
+            latest = max(rows, key=lambda b: b.id)
+            snap = {
+                "date": latest.date, "run_id": latest.run_id,
+                "title": latest.title, "markdown": latest.markdown,
+                "stats": dict(latest.stats or {}),
+                "ai_enabled": bool(latest.ai_enabled),
+                "status": latest.status,
+            }
+            for r in rows:
+                s.delete(r)
+            self._event(
+                s, op="delete_briefing", actor=actor, reason=reason,
+                target=date, before=snap, after={"deleted": True},
+                reversible=1,
+            )
+            s.commit()
+        return {"ok": True, "date": date, "deleted": len(rows), "already": False}
 
     def create_run(self, run_id: str, *, mode: str = "daily") -> Run:
         run = Run(id=run_id, mode=mode, status="running")

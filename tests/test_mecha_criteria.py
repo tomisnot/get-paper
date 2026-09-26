@@ -49,10 +49,10 @@ def test_every_capability_projected_exactly_once(tmp_path):
     """
     container, _stack_ = _stack(tmp_path)
     cap_names = set(registry_for(container).names())
-    assert len(cap_names) == 22
+    assert len(cap_names) == 24
     assert set(TOOL_TO_CAPABILITY.values()) == cap_names
     # mecha 名 ↔ 能力名 一一对应（无一名多投）
-    assert len(set(TOOL_TO_CAPABILITY)) == len(TOOL_TO_CAPABILITY) == 22
+    assert len(set(TOOL_TO_CAPABILITY)) == len(TOOL_TO_CAPABILITY) == 24
 
 
 def test_tool_parameters_derive_from_capability_no_drift(tmp_path):
@@ -113,7 +113,7 @@ def test_required_projection_not_hollowed_by_kwargs(tmp_path):
 
 
 def test_expected_tools_covers_config_and_authority_surface():
-    """不许误报：模型可见面 = 22 能力 + 非能力面 6（配置/自省/长活）。"""
+    """不许误报：模型可见面 = 24 能力 + 非能力面 6（配置/自省/长活）= 30 工具。"""
     from .test_mecha_adapter import NON_CAPABILITY_TOOLS
     assert EXPECTED_TOOLS == set(TOOL_TO_CAPABILITY) | NON_CAPABILITY_TOOLS
-    assert len(EXPECTED_TOOLS) == 28
+    assert len(EXPECTED_TOOLS) == 30

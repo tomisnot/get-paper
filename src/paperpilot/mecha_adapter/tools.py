@@ -56,10 +56,10 @@ class ToolDecl:
     omit: tuple[str, ...] = ()       # 不作为模型可见参数的能力入参
 
 
-#: 22 能力的投影表（单一来源：参数派生、必填注入、Surface 注册都由它驱动）。
+#: 24 能力的投影表（单一来源：参数派生、必填注入、Surface 注册都由它驱动）。
 #: 参数描述不在此（N8）——由 ``_derive_parameters`` 从能力 ``ToolSpec.params`` 透传。
 TOOL_DECLS: tuple[ToolDecl, ...] = (
-    # ------------------------------------------------------------ 只读面（9）
+    # ------------------------------------------------------------ 只读面（10）
     ToolDecl("query_topics", "list_topics", "read",
              "列出研究主题：名称、关键词、分类白名单、配额、评分阈值、启用状态。"),
     ToolDecl("read_digest", "get_digest", "read",
@@ -80,7 +80,10 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
              "即起源/奠基候选；含引用意图与是否高影响引用。可对结果递归再查以继续往前追溯。"),
     ToolDecl("read_citations", "get_citations", "read",
              "取引用了这篇论文的文献（往后看影响力扩散与后续工作）。可按引用数降序。"),
-    # ------------------------------------------------------------ 写入 / 运行面（13）
+    ToolDecl("query_briefings", "list_briefings", "read",
+             "列出已归档的简报（日期、run_id、入选篇数、是否 AI、状态），按日期倒序。"
+             "与 read_digest 分工：本工具给管理面（有哪些简报可删）；read_digest 给阅读面。"),
+    # ------------------------------------------------------------ 写入 / 运行面（14）
     ToolDecl("undo_change", "undo", "write",
              "撤销一条可逆的写入（seq=0=最近一条可逆操作）。入库与定稿不可逆，会明确说明。",
              omit=("actor",)),
@@ -119,6 +122,10 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
              omit=("actor",)),
     ToolDecl("add_note", "add_note", "write",
              "给论文添加笔记（调研沉淀）。",
+             omit=("actor",)),
+    ToolDecl("delete_briefing", "delete_briefing", "write",
+             "删除指定日期的简报（同日多版本一并删）。可撤销——事件里存了 markdown+stats 快照，"
+             "undo_change(seq=0) 一键重建。Web 设置页的「删简报」按钮与此同源。",
              omit=("actor",)),
 )
 
@@ -421,6 +428,15 @@ def _register_job_tools(reg: ToolRegistry, sw, channel, container,
         return out
 
     def _cancel(job_id: str) -> dict:
+        # 微痒：对已终态任务回“取消已登记”会误导——先探终态，如实说“无需取消”。
+        try:
+            job = jobs.get(job_id)
+        except MechaError as e:
+            return _err(e.kind, e.message, e.hint)
+        state_now = job.state.value
+        if state_now in ("done", "failed", "cancelled"):
+            return {"ok": True, "job_id": job_id, "state": state_now,
+                    "note": f"任务已是终态（{state_now}），无需取消"}
         try:
             jobs.cancel(job_id)
         except MechaError as e:

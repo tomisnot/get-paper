@@ -179,13 +179,31 @@ class DailyPipelineService:
 
     # ================================================================== 分段驱动（MCP/AI）
     def prepare_review(
-        self, when: date | None = None, *, actor: str = "ai", reason: str = ""
+        self, when: date | None = None, *, actor: str = "ai", reason: str = "",
+        requeue: bool = False,
     ) -> PreparedReview:
-        """阶段 1-3：候选 → 硬规则 → 基线分（heuristic）。落 review 文件，等外部评审。"""
+        """阶段 1-3：候选 → 硬规则 → 基线分（heuristic）。落 review 文件，等外部评审。
+
+        `requeue=True`（再审回炉）：先把近 lookback 窗口内 archived/in_briefing 拉回
+        new（走可逆的 `reset_statuses` 事件，undo 一键回退）再走正常流程。同一天想
+        再跑评审协议不必等 arXiv 上新。⚠ requeue 会覆盖上一轮评审结果（下次 finalize
+        以新一轮为准），旧简报行仍在库中。
+
+        ⭐ 空池诊断（与 N1/N2 同族）：候选清单为空时不再静默 ok:true+空数组——
+        payload 带 `_empty_diagnosis`（真相+出路），能力层据此回标准 err 信封；
+        不写 review 文件（避免 submit 到不存在的清单）。"""
         target = when or date.today()
         date_str = target.isoformat()
         run_id = uuid.uuid4().hex[:12]
         self.repo.create_run(run_id, mode="review-prepare")
+        requeue_flipped = 0
+        if requeue:
+            flipped_res = self.repo.reopen_by_status(
+                from_statuses=("archived", "in_briefing"), to_status="new",
+                within_days=self._eff_lookback_days(), actor=actor,
+                reason=reason or "再审回炉（prepare_review requeue=True）",
+            )
+            requeue_flipped = int(flipped_res.get("flipped") or 0)
 
         ranked, n_candidates, kept_ids = self._prepare_stages(
             run_id, actor=actor, reason=reason
@@ -211,11 +229,29 @@ class DailyPipelineService:
             }
             for paper, topic, score in unique_ranked[:_MAX_REVIEW_CANDIDATES]
         ]
+        # ⭐ 空池诊断：不再静默 ok:true+candidates:[]；不写 review 文件。
+        if not candidates:
+            diagnosis = self._diagnose_empty_review(
+                n_candidates=n_candidates, n_after_rules=len(kept_ids),
+                requeue=requeue, requeue_flipped=requeue_flipped,
+            )
+            self.repo.finish_run(
+                run_id, status="empty",
+                stats={"n_candidates": n_candidates, "n_after_rules": len(kept_ids),
+                       "requeue_flipped": requeue_flipped},
+            )
+            return PreparedReview(
+                date=date_str, run_id=run_id,
+                payload={"date": date_str, "run_id": run_id,
+                         "_empty_diagnosis": diagnosis},
+            )
+
         payload = {
             "date": date_str,
             "run_id": run_id,
             "n_candidates": n_candidates,
             "n_after_rules": len(kept_ids),
+            "requeue_flipped": requeue_flipped,
             "topics": [
                 {
                     "id": t.id,
@@ -240,6 +276,47 @@ class DailyPipelineService:
             stats={"n_candidates": n_candidates, "n_after_rules": len(kept_ids)},
         )
         return PreparedReview(date=date_str, run_id=run_id, payload=payload)
+
+    def _diagnose_empty_review(self, *, n_candidates: int, n_after_rules: int,
+                               requeue: bool, requeue_flipped: int) -> dict:
+        """空池诊断：三种"空"分开讲——(a) 有候选但全被硬规则拒；(b) 库里 0 篇 new
+        （池已消费）；(c) 有 new 但都在窗口外。各配出路（调规则/requeue/fetch_papers/
+        放宽 lookback）。绝不静默 ok:true+candidates:[]（"对着空池发评审指令"）。"""
+        counts = dict(self.repo.counts_by_status() or {})
+        n_new = int(counts.get("new", 0))
+        n_consumed = int(counts.get("archived", 0)) + int(counts.get("in_briefing", 0))
+        lookback = int(self._eff_lookback_days())
+        diag: dict[str, object] = {
+            "kind": "empty_pool",
+            "counts": {"new": n_new, "archived_or_in_briefing": n_consumed},
+            "lookback_days": lookback,
+            "requeue_used": requeue, "requeue_flipped": requeue_flipped,
+        }
+        if n_candidates > 0 and n_after_rules == 0:
+            diag["reason"] = (f"{n_candidates} 篇 new 全被硬规则（黑名单作者/排除词/"
+                              "分类）拒了，无一进评审。")
+            diag["suggests"] = [
+                "检查 /settings 的 blocked_authors 与主题 exclude_keywords",
+                "放宽主题 categories（若过窄）",
+            ]
+        elif n_new == 0:
+            tail = ("；requeue 已开但近 lookback 内无 archived 可拉回。"
+                    if requeue else "；未启 requeue。")
+            diag["reason"] = ("库里 0 篇 new（今天池已消费成 archived/in_briefing）" + tail)
+            diag["suggests"] = [
+                "prepare_review(requeue=True) 把近 lookback 内 archived/in_briefing 回炉",
+                "fetch_papers(days=N) 拉 arXiv 新提交（当日也可能无新）",
+            ]
+        else:
+            diag["reason"] = (f"库里还有 {n_new} 篇 new，但都在 lookback_days={lookback}"
+                              " 窗口外（first_seen_at 太老）。")
+            diag["suggests"] = [
+                f"到 /settings 放宽 lookback_days（当前 {lookback}）",
+                "fetch_papers 抓最新提交",
+                "prepare_review(requeue=True) 从近期 archived/in_briefing 回炉",
+            ]
+        diag["hint"] = "；".join(str(x) for x in diag["suggests"])
+        return diag
 
     def submit_review(self, date_str: str, reviews: Sequence[dict]) -> dict:
         """接收外部（AI/人）评审并落盘：校验 arxiv_id 必须在候选内、字段过 pydantic。"""

@@ -200,6 +200,7 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
             settings=s,
             last_run=container.repo.last_run(),
             counts=container.repo.counts_by_status(),
+            briefings=container.repo.briefings(limit=30),
             mode=_authority_mode(),
             control_ready=read_control_token() is not None,
         )
@@ -243,6 +244,28 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
             reason=f"Web 设置页主题操作（{action}）「{name}」",
         )
         return RedirectResponse(f"/settings?msg={msg}", status_code=303)
+
+    @app.post("/settings/briefings/delete")
+    def delete_briefing_row(date: str = Form(...)):
+        """删简报：与主题不同——它属论文库写，走**命面**（human 通道 + 写权门
+        + 审计），与论文写同构。无栈（单测/独立部署）时回退直调。
+        可撤销：`repo.delete_briefing` 存了 markdown+stats 快照，`_restore` 会重建行。"""
+        from urllib.parse import quote
+
+        if stack is None:
+            result = registry_for(container).invoke(
+                "delete_briefing", date=date, actor="human",
+                reason="Web 设置页删简报",
+            )
+            if result.get("ok"):
+                msg = f"已删除 {date} 的简报（可 undo 撤销）"
+            else:
+                e = result.get("error") or {}
+                msg = f"删除失败：{e.get('message', '未知错误')}"
+            return RedirectResponse(f"/settings?msg={quote(msg)}", status_code=303)
+        gate_msg = _gated("delete_briefing", date=date, reason="Web 设置页删简报")
+        msg = gate_msg or f"已删除 {date} 的简报（/activity 可 undo，或让 AI 调 undo_change(seq=0)）"
+        return RedirectResponse(f"/settings?msg={quote(msg)}", status_code=303)
 
     @app.post("/settings/general")
     def save_general(
