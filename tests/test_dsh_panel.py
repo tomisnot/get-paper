@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -33,6 +34,43 @@ PANEL_TEST_FILES = (
     "src/panel/monitor-client.test.ts",
     "test/panel.test.ts",
 )
+
+#: **项目自有**那份判据（不在参考指纹表里 ⇒ 它的"用例数下限"要单独守）。
+PROJECT_PANEL_TEST = "test/panel.test.ts"
+
+#: `test/panel.test.ts` 的**用例数下限**（写下限时的实测值）。
+#:
+#: 为什么需要它（**实测出来的洞**）：`dsh/test/panel.test.ts` 是**项目自有**文件
+#: （资产 README 明确要求项目自建一份放"自家反面语料"）⇒ **不在** `REFERENCE_SHA256` 里
+#: ⇒ **删掉其中若干用例时指纹守卫与仓内门禁全绿**（实测：删 1 例 ⇒ node `tests` 40→39，
+#: 两条守卫都绿）——那正是"**守卫被悄悄抽空**"。
+#: ⚠ 反过来，**共享**的那两份 `.test.ts` **在**指纹表里 ⇒ 改它们必红（亦已实测）。
+#: ⚠ **新增用例后请同步抬高这个数**：失败信息会提醒你是"删了判据"还是"忘了抬下限"。
+PANEL_TEST_FLOOR = 19
+
+_COUNT_RE = re.compile(r"^\u2139\s+(tests|pass|fail|skipped)\s+(\d+)\s*$", re.M)
+
+
+def _node_counts(output: str) -> dict[str, int]:
+    """解析 `node --test` 的自证计数（`ℹ tests N` / `ℹ pass N` / …）。"""
+    return {name: int(n) for name, n in _COUNT_RE.findall(output)}
+
+
+def _run_node_tests(*files: str) -> tuple[int, str]:
+    """跑 `node --test <files>`（cwd = `dsh/`），返回 (退出码, 合并输出)。
+
+    ⚠ 硬依赖 `node`：缺 node **即红**，不软跳过——软跳过就是"存在但从不执行"的假绿
+    （与框架侧 `dsh_panel_selfcheck` 同款纪律）。
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.fail("PATH 里没有 node ⇒ 面板判据（TS）跑不了。装 Node ≥ 22.6（原生剥类型）后重试。")
+    proc = subprocess.run(
+        [node, "--test", *files],
+        cwd=str(DSH_DIR), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=120,
+    )
+    return proc.returncode, f"{proc.stdout}\n{proc.stderr}"
 
 # ---------------------------------------------------------------- 副本 ⇄ 参考实现（**按提交态**）
 
@@ -103,22 +141,30 @@ def test_panel_copies_match_reference_commit():
 
 def test_dsh_panel_criteria_pass():
     """`node --test` 跑面板判据：必须**真跑且全绿**（跳过不算过）。"""
-    node = shutil.which("node")
-    if node is None:
-        pytest.fail("PATH 里没有 node ⇒ 面板判据（TS）跑不了。装 Node ≥ 22.6（原生剥类型）后重试。")
-
     missing = [f for f in PANEL_TEST_FILES if not (DSH_DIR / f).is_file()]
     assert not missing, f"面板判据文件缺失：{missing}（被删掉 = 守卫消失，不是「通过」）"
 
-    proc = subprocess.run(
-        [node, "--test", *PANEL_TEST_FILES],
-        cwd=str(DSH_DIR), capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=120,
-    )
-    out = f"{proc.stdout}\n{proc.stderr}"
-    assert proc.returncode == 0, f"面板判据红了（exit {proc.returncode}）：\n{out}"
+    code, out = _run_node_tests(*PANEL_TEST_FILES)
+    assert code == 0, f"面板判据红了（exit {code}）：\n{out}"
 
     # R8 非退化自证：光看 exit code 不够——**全被跳过也是 0**。要求它有通过数、零失败、零跳过。
-    assert "pass " in out, f"看不到通过计数（报告格式变了？判据要跟着改）：\n{out}"
-    assert "fail 0" in out, f"有失败计数：\n{out}"
-    assert "skipped 0" in out, f"有判据被跳过 ⇒ 它们没真跑：\n{out}"
+    counts = _node_counts(out)
+    assert counts.get("pass", 0) > 0, f"看不到通过计数（报告格式变了？判据要跟着改）：\n{out}"
+    assert counts.get("fail", 0) == 0, f"有失败计数：\n{out}"
+    assert counts.get("skipped", 0) == 0, f"有判据被跳过 ⇒ 它们没真跑：\n{out}"
+
+
+def test_project_panel_cases_not_hollowed():
+    """⭐ **项目自有**那份面板判据的用例数不得低于下限（防"守卫被悄悄抽空"）。
+
+    为什么单独守它（而共享的 `.test.ts` 不用）：共享两份**在**参考指纹表里 ⇒ 改它们必红；
+    而 `test/panel.test.ts` 是项目自有、**不在**表里 ⇒ 删用例没有别的守卫会红（实测确认过）。
+    """
+    code, out = _run_node_tests(PROJECT_PANEL_TEST)
+    assert code == 0, f"项目面板判据红了（exit {code}）：\n{out}"
+
+    ran = _node_counts(out).get("tests", 0)
+    assert ran >= PANEL_TEST_FLOOR, (
+        f"项目面板判据用例数 {ran} < 下限 {PANEL_TEST_FLOOR}："
+        "**判据被删了吗**（守卫被抽空）？若确实是有意精简，请**同时**下调 PANEL_TEST_FLOOR "
+        "并说明删的是哪一条；若是**新增**用例，请把下限抬高到新的实测值。")
