@@ -9,10 +9,12 @@ dist/
 
 # 运行时数据（SQLite / PDF 缓存 / 日志 / 备份）
 data/*.sqlite3
+data/*.db
 data/cache/
 data/logs/
 backups/
 *.sqlite3
+*.db
 
 # 环境
 .env
