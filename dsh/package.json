@@ -28,7 +28,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx test/run.ts",
+    "test": "node --import tsx test/run.ts && npm run test:panel",
+    "test:panel": "node --test test/panel.test.ts src/panel/monitor-url.test.ts src/panel/monitor-client.test.ts",
     "bundle": "tsdown"
   },
   "dependencies": {
