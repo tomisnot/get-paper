@@ -1,0 +1,83 @@
+"""检索与阅读态门面：Web 层只跟这个服务打交道。
+
+actor 约定（GAPS.md §2）：Web GUI 的写入归人所有 → 默认 actor="human"。
+"""
+
+from __future__ import annotations
+
+from datetime import date
+from typing import Any
+
+from .ports.repo import PaperRepository
+
+
+class RetrievalService:
+    def __init__(self, repo: PaperRepository) -> None:
+        self.repo = repo
+
+    # ---- 简报 ----
+    def today_briefing(self):
+        return self.repo.briefing_for_date(date.today().isoformat())
+
+    def briefing(self, date_str: str):
+        return self.repo.briefing_for_date(date_str)
+
+    def recent_briefings(self, limit: int = 30):
+        return self.repo.briefings(limit=limit)
+
+    # ---- 论文 ----
+    def detail(self, arxiv_id: str) -> dict[str, Any] | None:
+        paper = self.repo.get_paper(arxiv_id)
+        if paper is None:
+            return None
+        return {
+            "paper": paper,
+            "scores": self.repo.latest_scores(paper),
+            "summary": self.repo.latest_summary(paper),
+            "notes": self.repo.notes_for(paper),
+            "reading": paper.reading,
+        }
+
+    def search(
+        self,
+        query: str = "",
+        *,
+        label: str | None = None,
+        primary_category: str | None = None,
+        limit: int = 50,
+    ):
+        return self.repo.search_papers(
+            query, label=label, primary_category=primary_category, limit=limit
+        )
+
+    # ---- 人工状态（actor 默认 human：Web 是人在用）----
+    def toggle_read(self, arxiv_id: str) -> bool | None:
+        paper = self.repo.get_paper(arxiv_id)
+        if paper is None:
+            return None
+        current = bool(paper.reading.read) if paper.reading else False
+        self.repo.set_read(paper, read=not current, actor="human", reason="Web 面板切换已读")
+        return True
+
+    def star(self, arxiv_id: str) -> bool | None:
+        paper = self.repo.get_paper(arxiv_id)
+        if paper is None:
+            return None
+        return self.repo.toggle_star(paper, actor="human", reason="Web 面板收藏")
+
+    def skip(self, arxiv_id: str) -> bool | None:
+        paper = self.repo.get_paper(arxiv_id)
+        if paper is None:
+            return None
+        self.repo.set_marked_skip(paper, skip=True, actor="human", reason="Web 面板标不感兴趣")
+        return True
+
+    def add_note(self, arxiv_id: str, content: str) -> bool:
+        paper = self.repo.get_paper(arxiv_id)
+        if paper is None or not content.strip():
+            return False
+        self.repo.add_note(paper, content.strip(), actor="human", reason="Web 面板加笔记")
+        return True
+
+    def delete_note(self, note_id: int) -> None:
+        self.repo.delete_note(note_id, actor="human", reason="Web 面板删笔记")

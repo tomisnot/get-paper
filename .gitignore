@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# 运行时数据（SQLite / PDF 缓存 / 日志 / 备份）
+data/*.sqlite3
+data/cache/
+data/logs/
+backups/
+*.sqlite3
+
+# 环境
+.env
+.pytest_cache/
+.ruff_cache/
+
+# DSH 插件（node 生态）
+dsh/node_modules/
+dsh/lib/
+.mcp-port
+.cockpit-port
+
+# 运行时数据（补充：下载 PDF / 生成简报 / 评审中间态 / mecha journal+artifacts）
+data/pdfs/
+data/briefings/
+data/reviews/
+data/mecha/
+*.pkl
+
+# IDE / 工具本地
+.qoder/

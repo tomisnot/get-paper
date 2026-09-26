@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}PaperPilot · arXiv 每日文献情报{% endblock %}</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #1a2233; --muted: #66708a;
+    --line: #e4e8f0; --accent: #4f46e5; --accent-soft: #eef0ff;
+    --must: #b45309; --must-bg: #fef3c7; --worth: #0369a1; --worth-bg: #e0f2fe;
+    --skip: #64748b; --skip-bg: #f1f5f9; --ok: #047857; --warn: #b91c1c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.65 -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif; }
+  nav { background: var(--card); border-bottom: 1px solid var(--line); padding: 0 24px;
+        display: flex; align-items: center; gap: 24px; height: 52px; position: sticky; top: 0; z-index: 10; }
+  nav .brand { font-weight: 700; color: var(--accent); text-decoration: none; font-size: 16px; }
+  nav a { color: var(--muted); text-decoration: none; font-size: 14px; }
+  nav a:hover { color: var(--accent); }
+  nav .spacer { flex: 1; }
+  main { max-width: 1080px; margin: 24px auto; padding: 0 20px 60px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 28px 0 12px; }
+  h3 { font-size: 16px; margin: 0 0 6px; }
+  a { color: var(--accent); }
+  .muted { color: var(--muted); font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 16px 18px; margin-bottom: 14px; }
+  .chip { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px;
+          background: var(--skip-bg); color: var(--skip); margin-right: 6px; }
+  .chip.must { background: var(--must-bg); color: var(--must); font-weight: 600; }
+  .chip.worth { background: var(--worth-bg); color: var(--worth); }
+  .stat { display: inline-block; background: var(--accent-soft); color: var(--accent);
+          border-radius: 8px; padding: 3px 10px; font-size: 13px; margin: 0 8px 6px 0; }
+  .warn { background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412;
+          border-radius: 8px; padding: 8px 12px; font-size: 13px; margin: 8px 0; }
+  table { width: 100%; border-collapse: collapse; background: var(--card);
+          border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); font-size: 14px; }
+  th { background: #fafbfd; color: var(--muted); font-weight: 600; font-size: 13px; }
+  tr:last-child td { border-bottom: none; }
+  button, .btn { background: var(--accent); color: #fff; border: none; border-radius: 7px;
+                 padding: 6px 14px; font-size: 13px; cursor: pointer; text-decoration: none;
+                 display: inline-block; }
+  button.ghost, .btn.ghost { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+  button:hover { opacity: .9; }
+  input, select, textarea { border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px;
+                            font: inherit; font-size: 14px; background: #fff; color: var(--ink); }
+  textarea { width: 100%; min-height: 64px; }
+  label { font-size: 13px; color: var(--muted); display: block; margin: 8px 0 3px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .row > div { flex: 1; min-width: 140px; }
+  .layout { display: grid; grid-template-columns: 1fr 220px; gap: 20px; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } }
+  .side .card { padding: 12px 14px; }
+  .side a { display: block; padding: 3px 0; font-size: 13px; text-decoration: none; }
+  .side a.cur { font-weight: 700; color: var(--accent); }
+  .kv { font-size: 14px; margin: 2px 0; }
+  .kv b { color: var(--muted); font-weight: 600; margin-right: 6px; }
+  .why { background: var(--accent-soft); border-left: 3px solid var(--accent);
+         border-radius: 8px; padding: 9px 12px; margin: 10px 0 2px; font-size: 14px; }
+  .why .lbl { display: block; color: var(--accent); font-weight: 700; font-size: 12px; margin-bottom: 3px; }
+  pre.json { background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 10px 12px;
+             font-size: 12px; line-height: 1.5; overflow: auto; max-height: 240px; margin: 4px 0 0;
+             white-space: pre-wrap; word-break: break-word; }
+  details.json-d { margin-top: 4px; }
+  details.json-d > summary { color: var(--accent); font-size: 12px; }
+  .item-title { font-size: 15px; font-weight: 650; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 0; }
+  .actions form { margin: 0; }
+  .empty { text-align: center; padding: 60px 0; color: var(--muted); }
+  details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+  footer { text-align: center; color: var(--muted); font-size: 12px; padding: 30px 0; }
+  .flash { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; border-radius: 8px;
+           padding: 8px 12px; font-size: 13px; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<nav>
+  <a class="brand" href="/">📄 PaperPilot</a>
+  <a href="/">今日简报</a>
+  <a href="/papers">论文库</a>
+  <a href="/activity">记录仪</a>
+  <a href="/settings">设置</a>
+  <span class="spacer"></span>
+  <span class="muted">{{ container.settings.data_dir.name }} · AI: {{ container.ai_provider }}</span>
+</nav>
+<main>
+  {% if msg %}<div class="flash">{{ msg }}</div>{% endif %}
+  {% block content %}{% endblock %}
+</main>
+<footer>PaperPilot · arXiv 每日文献情报 · 本机运行，数据不出门</footer>
+</body>
+</html>

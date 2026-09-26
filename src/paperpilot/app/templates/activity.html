@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}记录仪 · PaperPilot{% endblock %}
+{% block content %}
+<h1>记录仪</h1>
+<p class="muted">
+  append-only 事件总线（只增不改，DB 触发器钉死）。每次写入都带 <b>actor</b>（谁）/
+  <b>reason</b>（为什么）/ before → after 快照。AI（ai）、人（human）、调度（scheduler）同台可查。
+  当前最新 seq：<b>{{ last_seq }}</b>
+</p>
+
+<form method="get" action="/activity" class="card">
+  <div class="row">
+    <div>
+      <label>actor（谁写的）</label>
+      <input type="text" name="actor" value="{{ actor }}" placeholder="ai / human / scheduler" style="width:160px;">
+    </div>
+    <div>
+      <label>op（操作类型）</label>
+      <input type="text" name="op" value="{{ op }}" placeholder="add_note / star_paper / sync_topics…" style="width:200px;">
+    </div>
+    <div>
+      <label>since_seq（增量读）</label>
+      <input type="number" name="since_seq" value="{{ since_seq }}" min="0" style="width:110px;">
+    </div>
+    <div><button type="submit">查询</button></div>
+    <div><a class="btn ghost" href="/activity">重置</a></div>
+  </div>
+</form>
+
+<table>
+  <tr><th style="width:60px;">seq</th><th style="width:90px;">actor</th><th style="width:130px;">op</th><th style="width:110px;">target</th><th>before → after</th><th style="width:130px;">时间</th></tr>
+  {% for e in events %}
+  <tr>
+    <td>{{ e.seq }}</td>
+    <td><span class="chip">{{ e.actor }}</span></td>
+    <td>{{ e.op }}{% if not e.reversible %}<span class="chip" style="background:#fef2f2;color:#b91c1c;">不可逆</span>{% endif %}</td>
+    <td class="muted">{{ e.target }}</td>
+    <td class="muted" style="font-size:12px;">
+      {% if e.reason %}<div><b>为什么</b>：{{ e.reason }}</div>{% endif %}
+      {% if e.before or e.after %}
+      <details class="json-d">
+        <summary>before → after</summary>
+        {% if e.before %}<div style="margin-top:4px;">before</div><pre class="json">{{ e.before | prettyjson }}</pre>{% endif %}
+        {% if e.after %}<div style="margin-top:4px;">after</div><pre class="json">{{ e.after | prettyjson }}</pre>{% endif %}
+      </details>
+      {% endif %}
+    </td>
+    <td class="muted">{{ e.ts[:19] if e.ts else "" }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6" class="muted" style="text-align:center; padding:30px;">没有匹配的事件</td></tr>
+  {% endfor %}
+</table>
+<p class="muted">最多显示最近 100 条；AI 侧可用 <code>get_activity</code> 工具按 since_seq 增量读。</p>
+{% endblock %}

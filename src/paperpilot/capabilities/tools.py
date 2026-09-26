@@ -1,0 +1,385 @@
+"""能力工具集：把既有 service 薄封装成中性、自描述、可外部调用的能力。
+
+**逻辑不重写**——全部委托 container 里的 repo/pipeline/retrieval/settings（单一事实源，
+docs/PRINCIPLES.md §9）。读写分类与归因纪律见 docs/SPEC.md §3、§6：
+- 只读能力（kind="read"）：外部可自由调用；
+- 写入能力（kind="write"）：接受 actor/reason，落 append-only 事件总线，可 undo。
+"""
+
+from __future__ import annotations
+
+from datetime import date as date_cls
+from datetime import datetime, timedelta
+
+from ..config import TopicCfg, save_settings
+from ..infra.arxiv import ArxivClient
+from ..infra.scholar import SemanticScholarClient, arxiv_ext_id
+from .base import Registry, err, ok
+
+# 外部调用方未表明身份时的默认归因（CLI/人可显式传 actor="human"）
+ACTOR_DEFAULT = "ai"
+
+
+def _split(value: str) -> list[str]:
+    return [v.strip() for v in (value or "").split(",") if v.strip()]
+
+
+def _edge(item: dict, key: str) -> dict:
+    """把 S2 的 references/citations 边（{citedPaper|citingPaper, intents, isInfluential}）规范化成浓缩结构。"""
+    p = item.get(key) or {}
+    ext = p.get("externalIds") or {}
+    return {
+        "arxiv_id": ext.get("ArXiv"),
+        "s2_id": p.get("paperId"),
+        "title": p.get("title"),
+        "year": p.get("year"),
+        "venue": p.get("venue"),
+        "citation_count": p.get("citationCount"),
+        "influential": bool(item.get("isInfluential")),
+        "intents": item.get("intents") or [],
+        "tldr": (p.get("tldr") or {}).get("text"),
+    }
+
+
+def _parse_date(date_str: str):
+    return date_cls.fromisoformat(date_str) if date_str else None
+
+
+def build_registry(container) -> Registry:
+    """构建能力注册表（工具 = container 里 service 的薄封装闭包）。"""
+    reg = Registry()
+    repo = container.repo
+    pipeline = container.pipeline
+    retrieval = container.retrieval
+    settings = container.settings
+
+    # ============================================================== 只读面
+    @reg.tool(name="list_topics", kind="read",
+              description="列出研究主题（名称/关键词/分类白名单/配额/阈值/启用态）。")
+    def list_topics() -> dict:
+        return ok(topics=[
+            {
+                "name": t.name, "description": t.description,
+                "keywords": list(t.keywords or []), "categories": list(t.categories or []),
+                "exclude_keywords": list(t.exclude_keywords or []),
+                "quota": t.quota, "threshold": t.threshold, "enabled": t.enabled,
+            }
+            for t in settings.topics
+        ])
+
+    @reg.tool(name="get_digest", kind="read",
+              description="某日简报全文(Markdown)+统计。date 空=今天；full=False 只回统计与条目。")
+    def get_digest(date: str = "", full: bool = True) -> dict:
+        target = date or datetime.now().date().isoformat()
+        briefing = repo.briefing_for_date(target)
+        if briefing is None:
+            return ok(date=target, exists=False,
+                      hint="当天没有简报；先 fetch_papers + prepare/submit/finalize_review，或 run_pipeline")
+        stats = briefing.stats or {}
+        out = ok(date=target, exists=True, title=briefing.title,
+                 ai_enabled=briefing.ai_enabled, stats=stats.get("stats", {}),
+                 items=stats.get("items", []),
+                 archived_count=len(stats.get("archived", [])))
+        if full:
+            out["markdown"] = briefing.markdown
+        return out
+
+    @reg.tool(name="search_papers", kind="read",
+              description="论文库检索(FTS5:标题/摘要/TL;DR)。query 空则按时间倒序列近期论文。")
+    def search_papers(query: str = "", label: str = "", category: str = "", limit: int = 20) -> dict:
+        papers = retrieval.search(
+            query, label=label or None, primary_category=category or None,
+            limit=max(1, min(int(limit), 100)),
+        )
+        return ok(count=len(papers), papers=[
+            {
+                "arxiv_id": p.arxiv_id, "title": p.title,
+                "primary_category": p.primary_category,
+                "published_at": p.published_at.isoformat() if p.published_at else None,
+                "status": p.status,
+                "score": p.scores[-1].score if p.scores else None,
+                "label": p.scores[-1].label if p.scores else None,
+                "star": bool(p.reading and p.reading.star),
+            }
+            for p in papers
+        ])
+
+    @reg.tool(name="get_paper", kind="read",
+              description="论文详情：原文摘要 + 最新 AI 总结 + 打分历史 + 笔记 + 阅读态 + 本地PDF路径。")
+    def get_paper(arxiv_id: str) -> dict:
+        detail = retrieval.detail(arxiv_id)
+        if detail is None:
+            return err("not_found", f"找不到论文 {arxiv_id}",
+                       hint="先用 search_papers 搜到正确 arxiv_id")
+        p, s = detail["paper"], detail["summary"]
+        pdf_path = settings.pdf_dir / f"{p.arxiv_id}.pdf"
+        return ok(
+            paper={
+                "arxiv_id": p.arxiv_id, "title": p.title,
+                "authors": list(p.authors or []), "categories": list(p.categories or []),
+                "primary_category": p.primary_category,
+                "published_at": p.published_at.isoformat() if p.published_at else None,
+                "abs_url": p.abs_url, "pdf_url": p.pdf_url, "status": p.status,
+                "abstract": p.abstract,
+                "local_pdf": str(pdf_path) if pdf_path.exists() else None,
+            },
+            summary=(
+                {"tldr": s.tldr, "problem": s.problem, "method": s.method,
+                 "results": s.results, "novelty": s.novelty,
+                 "keywords": list(s.keywords or []), "model": s.model}
+                if s else None
+            ),
+            scores=[
+                {"score": sc.score, "label": sc.label, "reason": sc.reason,
+                 "model": sc.model, "run_id": sc.run_id}
+                for sc in detail["scores"]
+            ],
+            notes=[n.content for n in detail["notes"]],
+            reading=(
+                {"read": detail["reading"].read, "star": detail["reading"].star,
+                 "marked_skip": detail["reading"].marked_skip}
+                if detail["reading"] else None
+            ),
+        )
+
+    @reg.tool(name="get_activity", kind="read",
+              description="归因面：①事件总线 diff-since-seq（actor/op 过滤，append-only）②近期运行/AI调用/简报统计。")
+    def get_activity(since_seq: int = 0, actor: str = "", op: str = "",
+                     days: int = 7, limit: int = 50) -> dict:
+        events = repo.events_since(since_seq=since_seq, actor=actor, op=op, limit=limit)
+        since = datetime.utcnow() - timedelta(days=max(1, int(days)))
+        calls = repo.ai_calls_since(since, limit=50)
+        briefings = repo.briefings(limit=14)
+        return ok(
+            events=events["events"], events_last_seq=events["last_seq"],
+            events_count=events["count"],
+            events_filters={"since_seq": since_seq, "actor": actor, "op": op},
+            counts_by_status=repo.counts_by_status(),
+            recent_briefings=[
+                {"date": b.date, "title": b.title, "status": b.status, "ai_enabled": b.ai_enabled}
+                for b in briefings
+            ],
+            ai_calls=[
+                {"ts": c.ts.isoformat(), "port": c.port, "purpose": c.purpose,
+                 "model": c.model, "latency_ms": c.latency_ms, "tokens": c.tokens,
+                 "ok": c.ok, "error": c.error}
+                for c in calls
+            ],
+        )
+
+    @reg.tool(name="review_status", kind="read",
+              description="看某天评审进度（候选数/已评审数/状态）。")
+    def review_status(date: str = "") -> dict:
+        return pipeline.review_status(date or datetime.now().date().isoformat())
+
+    # ============================================================== 写入 / 运行面
+    @reg.tool(name="undo", kind="write", reversible=True,
+              description="撤销一条可逆写入（seq=0=最近一条可逆事件）。入库/定稿不可逆，会明说。")
+    def undo(seq: int = 0, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        return repo.undo(int(seq), actor=actor, reason=reason)
+
+    @reg.tool(name="fetch_papers", kind="write",
+              description="按主题抓取 arXiv 最近 N 天提交的新论文入库（遵守 3s 限速，可能较慢）。")
+    def fetch_papers(days: int = 3, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        client = ArxivClient(cache_dir=settings.cache_dir / "arxiv")
+        try:
+            papers = client.fetch_candidates(
+                topics=settings.topics, categories=settings.arxiv_categories,
+                since=datetime.utcnow() - timedelta(days=max(1, int(days))),
+            )
+        finally:
+            client.close()
+        result = repo.upsert_papers(
+            papers, actor=actor, reason=reason or f"抓取最近 {days} 天论文"
+        )
+        return ok(fetched=len(papers), new=result["new"], updated=result["updated"],
+                  hint="接着 prepare_review 生成待评审候选")
+
+    @reg.tool(name="download_paper", kind="write",
+              description="下载论文 PDF 到本地库并归档（幂等：已下载直接返回本地路径）。")
+    def download_paper(arxiv_id: str, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        paper = repo.get_paper(arxiv_id)
+        if paper is None:
+            return err("not_found", f"找不到论文 {arxiv_id}",
+                       hint="先用 search_papers 搜到正确 arxiv_id")
+        dest = settings.pdf_dir / f"{arxiv_id}.pdf"
+        if dest.exists() and dest.stat().st_size > 0:
+            return ok(arxiv_id=arxiv_id, path=str(dest), bytes=dest.stat().st_size, cached=True)
+        url = paper.pdf_url or f"https://arxiv.org/pdf/{arxiv_id}"
+        client = ArxivClient(cache_dir=settings.cache_dir / "arxiv")
+        try:
+            n = client.download_pdf(url, dest)
+        finally:
+            client.close()
+        repo.record_download(paper, str(dest), actor=actor,
+                             reason=reason or f"下载 {arxiv_id} 的 PDF")
+        return ok(arxiv_id=arxiv_id, path=str(dest), bytes=n, cached=False)
+
+    @reg.tool(name="prepare_review", kind="write",
+              description="阶段1：取过规则后的候选清单（含主题画像+摘要截断+基线分），等外部评审。")
+    def prepare_review(date: str = "", actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        prepared = pipeline.prepare_review(
+            _parse_date(date), actor=actor, reason=reason or "外部请求评审候选"
+        )
+        return ok(**prepared.payload)
+
+    @reg.tool(name="submit_review", kind="write",
+              description="阶段2：提交对候选的评审。reviews=[{arxiv_id,score,label,reason,tags?,summary?}]。")
+    def submit_review(date: str, reviews: list, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        return pipeline.submit_review(date, list(reviews or []))
+
+    @reg.tool(name="finalize_briefing", kind="write",
+              description="阶段3：用已提交评审（缺的用基线分）做筛选、精读、生成简报并落库。")
+    def finalize_briefing(date: str = "", force: bool = False,
+                          actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        result = pipeline.finalize_review(
+            _parse_date(date), force=force, actor=actor, reason=reason or "定稿简报"
+        )
+        if result.error:
+            return err("finalize_failed", result.error)
+        return ok(date=result.date, run_id=result.run_id, fetched=result.fetched,
+                  after_rules=result.after_rules, selected=result.selected,
+                  reused=result.reused, briefing_id=result.briefing_id,
+                  degraded=result.degraded)
+
+    @reg.tool(name="run_pipeline", kind="write",
+              description="一键全流程（无外部评审）：候选→规则→程序化AI档（未配key时heuristic）→简报。")
+    def run_pipeline(date: str = "", force: bool = False,
+                     actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        result = pipeline.run(
+            _parse_date(date), force=force, actor=actor, reason=reason or "一键跑流水线"
+        )
+        if result.error:
+            return err("pipeline_failed", result.error)
+        return ok(date=result.date, run_id=result.run_id, fetched=result.fetched,
+                  after_rules=result.after_rules, selected=result.selected,
+                  reused=result.reused, degraded=result.degraded)
+
+    @reg.tool(name="add_topic", kind="write",
+              description="新增研究主题（写回 config/settings.yaml，即时生效）。keywords/categories 用逗号分隔。")
+    def add_topic(name: str, keywords: str = "", categories: str = "", description: str = "",
+                  exclude_keywords: str = "", quota: int = 4, threshold: float = 0.6,
+                  actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        if any(t.name == name for t in settings.topics):
+            return err("duplicate", f"主题「{name}」已存在",
+                       suggest=[t.name for t in settings.topics][:5])
+        topic = TopicCfg(
+            name=name, description=description, keywords=_split(keywords),
+            categories=_split(categories), exclude_keywords=_split(exclude_keywords),
+            quota=quota, threshold=threshold, enabled=True,
+        )
+        settings.topics = [*settings.topics, topic]
+        save_settings(settings)
+        repo.sync_topics(settings.topics, actor=actor, reason=reason or f"新增主题「{name}」")
+        return ok(added=name, total_topics=len(settings.topics))
+
+    @reg.tool(name="set_topic_enabled", kind="write",
+              description="启用/停用某主题（写回 YAML）。")
+    def set_topic_enabled(name: str, enabled: bool, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        for t in settings.topics:
+            if t.name == name:
+                t.enabled = bool(enabled)
+                save_settings(settings)
+                repo.sync_topics(settings.topics, actor=actor,
+                                 reason=reason or f"{'启用' if enabled else '停用'}主题「{name}」")
+                return ok(topic=name, enabled=bool(enabled))
+        return err("unknown_topic", f"没有主题「{name}」",
+                   suggest=[t.name for t in settings.topics][:5])
+
+    # ============================================================== 阅读态（写）
+    def _paper_or_err(arxiv_id: str):
+        paper = repo.get_paper(arxiv_id)
+        if paper is None:
+            return None, err("not_found", f"找不到论文 {arxiv_id}",
+                             hint="先用 search_papers 搜到正确 arxiv_id")
+        return paper, None
+
+    @reg.tool(name="mark_read", kind="write", reversible=True,
+              description="标记论文已读/未读。")
+    def mark_read(arxiv_id: str, read: bool = True, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        paper, e = _paper_or_err(arxiv_id)
+        if e:
+            return e
+        repo.set_read(paper, read=read, actor=actor, reason=reason)
+        return ok(arxiv_id=arxiv_id, read=read)
+
+    @reg.tool(name="star_paper", kind="write", reversible=True,
+              description="收藏/取消收藏论文。")
+    def star_paper(arxiv_id: str, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        paper, e = _paper_or_err(arxiv_id)
+        if e:
+            return e
+        return ok(arxiv_id=arxiv_id, star=repo.toggle_star(paper, actor=actor, reason=reason))
+
+    @reg.tool(name="skip_paper", kind="write", reversible=True,
+              description="标记不感兴趣（同类下次过滤）。")
+    def skip_paper(arxiv_id: str, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        paper, e = _paper_or_err(arxiv_id)
+        if e:
+            return e
+        repo.set_marked_skip(paper, skip=True, actor=actor, reason=reason)
+        return ok(arxiv_id=arxiv_id, marked_skip=True)
+
+    @reg.tool(name="add_note", kind="write", reversible=True,
+              description="给论文加笔记（调研沉淀）。")
+    def add_note(arxiv_id: str, content: str, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        paper, e = _paper_or_err(arxiv_id)
+        if e:
+            return e
+        note = repo.add_note(paper, content, actor=actor, reason=reason)
+        return ok(arxiv_id=arxiv_id, note_id=note.id)
+
+    # ============================ 引文分析（专项调查；数据源 Semantic Scholar）
+    # arXiv 无引文数据；S2 提供引用数/参考/被引——“往前扒起源”的地基。
+    def _scholar() -> SemanticScholarClient:
+        return SemanticScholarClient(cache_dir=settings.cache_dir / "scholar")
+
+    @reg.tool(name="paper_metrics", kind="read",
+              description="一篇论文的影响力度量（Semantic Scholar）：被引数/参考数/高影响引用数/年份/venue/TLDR。用于判断分量与质量信号。")
+    def paper_metrics(arxiv_id: str) -> dict:
+        client = _scholar()
+        try:
+            p = client.paper(arxiv_ext_id(arxiv_id))
+        finally:
+            client.close()
+        return ok(
+            arxiv_id=arxiv_id, s2_id=p.get("paperId"), title=p.get("title"),
+            year=p.get("year"), venue=p.get("venue"),
+            citation_count=p.get("citationCount"), reference_count=p.get("referenceCount"),
+            influential_citation_count=p.get("influentialCitationCount"),
+            tldr=(p.get("tldr") or {}).get("text"),
+            doi=(p.get("externalIds") or {}).get("DOI"),
+        )
+
+    @reg.tool(name="get_references", kind="read",
+              description="取一篇论文引用的文献（往前追溯技术起源）。默认按被引论文引用数降序——排最前的即'起源/奠基'候选；含 intents(background/method/result)与是否高影响引用。可对结果递归再查以继续往前扒。")
+    def get_references(arxiv_id: str, limit: int = 30, sort_by_citations: bool = True) -> dict:
+        client = _scholar()
+        try:
+            items = client.references(arxiv_ext_id(arxiv_id), limit=min(int(limit), 100))
+        finally:
+            client.close()
+        refs = [_edge(it, "citedPaper") for it in items]
+        if sort_by_citations:
+            refs.sort(key=lambda r: -(r.get("citation_count") or 0))
+        return ok(
+            arxiv_id=arxiv_id, count=len(refs),
+            sort="citations_desc" if sort_by_citations else "api",
+            references=refs,
+            hint="引用数高且年份早的，通常是该技术的起源/奠基工作；再对它们递归 get_references 可继续往前扒",
+        )
+
+    @reg.tool(name="get_citations", kind="read",
+              description="取引用了这篇论文的文献（往后看影响力扩散/后续工作）。可按引用数降序。")
+    def get_citations(arxiv_id: str, limit: int = 30, sort_by_citations: bool = True) -> dict:
+        client = _scholar()
+        try:
+            items = client.citations(arxiv_ext_id(arxiv_id), limit=min(int(limit), 100))
+        finally:
+            client.close()
+        cits = [_edge(it, "citingPaper") for it in items]
+        if sort_by_citations:
+            cits.sort(key=lambda c: -(c.get("citation_count") or 0))
+        return ok(arxiv_id=arxiv_id, count=len(cits), citations=cits)
+
+    return reg

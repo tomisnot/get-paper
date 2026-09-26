@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}论文库 · PaperPilot{% endblock %}
+{% block content %}
+<h1>论文库</h1>
+<p class="muted">共 {{ results | length }} 条（FTS5 全文检索标题/摘要/TL;DR，最多 100 条）。</p>
+
+<form method="get" action="/papers" class="card">
+  <div class="row">
+    <div style="flex:3;">
+      <label>关键词</label>
+      <input type="text" name="q" value="{{ q }}" placeholder="如 retrieval-augmented 或量化" style="width:100%;">
+    </div>
+    <div>
+      <label>评级</label>
+      <select name="label">
+        <option value="">全部</option>
+        {% for v in ("must_read", "worth", "skip") %}
+        <option value="{{ v }}" {{ "selected" if label == v }}>{{ v }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>分类</label>
+      <input type="text" name="category" value="{{ category }}" placeholder="cs.CL" style="width:110px;">
+    </div>
+    <div><button type="submit">搜索</button></div>
+  </div>
+</form>
+
+<table>
+  <tr><th>论文</th><th style="width:90px;">评级</th><th style="width:70px;">分类</th><th style="width:100px;">发布</th><th style="width:70px;">状态</th></tr>
+  {% for p in results %}
+  <tr>
+    <td>
+      <a href="/papers/{{ p.arxiv_id }}">{{ p.title[:80] }}</a>
+      {% if p.scores %}<span class="muted"> · {{ "%.2f"|format(p.scores[-1].score) }}</span>{% endif %}
+      {% if p.reading and p.reading.star %}<span class="chip must">★</span>{% endif %}
+      {% if p.reading and p.reading.read %}<span class="chip">已读</span>{% endif %}
+    </td>
+    <td>{% if p.scores %}<span class="chip {{ p.scores[-1].label }}">{{ p.scores[-1].label }}</span>{% else %}<span class="muted">-</span>{% endif %}</td>
+    <td class="muted">{{ p.primary_category }}</td>
+    <td class="muted">{{ p.published_at.strftime("%Y-%m-%d") if p.published_at else "-" }}</td>
+    <td class="muted">{{ p.status }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="muted" style="text-align:center; padding:30px;">没有匹配的论文</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

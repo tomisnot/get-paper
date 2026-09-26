@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}{{ arxiv_id }} · PaperPilot{% endblock %}
+{% block content %}
+{% if not detail %}
+  <div class="empty"><p>找不到论文 {{ arxiv_id }}。</p><a href="/papers">返回论文库</a></div>
+{% else %}
+{% set p = detail.paper %}
+{% set s = detail.summary %}
+<h1 style="font-size:19px;">{{ p.title }}</h1>
+<div class="muted">
+  {{ p.arxiv_id }} (v{{ p.version }}) · {{ (p.authors[:5] | join(", ")) if p.authors else "未知作者" }}{% if p.authors | length > 5 %} 等{% endif %}
+  · 发布 {{ p.published_at.strftime("%Y-%m-%d") if p.published_at else "-" }}
+  {% for c in p.categories %}<span class="chip">{{ c }}</span>{% endfor %}
+</div>
+
+<div class="actions">
+  <a class="btn" href="{{ p.abs_url }}" target="_blank" rel="noopener">arXiv 原文</a>
+  <a class="btn ghost" href="{{ p.pdf_url }}" target="_blank" rel="noopener">PDF</a>
+  <form method="post" action="/papers/{{ p.arxiv_id }}/read">
+    <button class="ghost">{{ "标记未读" if detail.reading and detail.reading.read else "标记已读" }}</button>
+  </form>
+  <form method="post" action="/papers/{{ p.arxiv_id }}/star">
+    <button class="ghost">{{ "取消收藏" if detail.reading and detail.reading.star else "☆ 收藏" }}</button>
+  </form>
+  <form method="post" action="/papers/{{ p.arxiv_id }}/skip">
+    <button class="ghost">不感兴趣（下次过滤同类）</button>
+  </form>
+</div>
+
+<h2>AI 精读</h2>
+{% if s %}
+  <div class="card">
+    {% if s.tldr %}<div class="kv" style="background:var(--accent-soft);padding:8px 10px;border-radius:8px;"><b>TL;DR</b>{{ s.tldr }}</div>{% endif %}
+    {% if s.problem %}<div class="kv"><b>问题</b>{{ s.problem }}</div>{% endif %}
+    {% if s.method %}<div class="kv"><b>方法</b>{{ s.method }}</div>{% endif %}
+    {% if s.results %}<div class="kv"><b>结论</b>{{ s.results }}</div>{% endif %}
+    {% if s.novelty %}<div class="kv"><b>贡献</b>{{ s.novelty }}</div>{% endif %}
+    {% if s.keywords %}<div class="kv"><b>关键词</b>{{ s.keywords | join("、") }}</div>{% endif %}
+    <div class="muted" style="margin-top:8px;">模型 {{ s.model }} · 耗时 {{ s.latency_ms }}ms · run {{ s.run_id }}</div>
+  </div>
+{% else %}
+  <div class="card muted">暂无 AI 总结（该论文未进入任何简报）。</div>
+{% endif %}
+
+<h2>打分历史</h2>
+{% if detail.scores %}
+<table>
+  <tr><th style="width:70px;">分数</th><th style="width:80px;">评级</th><th>理由</th><th style="width:150px;">模型/run</th></tr>
+  {% for sc in detail.scores %}
+  <tr>
+    <td>{{ "%.2f"|format(sc.score) }}</td>
+    <td><span class="chip {{ sc.label }}">{{ sc.label }}</span></td>
+    <td class="muted">{{ sc.reason }}</td>
+    <td class="muted">{{ sc.model }}<br>{{ sc.run_id }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="card muted">暂无打分记录。</div>
+{% endif %}
+
+<h2>原文摘要</h2>
+<div class="card" style="white-space:pre-wrap;">{{ p.abstract }}</div>
+
+<h2>我的笔记（{{ detail.notes | length }}）</h2>
+<div class="card">
+  <form method="post" action="/papers/{{ p.arxiv_id }}/note">
+    <textarea name="content" placeholder="记录你的想法……"></textarea>
+    <div style="margin-top:8px;"><button type="submit">添加笔记</button></div>
+  </form>
+  {% for n in detail.notes %}
+    <div style="border-top:1px solid var(--line); padding:8px 0; display:flex; justify-content:space-between; gap:10px;">
+      <div style="white-space:pre-wrap; font-size:14px;">{{ n.content }}</div>
+      <form method="post" action="/notes/{{ n.id }}/delete" onsubmit="return confirm('删除这条笔记？')">
+        <input type="hidden" name="arxiv_id" value="{{ p.arxiv_id }}">
+        <button class="ghost" style="padding:2px 8px;">删除</button>
+      </form>
+    </div>
+    <div class="muted">{{ n.created_at.strftime("%Y-%m-%d %H:%M") }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

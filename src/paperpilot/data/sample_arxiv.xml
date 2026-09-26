@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">
+  <title>arXiv Query Results</title>
+  <id>http://arxiv.org/api</id>
+  <updated>2026-08-15T00:00:00-04:00</updated>
+  <opensearch:totalResults xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">10</opensearch:totalResults>
+
+  <entry>
+    <id>http://arxiv.org/abs/2608.01101v2</id>
+    <updated>2026-08-14T18:22:01Z</updated>
+    <published>2026-08-13T02:11:00Z</published>
+    <title>Scaling Test-Time Compute for Reasoning: When Longer Chains of Thought Stop Helping</title>
+    <summary>We address a central question in reasoning models: how much test-time compute is optimal. We show that chain-of-thought length exhibits diminishing returns beyond a task-dependent threshold, and that inference-time scaling gains collapse when steps are redundant. We propose an adaptive halting criterion that allocates compute per question, improving accuracy by 11.4% on MATH-500 and GSM8K while cutting average reasoning tokens by 38%.</summary>
+    <author><name>Wei Chen</name></author>
+    <author><name>Ling Zhao</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <link href="http://arxiv.org/abs/2608.01101v2" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2608.01101v2" rel="related" type="application/pdf"/>
+  </entry>
+
+  <entry>
+    <id>http://arxiv.org/abs/2608.01234v1</id>
+    <updated>2026-08-14T09:05:00Z</updated>
+    <published>2026-08-14T09:05:00Z</published>
+    <title>Process Reward Models for Long-Horizon Reasoning: A Systematic Study</title>
+    <summary>Process reward models (PRMs) provide step-level supervision for chain-of-thought reasoning. We present a systematic study comparing PRM training objectives across 14 benchmarks. Our approach, uncertainty-aware PRM, achieves state-of-the-art performance on OlympiadBench with 52.3% pass@1, outperforming outcome-only reward models by 9.1 points. We release our code and checkpoints.</summary>
+    <author><name>Yuki Tanaka</name></author>
+    <author><name>Maria Silva</name></author>
+    <author><name>Wei Chen</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <link href="http://arxiv.org/abs/2608.01234v1" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2608.01234v1" rel="related" type="application/pdf"/>
+  </entry>
+
+  <entry>
+    <id>http://arxiv.org/abs/2608.01577v1</id>
+    <updated>2026-08-14T11:30:00Z</updated>
+    <published>2026-08-14T11:30:00Z</published>
+    <title>A Survey of Mixture-of-Experts Routing Strategies in Large Language Models</title>
+    <summary>This survey reviews routing strategies for mixture-of-experts models. We categorize load balancing methods, expert specialization metrics, and reasoning capabilities of sparse activation. We discuss open challenges and outline directions for future work on test-time routing adaptation.</summary>
+    <author><name>Olga Petrenko</name></author>
+    <author><name>Daniel Osei</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <link href="http://arxiv.org/abs/2608.01577v1" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2608.01577v1" rel="related" type="application/pdf"/>
+  </entry>
+
+  <entry>
+    <id>http://arxiv.org/abs/2608.02002v1</id>
+    <updated>2026-08-14T14:02:00Z</updated>
+    <published>2026-08-14T14:02:00Z</published>
+    <title>Retrieval-Augmented Generation with Dense Retrieval over Versioned Knowledge Bases</title>
+    <summary>Retrieval-augmented generation (RAG) systems struggle with knowledge bases that change over time. We propose TempRAG, a framework that indexes knowledge base versions and conditions dense retrieval on document timestamps. Experiments on FreshQA and TimeQA show that TempRAG improves answer accuracy by 17.8% over naive RAG when facts conflict across revisions, with only 3% additional retrieval latency.</summary>
+    <author><name>Sofia Marchetti</name></author>
+    <author><name>Arun Nair</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.IR" scheme="http://arxiv.org/schemas/atom"/>
+    <link href="http://arxiv.org/abs/2608.02002v1" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2608.02002v1" rel="related" type="application/pdf"/>
+  </entry>
+
+  <entry>
+    <id>http://arxiv.org/abs/2608.02211v1</id>
+    <updated>2026-08-14T16:44:00Z</updated>
+    <published>2026-08-14T16:44:00Z</published>
+    <title>Long Context Compression for Knowledge-Intensive Tasks without Training</title>
+    <summary>Handling long context windows remains expensive for inference. We present a training-free compression method that keeps sentences with high knowledge density and drops the rest, preserving 96.2% of QA accuracy on NaturalQuestions-128k while using 71% fewer KV cache entries. Our method is orthogonal to quantization and speculative decoding and can be combined with them.</summary>
+    <author><name>Priya Raghavan</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <link href="http://arxiv.org/abs/2608.02211v1" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2608.02211v1" rel="related" type="application/pdf"/>
+  </entry>
+
+  <entry>
+    <id>http://arxiv.org/abs/2608.02333v1</id>
+    <updated>2026-08-14T19:15:00Z</updated>
+    <published>2026-08-14T19:15:00Z</published>
+    <title>LoRA Fine-Tuning at Scale: Mudslides, KV Cache Compression, and What Actually Matters</title>
+    <summary>Low-rank adaptation (LoRA) is the workhorse of parameter-efficient fine-tuning, yet its benefits at scale remain debated. We isolate the contributions of rank, learning rate, and target modules across 40 runs, finding that proper learning-rate scaling explains most reported gains of high-rank LoRA. We combine our findings with KV cache compression to cut fine-tuning memory by 44% and inference latency by 21%.</summary>
+    <author><name>Jonas Weber</name></author>
+    <author><name>Mei Lin</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <link href="http://arxiv.org/abs/2608.02333v1" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2608.02333v1" rel="related" type="application/pdf"/>
+  </entry>
+
+  <entry>
+    <id>http://arxiv.org/abs/2608.02444v1</id>
+    <updated>2026-08-14T20:40:00Z</updated>
+    <published>2026-08-14T20:40:00Z</published>
+    <title>Speculative Decoding with Draft Models Trained on the Target Distribution</title>
+    <summary>Speculative decoding accelerates inference by drafting tokens with a small model. We show that aligning the draft model with the target model's output distribution—rather than generic text—raises acceptance rates from 0.61 to 0.84. The resulting pipeline delivers 2.9x speedup for efficient inference of 70B models on a single A100 without any quality loss.</summary>
+    <author><name>Chen Hao</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <link href="http://arxiv.org/abs/2608.02444v1" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2608.02444v1" rel="related" type="application/pdf"/>
+  </entry>
+
+  <entry>
+    <id>http://arxiv.org/abs/2608.02555v1</id>
+    <updated>2026-08-14T21:05:00Z</updated>
+    <published>2026-08-14T21:05:00Z</published>
+    <title>Quantum Error Correction with Surface Codes under Realistic Noise Models</title>
+    <summary>Surface codes remain the leading candidate for fault-tolerant quantum computation. We simulate rotated surface codes with circuit-level noise and find that logical error rates saturate below threshold at physical error rates up to 0.9%. Our results inform hardware design targets for the next generation of superconducting processors.</summary>
+    <author><name>Elena Vasquez</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.ET" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.ET" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="quant-ph" scheme="http://arxiv.org/schemas/atom"/>
+    <link href="http://arxiv.org/abs/2608.02555v1" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2608.02555v1" rel="related" type="application/pdf"/>
+  </entry>
+
+  <entry>
+    <id>http://arxiv.org/abs/2608.02666v1</id>
+    <updated>2026-08-14T22:30:00Z</updated>
+    <published>2026-08-14T22:30:00Z</published>
+    <title>Spatiotemporal Graph Neural Networks for City-Scale Traffic Forecasting</title>
+    <summary>We propose ST-GNN++, a graph neural network architecture for traffic forecasting that captures both periodic and event-driven patterns. On the LargeST benchmark, ST-GNN++ reduces MAE by 8.3% over the previous best. We analyze failure cases during extreme weather and discuss limitations of fixed graph structures.</summary>
+    <author><name>Fatima Al-Rashid</name></author>
+    <author><name>Tom Becker</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <link href="http://arxiv.org/abs/2608.02666v1" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2608.02666v1" rel="related" type="application/pdf"/>
+  </entry>
+
+  <entry>
+    <id>http://arxiv.org/abs/2608.02777v1</id>
+    <updated>2026-08-14T23:10:00Z</updated>
+    <published>2026-08-14T23:10:00Z</published>
+    <title>Inference-Time Scaling Laws for LLM Agents on Real-World Tool Use</title>
+    <summary>While inference-time scaling improves math reasoning, its behavior in agentic settings is poorly understood. We study 3 model families across 7 tool-use benchmarks and derive scaling laws relating agent success rate to inference-time compute. Self-consistency with tool verification yields the steepest gains: +14.2pp on WebArena at 8x compute. We release all trajectories for reproducibility.</summary>
+    <author><name>Wei Chen</name></author>
+    <author><name>Amelie Dupont</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <link href="http://arxiv.org/abs/2608.02777v1" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2608.02777v1" rel="related" type="application/pdf"/>
+  </entry>
+</feed>

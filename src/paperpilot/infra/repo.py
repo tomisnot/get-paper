@@ -1,0 +1,881 @@
+"""SQLite 仓储：domain/ports/repo.py 契约的 SQLAlchemy 实现。
+
+归因与记录仪（docs/GAPS.md §2/§3）：**所有写入手动接受 `actor`/`reason` 关键字**，
+并在同一事务内 append 一条 `events`（append-only，只增不改由 DB 触发器钉死）。
+actor 约定：MCP 工具 = "ai"，Web/CLI = "human"，调度 = "scheduler"，内部 = "system"/"pipeline"。
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Iterable, Sequence
+from datetime import datetime, timedelta
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, selectinload
+
+from ..config import TopicCfg
+from ..domain.models import PaperSummary, RelevanceScore
+from ..infra.ai.errors import AIError
+from .arxiv import NormalizedPaper
+from .fts import PaperIndex
+from .orm import (
+    AICall,
+    Base,  # noqa: F401  （re-export 便于外部 import）
+    Briefing,
+    Event,
+    Note,
+    Paper,
+    PaperScore,
+    PaperSummaryRow,
+    ReadingState,
+    Run,
+    Topic,
+    utcnow,
+)
+
+logger = logging.getLogger("paperpilot.repo")
+
+_PAPER_EAGER = (
+    selectinload(Paper.scores),
+    selectinload(Paper.summaries),
+    selectinload(Paper.reading),
+    selectinload(Paper.notes),
+)
+
+# 阅读态三元的字段名（undo 回写用）
+_READING_FIELDS = ("read", "star", "marked_skip")
+
+
+class PaperRepository:
+    def __init__(self, session_factory, index: PaperIndex | None = None) -> None:
+        self.sf = session_factory
+        self.index = index
+
+    # ---------------------------------------------------------------- 事件（L2 记录仪）
+    def _event(
+        self,
+        s: Session,
+        *,
+        op: str,
+        actor: str,
+        reason: str = "",
+        target: str = "",
+        before: dict | None = None,
+        after: dict | None = None,
+        reversible: int = 1,
+    ) -> Event:
+        """在**当前事务内** append 一条事件（调用方负责 commit）。"""
+        event = Event(
+            actor=actor or "system",
+            reason=reason or "",
+            op=op,
+            target=target,
+            before=before,
+            after=after,
+            reversible=reversible,
+        )
+        s.add(event)
+        return event
+
+    def events_since(
+        self,
+        *,
+        since_seq: int = 0,
+        actor: str = "",
+        op: str = "",
+        limit: int = 50,
+    ) -> dict:
+        """diff-since-seq 读事件（只读；GAPS.md §3）。"""
+        with self.sf() as s:
+            stmt = select(Event)
+            if since_seq:
+                stmt = stmt.where(Event.seq > since_seq)
+            if actor:
+                stmt = stmt.where(Event.actor == actor)
+            if op:
+                stmt = stmt.where(Event.op == op)
+            stmt = stmt.order_by(Event.seq.desc()).limit(max(1, min(int(limit), 200)))
+            events = list(s.scalars(stmt))
+            last_seq = s.scalar(select(func.max(Event.seq))) or 0
+            return {
+                "last_seq": int(last_seq),
+                "count": len(events),
+                "events": [
+                    {
+                        "seq": e.seq,
+                        "ts": e.ts.isoformat() if e.ts else None,
+                        "actor": e.actor,
+                        "reason": e.reason,
+                        "op": e.op,
+                        "target": e.target,
+                        "reversible": e.reversible,
+                        "before": e.before,
+                        "after": e.after,
+                    }
+                    for e in events
+                ],
+            }
+
+    def undo(self, seq: int = 0, *, actor: str, reason: str = "") -> dict:
+        """按 seq 撤销可逆操作（seq=0 = 最近一条可逆事件）。不可逆操作明确拒绝。"""
+        with self.sf() as s:
+            if seq:
+                event = s.get(Event, int(seq))
+            else:
+                event = s.scalar(
+                    select(Event).where(Event.reversible == 1).order_by(Event.seq.desc())
+                )
+            if event is None:
+                raise AIError(
+                    "没有可撤销的操作" if not seq else f"事件 #{seq} 不存在",
+                    kind="nothing_to_undo",
+                    hint="undo(seq=0) 撤销最近一条可逆事件；先用 get_activity 看事件列表",
+                )
+            if event.reversible != 1:
+                raise AIError(
+                    f"操作 #{event.seq}（{event.op}）不可逆",
+                    kind="irreversible",
+                    hint="不可逆操作（抓取入库/简报定稿）按设计拒绝撤销；"
+                    "简报可重跑生成新版本，入库论文无法单独撤",
+                )
+            before_now = self._restore(s, event)
+            self._event(
+                s,
+                op="undo",
+                actor=actor,
+                reason=reason or f"undo #{event.seq}（{event.op}）",
+                target=f"event:{event.seq}",
+                before=before_now,
+                after=dict(event.before or {}),
+                reversible=0,
+            )
+            s.commit()
+            return {
+                "ok": True,
+                "undone_seq": event.seq,
+                "op": event.op,
+                "restored": dict(event.before or {}),
+            }
+
+    def _restore(self, s: Session, event: Event) -> dict:
+        """把 event.before 的快照写回状态；返回撤销前的状态（供 undo 事件记账）。"""
+        before = dict(event.before or {})
+        op = event.op
+
+        if op in ("set_read", "star_paper", "skip_paper"):
+            paper = s.scalar(select(Paper).where(Paper.arxiv_id == before.get("arxiv_id")))
+            if paper is None:
+                raise AIError(f"论文 {before.get('arxiv_id')} 已不在库中，无法撤销",
+                              kind="restore_failed", hint="论文可能被清理；重跑 fetch_papers 入库")
+            row = self._ensure_reading(s, paper)
+            snapshot = {f: bool(getattr(row, f)) for f in _READING_FIELDS}
+            for f in _READING_FIELDS:
+                if f in before:
+                    setattr(row, f, bool(before[f]))
+            return {"arxiv_id": paper.arxiv_id, **snapshot}
+
+        if op == "mark_status":
+            paper = s.scalar(select(Paper).where(Paper.arxiv_id == before.get("arxiv_id")))
+            if paper is None:
+                raise AIError(f"论文 {before.get('arxiv_id')} 已不在库中，无法撤销",
+                              kind="restore_failed", hint="论文可能被清理")
+            snapshot = {"arxiv_id": paper.arxiv_id, "status": paper.status}
+            if before.get("status"):
+                paper.status = before["status"]
+            return snapshot
+
+        if op == "add_note":
+            note_id = (event.after or {}).get("note_id")
+            note = s.get(Note, note_id) if note_id else None
+            if note is not None:
+                s.delete(note)
+            return {"deleted_note_id": note_id}
+
+        if op == "delete_note":
+            note = Note(
+                id=before.get("note_id"),
+                paper_id=before.get("paper_id"),
+                content=before.get("content", ""),
+            )
+            s.add(note)
+            return {"restored_note_id": before.get("note_id")}
+
+        if op == "sync_topics":
+            snapshot = {"topics": self._topic_snapshot(s)}
+            self._apply_topic_snapshot(s, before.get("topics") or [])
+            return snapshot
+
+        if op == "reset_statuses":
+            items = before.get("items") or []
+            by_id = {p.arxiv_id: p for p in s.scalars(select(Paper))}
+            snapshot = {"items": []}
+            for item in items:
+                paper = by_id.get(item.get("arxiv_id"))
+                if paper is None:
+                    continue
+                snapshot["items"].append({"arxiv_id": paper.arxiv_id, "status": paper.status})
+                if item.get("status"):
+                    paper.status = item["status"]
+            return snapshot
+
+        raise AIError(
+            f"操作 {op} 不支持撤销",
+            kind="unsupported_undo",
+            hint="目前支持：阅读态/笔记/主题同步/状态重置的撤销",
+        )
+
+    # ---------------------------------------------------------------- topics
+    def sync_topics(
+        self, topics: Sequence[TopicCfg], *, actor: str = "system", reason: str = ""
+    ) -> list[Topic]:
+        """以配置为唯一事实源：更新/新增/删除 DB 镜像主题（配置删掉的主题，其历史打分的 topic_id 置空）。"""
+        wanted: dict[str, TopicCfg] = {t.name: t for t in topics}
+        with self.sf() as s:
+            before_snapshot = self._topic_snapshot(s)
+            existing = {t.name: t for t in s.scalars(select(Topic)).all()}
+            for name, cfg in wanted.items():
+                row = existing.get(name)
+                fields = dict(
+                    description=cfg.description,
+                    keywords=list(cfg.keywords),
+                    exclude_keywords=list(cfg.exclude_keywords),
+                    categories=list(cfg.categories),
+                    authors=list(cfg.authors),
+                    quota=cfg.quota,
+                    threshold=cfg.threshold,
+                    enabled=cfg.enabled,
+                )
+                if row is None:
+                    s.add(Topic(name=name, **fields))
+                else:
+                    for key, value in fields.items():
+                        setattr(row, key, value)
+            for name, row in existing.items():
+                if name not in wanted:
+                    s.delete(row)
+            # 记录仪纪律：只记**真实发生**的状态变更（无变化不记，避免噪声）
+            after_snapshot = _topics_to_dicts(wanted.values())
+            if after_snapshot != before_snapshot:
+                self._event(
+                    s,
+                    op="sync_topics",
+                    actor=actor,
+                    reason=reason,
+                    target="topics",
+                    before={"topics": before_snapshot},
+                    after={"topics": after_snapshot},
+                )
+            s.commit()
+            return list(s.scalars(select(Topic).where(Topic.name.in_(wanted.keys()))))
+
+    @staticmethod
+    def _topic_snapshot(s: Session) -> list[dict]:
+        """当前 DB 主题的可序列化快照（undo 用）。"""
+        return [
+            {
+                "name": t.name,
+                "description": t.description,
+                "keywords": list(t.keywords or []),
+                "exclude_keywords": list(t.exclude_keywords or []),
+                "categories": list(t.categories or []),
+                "authors": list(t.authors or []),
+                "quota": t.quota,
+                "threshold": t.threshold,
+                "enabled": t.enabled,
+            }
+            for t in s.scalars(select(Topic).order_by(Topic.id))
+        ]
+
+    def _apply_topic_snapshot(self, s: Session, topics: list[dict]) -> None:
+        """把主题快照写回 DB（undo sync_topics 用）。"""
+        wanted = {t["name"]: t for t in topics}
+        existing = {t.name: t for t in s.scalars(select(Topic)).all()}
+        for name, fields in wanted.items():
+            row = existing.get(name)
+            if row is None:
+                s.add(Topic(name=name, **{k: v for k, v in fields.items() if k != "name"}))
+            else:
+                for key, value in fields.items():
+                    if key != "name":
+                        setattr(row, key, value)
+        for name, row in existing.items():
+            if name not in wanted:
+                s.delete(row)
+
+    def enabled_topics(self) -> list[Topic]:
+        with self.sf() as s:
+            return list(
+                s.scalars(select(Topic).where(Topic.enabled.is_(True)).order_by(Topic.id))
+            )
+
+    # ---------------------------------------------------------------- papers
+    def upsert_papers(
+        self, items: Iterable[NormalizedPaper], *, actor: str = "system", reason: str = ""
+    ) -> dict[str, int]:
+        new = updated = 0
+        with self.sf() as s:
+            for item in items:
+                row = s.scalar(select(Paper).where(Paper.arxiv_id == item.arxiv_id))
+                if row is None:
+                    row = Paper(
+                        arxiv_id=item.arxiv_id,
+                        version=item.version,
+                        title=item.title,
+                        abstract=item.abstract,
+                        authors=list(item.authors),
+                        categories=list(item.categories),
+                        primary_category=item.primary_category,
+                        published_at=item.published_at,
+                        updated_at=item.updated_at,
+                        pdf_url=item.pdf_url,
+                        abs_url=item.abs_url,
+                        status="new",
+                        first_seen_at=utcnow(),
+                    )
+                    s.add(row)
+                    s.flush()
+                    self._index(s, row)
+                    new += 1
+                elif item.version > row.version:
+                    row.version = item.version
+                    row.title = item.title
+                    row.abstract = item.abstract
+                    row.authors = list(item.authors)
+                    row.categories = list(item.categories)
+                    row.primary_category = item.primary_category
+                    row.published_at = item.published_at
+                    row.updated_at = item.updated_at
+                    row.pdf_url = item.pdf_url
+                    row.abs_url = item.abs_url
+                    s.flush()
+                    self._index(s, row)
+                    updated += 1
+            if new or updated:
+                # 入库不可逆（撤了论文，历史简报/打分就悬空）——标 reversible=0
+                self._event(
+                    s,
+                    op="upsert_papers",
+                    actor=actor,
+                    reason=reason,
+                    target="papers",
+                    after={"new": new, "updated": updated},
+                    reversible=0,
+                )
+            s.commit()
+        return {"new": new, "updated": updated}
+
+    def _index(self, session: Session, paper: Paper) -> None:
+        if self.index is not None:
+            self.index.upsert(
+                session,
+                paper_id=paper.id,
+                title=paper.title,
+                abstract=paper.abstract,
+            )
+
+    def candidates_for_topic(self, topic: Topic, *, lookback_days: int) -> list[Paper]:
+        cutoff = utcnow() - timedelta(days=max(0, lookback_days))
+        stmt = select(Paper).where(Paper.status == "new", Paper.first_seen_at >= cutoff)
+        if topic.categories:
+            stmt = stmt.where(Paper.primary_category.in_(list(topic.categories)))
+        stmt = stmt.order_by(Paper.published_at.desc().nullslast(), Paper.id.desc())
+        with self.sf() as s:
+            return list(s.scalars(stmt))
+
+    def mark_status(
+        self, paper: Paper, status: str, *, actor: str = "system", reason: str = ""
+    ) -> None:
+        with self.sf() as s:
+            row = s.get(Paper, paper.id)
+            if row is not None and row.status != status:
+                before = {"arxiv_id": row.arxiv_id, "status": row.status}
+                row.status = status
+                self._event(
+                    s,
+                    op="mark_status",
+                    actor=actor,
+                    reason=reason,
+                    target=row.arxiv_id,
+                    before=before,
+                    after={"arxiv_id": row.arxiv_id, "status": status},
+                )
+                s.commit()
+
+    def record_download(
+        self, paper: Paper, path: str, *, actor: str = "system", reason: str = ""
+    ) -> None:
+        """记一条下载归档事件（append-only 归因）。下载是幂等的缓存式动作，标 reversible=0。"""
+        with self.sf() as s:
+            self._event(
+                s,
+                op="download_paper",
+                actor=actor,
+                reason=reason,
+                target=paper.arxiv_id,
+                after={"arxiv_id": paper.arxiv_id, "path": path},
+                reversible=0,
+            )
+            s.commit()
+
+    def reset_statuses(
+        self,
+        arxiv_ids: Sequence[str],
+        status: str = "new",
+        *,
+        actor: str = "system",
+        reason: str = "",
+    ) -> int:
+        """把指定论文重置为某状态（demo 重放 / 手动翻案用）。"""
+        ids = list(arxiv_ids)
+        if not ids:
+            return 0
+        count = 0
+        with self.sf() as s:
+            rows = list(s.scalars(select(Paper).where(Paper.arxiv_id.in_(ids))))
+            before_items = [
+                {"arxiv_id": row.arxiv_id, "status": row.status} for row in rows
+            ]
+            for row in rows:
+                if row.status != status:
+                    row.status = status
+                    count += 1
+            if count:
+                self._event(
+                    s,
+                    op="reset_statuses",
+                    actor=actor,
+                    reason=reason,
+                    target="papers",
+                    before={"items": before_items},
+                    after={"items": [{"arxiv_id": r.arxiv_id, "status": status} for r in rows]},
+                )
+            s.commit()
+        return count
+
+    def get_paper(self, arxiv_id: str) -> Paper | None:
+        with self.sf() as s:
+            stmt = (
+                select(Paper)
+                .options(*_PAPER_EAGER)
+                .where(Paper.arxiv_id == arxiv_id)
+            )
+            return s.scalars(stmt).first()
+
+    def recent_papers(self, *, limit: int = 50, status: str | None = None) -> list[Paper]:
+        stmt = select(Paper).options(*_PAPER_EAGER)
+        if status:
+            stmt = stmt.where(Paper.status == status)
+        stmt = stmt.order_by(Paper.published_at.desc().nullslast(), Paper.id.desc()).limit(limit)
+        with self.sf() as s:
+            return list(s.scalars(stmt))
+
+    def counts_by_status(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        with self.sf() as s:
+            rows = s.execute(
+                select(Paper.status, func.count()).group_by(Paper.status)
+            )
+            for status, count in rows:
+                out[str(status)] = int(count)
+        return out
+
+    # ---------------------------------------------------------------- scores / summaries
+    def save_scores(
+        self,
+        *,
+        run_id: str,
+        paper: Paper,
+        topic_id: int | None,
+        score: RelevanceScore,
+        model: str,
+    ) -> None:
+        with self.sf() as s:
+            exists = s.scalar(
+                select(PaperScore).where(
+                    PaperScore.run_id == run_id, PaperScore.paper_id == paper.id
+                )
+            )
+            if exists is not None:
+                return
+            s.add(
+                PaperScore(
+                    run_id=run_id,
+                    paper_id=paper.id,
+                    topic_id=topic_id,
+                    score=score.score,
+                    label=score.label,
+                    reason=score.reason,
+                    tags=list(score.tags),
+                    model=model,
+                )
+            )
+            s.commit()
+
+    def latest_scores(self, paper: Paper, *, limit: int = 5) -> list[PaperScore]:
+        with self.sf() as s:
+            return list(
+                s.scalars(
+                    select(PaperScore)
+                    .where(PaperScore.paper_id == paper.id)
+                    .order_by(PaperScore.id.desc())
+                    .limit(limit)
+                )
+            )
+
+    def save_summary(
+        self,
+        *,
+        run_id: str,
+        paper: Paper,
+        summary: PaperSummary,
+        model: str,
+        tokens: int = 0,
+        latency_ms: int = 0,
+    ) -> None:
+        with self.sf() as s:
+            exists = s.scalar(
+                select(PaperSummaryRow).where(
+                    PaperSummaryRow.run_id == run_id, PaperSummaryRow.paper_id == paper.id
+                )
+            )
+            if exists is not None:
+                return
+            s.add(
+                PaperSummaryRow(
+                    run_id=run_id,
+                    paper_id=paper.id,
+                    tldr=summary.tldr,
+                    problem=summary.problem,
+                    method=summary.method,
+                    results=summary.results,
+                    novelty=summary.novelty,
+                    keywords=list(summary.keywords),
+                    model=model,
+                    tokens=tokens,
+                    latency_ms=latency_ms,
+                )
+            )
+            s.commit()
+            if self.index is not None:
+                # 同步刷新全文索引里的 tldr / keywords
+                self.index.upsert(
+                    s,
+                    paper_id=paper.id,
+                    title=paper.title or "",
+                    abstract=paper.abstract or "",
+                    tldr=summary.tldr,
+                    keywords=summary.keywords,
+                )
+                s.commit()
+
+    def latest_summary(self, paper: Paper) -> PaperSummaryRow | None:
+        with self.sf() as s:
+            return s.scalar(
+                select(PaperSummaryRow)
+                .where(PaperSummaryRow.paper_id == paper.id)
+                .order_by(PaperSummaryRow.id.desc())
+            )
+
+    # ---------------------------------------------------------------- briefings / runs
+    def save_briefing(
+        self,
+        *,
+        date: str,
+        run_id: str,
+        title: str,
+        markdown: str,
+        stats: dict,
+        ai_enabled: bool,
+        actor: str = "system",
+        reason: str = "",
+    ) -> Briefing:
+        with self.sf() as s:
+            for old in s.scalars(select(Briefing).where(Briefing.date == date)).all():
+                old.status = "superseded"
+            briefing = Briefing(
+                date=date,
+                run_id=run_id,
+                title=title,
+                markdown=markdown,
+                stats=stats,
+                ai_enabled=ai_enabled,
+                status="draft",
+            )
+            s.add(briefing)
+            # 定稿不可逆（旧 briefing 已被标 superseded，回滚会丢历史）——reversible=0
+            self._event(
+                s,
+                op="save_briefing",
+                actor=actor,
+                reason=reason,
+                target=date,
+                after={
+                    "date": date,
+                    "run_id": run_id,
+                    "selected": len(stats.get("items", [])) if isinstance(stats, dict) else 0,
+                },
+                reversible=0,
+            )
+            s.commit()
+            s.refresh(briefing)
+            return briefing
+
+    def briefing_for_date(self, date: str) -> Briefing | None:
+        with self.sf() as s:
+            return s.scalar(
+                select(Briefing)
+                .where(Briefing.date == date)
+                .order_by(Briefing.id.desc())
+            )
+
+    def briefings(self, *, limit: int = 30) -> list[Briefing]:
+        with self.sf() as s:
+            return list(
+                s.scalars(select(Briefing).order_by(Briefing.date.desc()).limit(limit))
+            )
+
+    def create_run(self, run_id: str, *, mode: str = "daily") -> Run:
+        run = Run(id=run_id, mode=mode, status="running")
+        with self.sf() as s:
+            s.add(run)
+            s.commit()
+        return run
+
+    def finish_run(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        stats: dict | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self.sf() as s:
+            run = s.get(Run, run_id)
+            if run is None:
+                return
+            run.status = status
+            run.finished_at = utcnow()
+            if stats is not None:
+                run.stats = stats
+            if error is not None:
+                run.error = error
+            s.commit()
+
+    def last_run(self) -> Run | None:
+        with self.sf() as s:
+            return s.scalar(select(Run).order_by(Run.started_at.desc()))
+
+    # ---------------------------------------------------------------- ai 记账
+    def log_ai_call(
+        self,
+        *,
+        port: str,
+        purpose: str,
+        model: str,
+        latency_ms: int = 0,
+        tokens: int = 0,
+        ok: bool = True,
+        error: str | None = None,
+    ) -> None:
+        with self.sf() as s:
+            s.add(
+                AICall(
+                    port=port,
+                    purpose=purpose,
+                    model=model,
+                    latency_ms=latency_ms,
+                    tokens=tokens,
+                    ok=ok,
+                    error=error,
+                )
+            )
+            s.commit()
+
+    def ai_calls_since(self, since: datetime, *, limit: int = 100) -> list[AICall]:
+        with self.sf() as s:
+            return list(
+                s.scalars(
+                    select(AICall)
+                    .where(AICall.ts >= since)
+                    .order_by(AICall.ts.desc())
+                    .limit(limit)
+                )
+            )
+
+    # ---------------------------------------------------------------- 检索
+    def search_papers(
+        self,
+        query: str,
+        *,
+        label: str | None = None,
+        primary_category: str | None = None,
+        limit: int = 50,
+    ) -> list[Paper]:
+        with self.sf() as s:
+            stmt = select(Paper).options(*_PAPER_EAGER)
+            if query and self.index is not None:
+                ids = self.index.search(query, limit=limit)
+                if not ids:
+                    return []
+                stmt = stmt.where(Paper.id.in_(ids))
+                papers = {p.id: p for p in s.scalars(stmt)}
+                ordered = [papers[i] for i in ids if i in papers]
+            else:
+                if primary_category:
+                    stmt = stmt.where(Paper.primary_category == primary_category)
+                ordered = list(
+                    s.scalars(
+                        stmt.order_by(Paper.published_at.desc().nullslast(), Paper.id.desc()).limit(
+                            limit
+                        )
+                    )
+                )
+            if label:
+                ordered = [p for p in ordered if p.scores and p.scores[-1].label == label]
+            if primary_category and query:
+                ordered = [p for p in ordered if p.primary_category == primary_category]
+            return ordered
+
+    # ---------------------------------------------------------------- 人工状态
+    def _ensure_reading(self, s: Session, paper: Paper) -> ReadingState:
+        row = s.get(ReadingState, paper.id)
+        if row is None:
+            row = ReadingState(paper_id=paper.id)
+            s.add(row)
+            s.flush()
+        return row
+
+    def _reading_event(
+        self,
+        s: Session,
+        paper: Paper,
+        row: ReadingState,
+        *,
+        op: str,
+        actor: str,
+        reason: str,
+        before: dict,
+    ) -> None:
+        """before 必须由调用方在**变更前**拍好（否则 undo 回写的是新值）。"""
+        self._event(
+            s,
+            op=op,
+            actor=actor,
+            reason=reason,
+            target=paper.arxiv_id,
+            before=before,
+            after={"arxiv_id": paper.arxiv_id, **{f: bool(getattr(row, f)) for f in _READING_FIELDS}},
+        )
+
+    def _reading_snapshot(self, paper: Paper) -> dict:
+        """读当前阅读态三元（含 arxiv_id）。"""
+        with self.sf() as s:
+            row = s.get(ReadingState, paper.id)
+            triple = {f: bool(getattr(row, f)) for f in _READING_FIELDS} if row else {
+                f: False for f in _READING_FIELDS
+            }
+        return {"arxiv_id": paper.arxiv_id, **triple}
+
+    def set_read(self, paper: Paper, *, read: bool, actor: str = "system", reason: str = "") -> None:
+        before = self._reading_snapshot(paper)
+        with self.sf() as s:
+            row = self._ensure_reading(s, paper)
+            if row.read != read:
+                row.read = read
+                self._reading_event(
+                    s, paper, row, op="set_read", actor=actor, reason=reason, before=before
+                )
+                s.commit()
+
+    def toggle_star(self, paper: Paper, *, actor: str = "system", reason: str = "") -> bool:
+        before = self._reading_snapshot(paper)
+        with self.sf() as s:
+            row = self._ensure_reading(s, paper)
+            row.star = not row.star
+            self._reading_event(
+                s, paper, row, op="star_paper", actor=actor, reason=reason, before=before
+            )
+            s.commit()
+            s.refresh(row)
+            return bool(row.star)
+
+    def set_marked_skip(
+        self, paper: Paper, *, skip: bool, actor: str = "system", reason: str = ""
+    ) -> None:
+        before = self._reading_snapshot(paper)
+        with self.sf() as s:
+            row = self._ensure_reading(s, paper)
+            if row.marked_skip != skip:
+                row.marked_skip = skip
+                self._reading_event(
+                    s, paper, row, op="skip_paper", actor=actor, reason=reason, before=before
+                )
+                s.commit()
+
+    def add_note(
+        self, paper: Paper, content: str, *, actor: str = "system", reason: str = ""
+    ) -> Note:
+        with self.sf() as s:
+            note = Note(paper_id=paper.id, content=content)
+            s.add(note)
+            s.flush()
+            self._event(
+                s,
+                op="add_note",
+                actor=actor,
+                reason=reason,
+                target=paper.arxiv_id,
+                after={"note_id": note.id, "paper_id": paper.id, "content": content[:500]},
+            )
+            s.commit()
+            s.refresh(note)
+            return note
+
+    def delete_note(self, note_id: int, *, actor: str = "system", reason: str = "") -> None:
+        with self.sf() as s:
+            note = s.get(Note, note_id)
+            if note is not None:
+                before = {
+                    "note_id": note.id,
+                    "paper_id": note.paper_id,
+                    "content": note.content,
+                }
+                s.delete(note)
+                self._event(
+                    s,
+                    op="delete_note",
+                    actor=actor,
+                    reason=reason,
+                    target=str(note_id),
+                    before=before,
+                )
+                s.commit()
+
+    def notes_for(self, paper: Paper) -> list[Note]:
+        with self.sf() as s:
+            return list(
+                s.scalars(
+                    select(Note)
+                    .where(Note.paper_id == paper.id)
+                    .order_by(Note.id.desc())
+                )
+            )
+
+
+def _topics_to_dicts(topics) -> list[dict]:
+    """TopicCfg 序列化为可 JSON 快照（events.after 用）。"""
+    return [
+        {
+            "name": t.name,
+            "description": t.description,
+            "keywords": list(t.keywords),
+            "exclude_keywords": list(t.exclude_keywords),
+            "categories": list(t.categories),
+            "authors": list(t.authors),
+            "quota": t.quota,
+            "threshold": t.threshold,
+            "enabled": t.enabled,
+        }
+        for t in topics
+    ]

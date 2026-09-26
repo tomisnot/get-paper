@@ -1,0 +1,5 @@
+# 交付期 overlay：加载构建产物（先 cd dsh && npm run bundle）。
+#   dsh web --patch ./dsh/cordis.patch.yml
+- insert:
+    - id: paperpilot
+      name: './lib/index.mjs'

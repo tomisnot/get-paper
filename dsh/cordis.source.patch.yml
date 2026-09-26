@@ -1,0 +1,7 @@
+# 开发期 overlay：用 dsh 的 tsx loader 直接加载 TS 源（无需先构建）。
+#   dsh web --patch ./dsh/cordis.source.patch.yml
+# relative entry 锚定本文件 ⇒ 私有 out-of-tree 包无需装进 profile。
+# 只插 HOST 入口；client 半由 package.json 的 dsh.client + /client 导出被 web client loader 挂载。
+- insert:
+    - id: paperpilot
+      name: './src/index.ts'

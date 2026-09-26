@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}简报 {{ date }} · PaperPilot{% endblock %}
+{% block content %}
+{% set payload = briefing.stats or {} %}
+{% set summary = payload.get("stats", {}) %}
+{% set items = payload.get("items", []) %}
+{% set archived = payload.get("archived", []) %}
+
+<div class="layout">
+<div>
+  <div class="row" style="align-items:center; justify-content:space-between;">
+    <div>
+      <h1>{% if briefing %}{{ briefing.title }}{% else %}今日简报{% endif %}</h1>
+      <div class="muted">{{ date }}{% if is_today %} · 今天{% endif %}</div>
+    </div>
+    <form method="post" action="/settings/run">
+      <button class="ghost">{{ "重新生成" if briefing else "立即生成" }}</button>
+    </form>
+  </div>
+
+  {% if briefing %}
+    <div style="margin:14px 0 4px;">
+      <span class="stat">候选 {{ summary.get("fetched", 0) }} 篇</span>
+      <span class="stat">过规则 {{ summary.get("after_rules", 0) }} 篇</span>
+      <span class="stat">精选 {{ summary.get("selected", 0) }} 篇</span>
+      <span class="stat">AI {{ summary.get("ai_provider", "-") }}</span>
+      <span class="stat">AI 耗时 {{ summary.get("ai_latency_ms", 0) }}ms</span>
+      {% if not summary.get("ai_enabled", True) %}<span class="stat" style="background:#fef2f2;color:#b91c1c">AI 未启用</span>{% endif %}
+    </div>
+    {% for msg in summary.get("degraded", []) %}
+      <div class="warn">⚠️ {{ msg }}</div>
+    {% endfor %}
+  {% else %}
+    <div class="empty">
+      <p>{{ date }} 还没有简报。</p>
+      <p class="muted">点右上角「立即生成」跑一次流水线；或先用 <code>paperpilot fetch</code> 抓一批论文。</p>
+    </div>
+  {% endif %}
+
+  {% set must = items | selectattr("label", "equalto", "must_read") | list %}
+  {% set worth = items | rejectattr("label", "equalto", "must_read") | list %}
+
+  {% for section, group in (("今日必读", must), ("值得一看", worth)) %}
+    {% if group %}
+      <h2>{{ section }}（{{ group | length }}）</h2>
+      {% for item in group %}
+        <div class="card">
+          <div class="item-title">{{ loop.index }}. <a href="/papers/{{ item.arxiv_id }}">{{ item.title }}</a></div>
+          <div class="muted" style="margin:4px 0 8px;">
+            {{ (item.authors[:3] | join(", ")) if item.authors else "" }}{% if item.authors | length > 3 %} 等{% endif %}
+            · {{ item.primary_category }}
+            {% if item.published_at %} · {{ item.published_at[:10] }}{% endif %}
+            · 相关性 <strong>{{ "%.2f"|format(item.score) }}</strong>
+            <span class="chip {{ item.label }}">{{ item.label }}</span>
+            {% for tag in item.tags[:4] %}<span class="chip">{{ tag }}</span>{% endfor %}
+          </div>
+          {% if item.reason %}<div class="why"><span class="lbl">💡 为什么推荐给你</span>{{ item.reason }}</div>{% endif %}
+          {% set s = item.summary %}
+          {% if s %}
+            {% if s.tldr %}<div class="kv" style="background:var(--accent-soft);padding:8px 10px;border-radius:8px;"><b>TL;DR</b>{{ s.tldr }}</div>{% endif %}
+            {% if s.problem %}<div class="kv"><b>问题</b>{{ s.problem }}</div>{% endif %}
+            {% if s.method %}<div class="kv"><b>方法</b>{{ s.method }}</div>{% endif %}
+            {% if s.results %}<div class="kv"><b>结论</b>{{ s.results }}</div>{% endif %}
+            {% if s.novelty %}<div class="kv"><b>贡献</b>{{ s.novelty }}</div>{% endif %}
+            {% if not item.ai_summary %}<div class="muted">（AI 不可用，以上为原文摘编）</div>{% endif %}
+          {% endif %}
+          <div class="actions">
+            <a class="btn ghost" href="{{ item.abs_url }}" target="_blank" rel="noopener">arXiv 原文</a>
+            <form method="post" action="/papers/{{ item.arxiv_id }}/download" style="display:inline">
+              <input type="hidden" name="next_url" value="/digest/{{ date }}">
+              <button class="ghost">⬇ 下载归档</button>
+            </form>
+            <a class="btn ghost" href="/papers/{{ item.arxiv_id }}/pdf" target="_blank" rel="noopener">本地 PDF</a>
+            <form method="post" action="/papers/{{ item.arxiv_id }}/star"><button class="ghost">☆ 收藏</button></form>
+            <form method="post" action="/papers/{{ item.arxiv_id }}/skip"><button class="ghost">不感兴趣</button></form>
+          </div>
+        </div>
+      {% endfor %}
+    {% endif %}
+  {% endfor %}
+
+  {% if archived %}
+    <h2>存档</h2>
+    <div class="card">
+      <details open>
+        <summary>过规则未入选 {{ archived | length }} 篇（可翻案）</summary>
+        <table style="margin-top:10px; border:none;">
+          {% for a in archived[:30] %}
+          <tr>
+            <td><a href="/papers/{{ a.arxiv_id }}">{{ a.title[:64] }}</a></td>
+            <td style="width:70px;" class="muted">{{ "%.2f"|format(a.score) }}</td>
+            <td style="width:80px;" class="muted">{{ a.primary_category }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+        {% if archived | length > 30 %}<div class="muted">……其余 {{ archived | length - 30 }} 篇见论文库</div>{% endif %}
+      </details>
+    </div>
+  {% endif %}
+</div>
+
+<aside class="side">
+  <div class="card">
+    <b style="font-size:13px;">近期简报</b>
+    {% for d in recent_dates %}
+      <a href="/digest/{{ d }}" class="{{ "cur" if d == date }}">{{ d }}</a>
+    {% else %}
+      <div class="muted">暂无</div>
+    {% endfor %}
+  </div>
+  <div class="card">
+    <b style="font-size:13px;">主题</b>
+    {% for t in container.settings.topics %}
+      <div style="font-size:13px; padding:3px 0;">
+        {{ "🟢" if t.enabled else "⚪️" }} {{ t.name }}
+        <span class="muted">· quota {{ t.quota }}</span>
+      </div>
+    {% endfor %}
+    <a href="/settings" style="margin-top:6px;">管理主题 →</a>
+  </div>
+</aside>
+</div>
+{% endblock %}
