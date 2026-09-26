@@ -358,6 +358,45 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
             "running": container.run_state["running"],
         }
 
+    # --------------------------------------------------- cockpit JSON（供 dsh 面板跨源轮询）
+    # dsh 面板（origin :3081）先经 host 同源路由 `/paperpilot/monitor-url` 从 `.web-port`
+    # 解析到本 Web 的 base，再 GET `/history` + `/config`（mecha cockpit 契约）。跨源 ⇒
+    # 必带 `Access-Control-Allow-Origin`；无栈（独立 Web）⇒ 503 可读错误，绝不空白/不回落。
+    def _cockpit_json(payload: dict, status: int = 200):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(payload, status_code=status,
+                            headers={"Access-Control-Allow-Origin": "*"})
+
+    def _cockpit_source():
+        from mecha.cockpit import MonitorSource
+
+        from ..mecha_adapter.monitor import config_schema_rows
+
+        return MonitorSource.from_software(
+            stack["software"], schema_rows=config_schema_rows)
+
+    @app.get("/history")
+    def monitor_history(since_seq: int = 0):
+        if stack is None:
+            return _cockpit_json(
+                {"ok": False, "error": "未接监控面（未经统一启动入口装配 mecha 栈）"}, 503)
+        from mecha.cockpit import history_records
+
+        mode = str(getattr(stack["authority"].mode, "value", stack["authority"].mode))
+        return _cockpit_json({"ok": True,
+                              "events": history_records(_cockpit_source(), since_seq),
+                              "mode": mode})
+
+    @app.get("/config")
+    def monitor_config():
+        if stack is None:
+            return _cockpit_json(
+                {"ok": False, "error": "未接监控面（未经统一启动入口装配 mecha 栈）"}, 503)
+        from mecha.cockpit import config_tree
+
+        return _cockpit_json({"ok": True, **config_tree(_cockpit_source())})
+
     return app
 
 

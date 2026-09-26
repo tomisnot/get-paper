@@ -19,6 +19,49 @@ from .base import Registry, err, ok
 # 外部调用方未表明身份时的默认归因（CLI/人可显式传 actor="human"）
 ACTOR_DEFAULT = "ai"
 
+#: 参数描述的唯一来源（N8）：按**能力名**（非 mecha 投影名）组织；mecha 层从
+#: ToolSpec.params 透传，不再自备第二份（两份必漂移）。actor 由投影层隐去，不描述。
+PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
+    "get_digest": {"date": "简报日期 ISO 格式（省略=今天）",
+                   "full": "True 含 Markdown 全文；False 只回统计与条目"},
+    "search_papers": {"query": "检索词（省略=列近期）", "label": "按档位过滤",
+                      "category": "按主分类过滤", "limit": "一页最多返回条数（≤20）",
+                      "offset": "分页起点（上一页回程的 next_offset）"},
+    "get_paper": {"arxiv_id": "论文 arXiv 编号"},
+    "get_activity": {"since_seq": "只回此序号之后的事件", "actor": "按操作者过滤",
+                     "op": "按操作类型过滤", "days": "背景统计的回溯天数",
+                     "limit": "事件最多返回条数"},
+    "review_status": {"date": "日期 ISO 格式（省略=今天）"},
+    "paper_metrics": {"arxiv_id": "论文 arXiv 编号"},
+    "get_references": {"arxiv_id": "论文 arXiv 编号", "limit": "最多返回条数（≤100）",
+                       "sort_by_citations": "是否按引用数降序"},
+    "get_citations": {"arxiv_id": "论文 arXiv 编号", "limit": "最多返回条数（≤100）",
+                      "sort_by_citations": "是否按引用数降序"},
+    "undo": {"seq": "要撤销的事件序号（0=最近一条可逆）", "reason": "一句话中文说明撤销原因"},
+    "fetch_papers": {"days": "回溯天数", "reason": "一句话中文说明本次抓取目的"},
+    "download_paper": {"arxiv_id": "论文 arXiv 编号", "reason": "一句话中文说明下载原因"},
+    "prepare_review": {"date": "日期 ISO 格式（省略=今天）", "reason": "一句话中文说明目的"},
+    "submit_review": {"reviews": "评审列表 [{arxiv_id,score,label,reason,…}]",
+                      "date": "评审对应日期 ISO 格式（省略=今天）",
+                      "reason": "一句话中文说明目的"},
+    "finalize_briefing": {"date": "日期 ISO 格式（省略=今天）", "force": "已定稿时是否强制重跑",
+                          "reason": "一句话中文说明目的"},
+    "run_pipeline": {"date": "日期 ISO 格式（省略=今天）", "force": "已存在时是否强制重跑",
+                     "reason": "一句话中文说明目的"},
+    "add_topic": {"name": "主题名", "keywords": "关键词，逗号分隔",
+                  "categories": "arXiv 分类白名单，逗号分隔", "description": "主题描述",
+                  "exclude_keywords": "排除词，逗号分隔", "quota": "每主题配额",
+                  "threshold": "入选评分阈值", "reason": "一句话中文说明新增原因"},
+    "set_topic_enabled": {"name": "主题名", "enabled": "True 启用 / False 停用",
+                          "reason": "一句话中文说明原因"},
+    "mark_read": {"arxiv_id": "论文 arXiv 编号", "read": "True 已读 / False 未读",
+                  "reason": "一句话中文说明原因"},
+    "star_paper": {"arxiv_id": "论文 arXiv 编号", "reason": "一句话中文说明原因"},
+    "skip_paper": {"arxiv_id": "论文 arXiv 编号", "reason": "一句话中文说明原因"},
+    "add_note": {"arxiv_id": "论文 arXiv 编号", "content": "笔记正文",
+                 "reason": "一句话中文说明原因"},
+}
+
 
 def _split(value: str) -> list[str]:
     return [v.strip() for v in (value or "").split(",") if v.strip()]
@@ -85,13 +128,20 @@ def build_registry(container) -> Registry:
         return out
 
     @reg.tool(name="search_papers", kind="read",
-              description="论文库检索(FTS5:标题/摘要/TL;DR)。query 空则按时间倒序列近期论文。")
-    def search_papers(query: str = "", label: str = "", category: str = "", limit: int = 20) -> dict:
+              description="论文库检索(FTS5:标题/摘要/TL;DR)。query 空则按时间倒序列近期论文。分页：offset 从 0 起，"
+                          "回程带 next_offset（非空则可继续取）。")
+    def search_papers(query: str = "", label: str = "", category: str = "",
+                     limit: int = 20, offset: int = 0) -> dict:
+        # 页大小对齐体积闸 _LIST_KEEP=20：一次一页、offset 前进，避免“返回条数≠count”的不一致。
+        lim = max(1, min(int(limit), 20))
+        off = max(0, int(offset))
         papers = retrieval.search(
             query, label=label or None, primary_category=category or None,
-            limit=max(1, min(int(limit), 100)),
+            limit=lim, offset=off,
         )
-        return ok(count=len(papers), papers=[
+        # N4：满页⇒给 next_offset（可执行的“AI 路”翻页，替代“看 Web 面板”那种人路提示）。
+        next_offset = off + len(papers) if len(papers) == lim else None
+        return ok(count=len(papers), offset=off, next_offset=next_offset, papers=[
             {
                 "arxiv_id": p.arxiv_id, "title": p.title,
                 "primary_category": p.primary_category,
@@ -224,9 +274,11 @@ def build_registry(container) -> Registry:
         return ok(**prepared.payload)
 
     @reg.tool(name="submit_review", kind="write",
-              description="阶段2：提交对候选的评审。reviews=[{arxiv_id,score,label,reason,tags?,summary?}]。")
-    def submit_review(date: str, reviews: list, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
-        return pipeline.submit_review(date, list(reviews or []))
+              description="阶段2：提交对候选的评审。reviews=[{arxiv_id,score,label,reason,tags?,summary?}]；"
+                          "label 取 must_read/worth/skip。date 省略=今天（与 prepare/finalize 对齐）。")
+    def submit_review(reviews: list, date: str = "", actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        target = date or datetime.now().date().isoformat()
+        return pipeline.submit_review(target, list(reviews or []))
 
     @reg.tool(name="finalize_briefing", kind="write",
               description="阶段3：用已提交评审（缺的用基线分）做筛选、精读、生成简报并落库。")
@@ -382,4 +434,5 @@ def build_registry(container) -> Registry:
             cits.sort(key=lambda c: -(c.get("citation_count") or 0))
         return ok(arxiv_id=arxiv_id, count=len(cits), citations=cits)
 
+    reg.attach_param_descriptions(PARAM_DESCRIPTIONS)   # N8：单一事实源装入 ToolSpec.params
     return reg

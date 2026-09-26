@@ -30,8 +30,11 @@ logger = logging.getLogger("paperpilot.capabilities")
 # 回程预算（字节）与长列表保留条数（回程体积纪律）
 _RETURN_BUDGET = 65536
 _LIST_KEEP = 20
+# 需截断的长列表键。**刻意不含 `candidates`**（N3）：`prepare_review` 的评审输入
+# 是 AI 干正事的必要全集，无差别截到 _LIST_KEEP 会让“逐篇评审、提交全部”的协议
+# 对半数候选静默失效——它已由 pipeline 的 _MAX_REVIEW_CANDIDATES 封顶 + 字节预算兜底。
 _LIST_KEYS = (
-    "items", "papers", "candidates", "archived", "briefings",
+    "items", "papers", "archived", "briefings",
     "topics", "events", "results", "scores",
 )
 
@@ -75,9 +78,13 @@ class ToolSpec:
         }
 
 
-def params_from_signature(fn: Callable) -> dict[str, dict]:
-    """从函数签名 + 类型注解推导入参 schema（自描述用）。"""
+def params_from_signature(fn: Callable, descriptions: dict | None = None) -> dict[str, dict]:
+    """从函数签名 + 类型注解推导入参 schema（自描述用）。
+
+    ``descriptions``：参数名→人读描述（N8 单一事实源：描述住能力层，由调用方传入）。
+    """
     hints = dict(getattr(fn, "__annotations__", {}))
+    descriptions = descriptions or {}
     out: dict[str, dict] = {}
     for name, p in inspect.signature(fn).parameters.items():
         if name in ("self", "cls"):
@@ -88,6 +95,9 @@ def params_from_signature(fn: Callable) -> dict[str, dict]:
         else:
             info["required"] = False
             info["default"] = p.default
+        desc = descriptions.get(name)
+        if desc:
+            info["description"] = desc
         out[name] = info
     return out
 
@@ -153,8 +163,12 @@ class Registry:
         description: str,
         kind: Literal["read", "write"] = "read",
         reversible: bool = False,
+        params_desc: dict | None = None,
     ) -> Callable:
-        """装饰器：把一个函数注册为能力，入参 schema 自动从签名推导。"""
+        """装饰器：把一个函数注册为能力，入参 schema 自动从签名推导。
+
+        ``params_desc``（可选）：参数名→描述，落进 ``ToolSpec.params``（N8 单一事实源）。
+        """
 
         def deco(fn: Callable) -> Callable:
             self.register(
@@ -164,7 +178,7 @@ class Registry:
                     handler=fn,
                     kind=kind,
                     reversible=reversible,
-                    params=params_from_signature(fn),
+                    params=params_from_signature(fn, params_desc),
                 )
             )
             return fn
@@ -179,6 +193,21 @@ class Registry:
 
     def specs(self) -> list[dict]:
         return [t.describe() for t in self._tools.values()]
+
+    def attach_param_descriptions(self, mapping: dict) -> None:
+        """把 ``{能力名: {参数: 描述}}`` 合并进各 ToolSpec.params（N8 单一事实源的装载口）。
+
+        描述表与签名漂移（能力改名/参数改名）时**响亮报错**：手抄名单要么生成
+        要么配守卫（D1/D4）——宁可启动炸，不静默少一个描述。
+        """
+        for cap, descs in mapping.items():
+            spec = self._tools.get(cap)
+            if spec is None:
+                raise KeyError(f"参数描述表引用了不存在的能力 {cap!r}")
+            for pname, desc in descs.items():
+                if pname not in spec.params:
+                    raise KeyError(f"能力 {cap!r} 无参数 {pname!r}（描述表与签名漂移）")
+                spec.params[pname]["description"] = desc
 
     def invoke(self, name: str, /, **params: Any) -> dict:
         """调用能力 → 统一信封 dict（异常一律转可教学错误，绝不抛给调用方）。

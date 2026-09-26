@@ -185,3 +185,39 @@ def test_old_monitor_view_is_gone(tmp_path):
     assert 'href="/monitor"' not in nav
     # 唯一还活着的 /monitor* 是**控制端点**（POST；GET 一律 405/404，不是页面）
     assert client.get("/monitor/mode").status_code in (404, 405)
+
+
+# ---------------------------------------------------------------- cockpit JSON 路由（dsh 面板取数）
+def test_cockpit_history_route_is_cockpit_json_with_cors(tmp_path):
+    """dsh 面板取 `/history`：Web 写自动取 human、事件里看得到 command 审计、带 CORS。"""
+    client, _container, _stack = _gated(tmp_path)
+    client.post("/papers/2608.01101/star", follow_redirects=False)
+    r = client.get("/history?since_seq=0")
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == "*"   # dsh :3081 跨源必需
+    body = r.json()
+    assert body["ok"] is True and body["mode"] == "human"
+    assert "command.star_paper" in {e["target"] for e in body["events"]}
+    # 9 键契约（含 before/after/reason）——与 mecha cockpit history_records 对齐
+    assert {"seq", "kind", "actor", "target", "before", "after", "reason"} <= set(body["events"][0])
+
+
+def test_cockpit_config_route_shape_and_cors(tmp_path):
+    """dsh 面板取 `/config`：has_schema + 6 配置键 + 族树（scoring/fetch），带 CORS。"""
+    client, _container, _stack = _gated(tmp_path)
+    r = client.get("/config")
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == "*"
+    cfg = r.json()
+    assert cfg["ok"] is True and cfg["has_schema"] is True
+    assert cfg["n_keys"] == 6
+    assert "scoring" in cfg["groups"] and "fetch" in cfg["groups"]
+
+
+def test_cockpit_routes_honest_without_stack(tmp_path):
+    """独立 Web（无栈）：/history、/config ⇒ 503 可读错误 + 仍带 CORS，绝不空白/不回落。"""
+    client = TestClient(create_app(build_container(make_settings(tmp_path / "data"))))
+    for path in ("/history", "/config"):
+        r = client.get(path)
+        assert r.status_code == 503 and r.json()["ok"] is False
+        assert r.headers.get("access-control-allow-origin") == "*"

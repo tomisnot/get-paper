@@ -24,7 +24,7 @@ from mecha.errors import MechaError
 from mecha.surface import ExecutionContext
 
 from .. import capabilities
-from .tools import TOOL_DECLS, _cap_params, _suggest_text
+from .tools import TOOL_DECLS, _cap_params, envelope_to_error
 
 #: 当前调用的操作者通道（contextvar，按请求/线程隔离）。
 #: ⭐ 为何需要：``CommandRegistry.invoke(name, args, *, context, gate, channel)`` 把 channel
@@ -109,6 +109,24 @@ def _result_ref(res: dict) -> dict | None:
     return ref or None
 
 
+def _estimate(cap_name: str, container):
+    """每条写命令的耗时预估（E2.2 / 缺口2）：**非零**，让 AI 能据此判断要不要 job 化。
+
+    网络/重计算类（run_pipeline/fetch_papers）给 **callable**（按参数现算：启用主题数
+    × 回溯天数 × arXiv ~3s 限速）；本地快写（写库/文件）给小常量。不再一律 0.0。
+    """
+    st = container.settings
+    n_topics = sum(1 for t in st.topics if t.enabled) or 1
+    lookback = max(1, int(st.lookback_days))
+    if cap_name == "run_pipeline":
+        return lambda _args: float(n_topics * lookback * 3 + 5)
+    if cap_name == "fetch_papers":
+        return lambda args: float(max(1, int(args.get("days") or lookback)) * n_topics * 3)
+    if cap_name == "download_paper":
+        return 10.0                       # 拉一份 PDF：网络 + 落盘
+    return 1.0                            # 本地写（评审/笔记/主题…）：小而非零
+
+
 def _make_handler(container, decl, authority, default_channel, surface):
     """命令体：① authority 写权前置闸 → ② 调能力/Engine.run → ③ 归一化回执。
 
@@ -121,8 +139,15 @@ def _make_handler(container, decl, authority, default_channel, surface):
     def handler(context=None, **args):
         channel = _CURRENT_CHANNEL.get() or default_channel
         # ① 写权前置（见模块 docstring 的 n=3 说明）：LOCKED/模式不符 → GateDenied，
-        #    域写不发生；命令面把 MechaError 归一化成失败回执（可归因）。
-        authority.gate(channel.side)
+        #    域写不发生；拒绝的 hint 引向只读工具 read_authority（N5：先查后写，不盲撞）。
+        try:
+            authority.gate(channel.side)
+        except MechaError as e:
+            raise MechaError(
+                e.message, kind=e.kind,
+                hint=f"{e.hint} 先用只读工具 read_authority 查当前写权模式（how_to_open 说怎么开）。",
+                suggest=e.suggest or "read_authority",
+            ) from None
         args = dict(args)
         args.pop("actor", None)                 # actor 由通道钉死，绝不接受请求传入
         args["actor"] = channel.actor
@@ -132,16 +157,8 @@ def _make_handler(container, decl, authority, default_channel, surface):
         else:
             res = capabilities.invoke(container, cap_name, **args)
         if not res.get("ok"):
-            e = res.get("error") or {}
-            return CommandResult(
-                ok=False, values={"ok": False},
-                error=MechaError(
-                    str(e.get("message") or "写入失败"),
-                    kind=str(e.get("kind") or "error"),
-                    hint=str(e.get("hint") or ""),
-                    suggest=_suggest_text(e.get("suggest")),
-                ),
-            )
+            # 失败经共享的 envelope_to_error（含 N2 的 bad_envelope 兜底，读写两路一致）。
+            return CommandResult(ok=False, values={"ok": False}, error=envelope_to_error(res))
         return CommandResult(ok=True, values=dict(res), result_ref=_result_ref(dict(res)))
 
     return handler
@@ -166,7 +183,7 @@ def build_commands(container, sw, channel=None) -> list[str]:
             output_schema={"type": "object", "required": ["ok"]},
             side_effect=True,
             scope=_scope_for(decl.mecha_name),
-            estimate_sec=0.0,
+            estimate_sec=_estimate(decl.cap_name, container),
             cancel_supported=decl.via_surface,
             approval_required=False,
         )

@@ -22,8 +22,9 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from mecha.errors import MechaError
 from mecha.gate import Channel
@@ -41,7 +42,11 @@ _BANNED_WORDS = (
 
 @dataclass(frozen=True)
 class ToolDecl:
-    """一条工具声明（mecha 名 → 能力名 + 领域文案 + 参数处置）。"""
+    """一条工具声明（mecha 名 → 能力名 + 工具级文案 + 参数处置）。
+
+    参数描述**不在这里**（N8）：住能力层 ``ToolSpec.params[..]["description"]``，
+    由 ``_derive_parameters`` 从 ``_cap_params`` 透传——避免第二份手抄漂移。
+    """
 
     mecha_name: str
     cap_name: str
@@ -49,109 +54,72 @@ class ToolDecl:
     description: str
     via_surface: bool = False        # True = 走 Engine.run（每日流水线）
     omit: tuple[str, ...] = ()       # 不作为模型可见参数的能力入参
-    param_desc: dict = field(default_factory=dict)
 
 
 #: 22 能力的投影表（单一来源：参数派生、必填注入、Surface 注册都由它驱动）。
+#: 参数描述不在此（N8）——由 ``_derive_parameters`` 从能力 ``ToolSpec.params`` 透传。
 TOOL_DECLS: tuple[ToolDecl, ...] = (
     # ------------------------------------------------------------ 只读面（9）
     ToolDecl("query_topics", "list_topics", "read",
              "列出研究主题：名称、关键词、分类白名单、配额、评分阈值、启用状态。"),
     ToolDecl("read_digest", "get_digest", "read",
-             "读取某日简报全文（Markdown）与统计。",
-             param_desc={"date": "简报日期 ISO 格式（省略=今天）",
-                         "full": "True 含 Markdown 全文；False 只回统计与条目"}),
+             "读取某日简报全文（Markdown）与统计。"),
     ToolDecl("search_papers", "search_papers", "read",
-             "在论文库中检索（标题/摘要/要点全文匹配）。query 省略则按时间倒序列出近期论文。",
-             param_desc={"query": "检索词（省略=列近期）", "label": "按档位过滤",
-                         "category": "按主分类过滤", "limit": "最多返回条数（1-100）"}),
+             "在论文库中检索（标题/摘要/要点全文匹配）。query 省略则按时间倒序列出近期论文。"),
     ToolDecl("read_paper", "get_paper", "read",
-             "论文详情：原文摘要、最新 AI 总结、打分历史、笔记、阅读态、本地 PDF 路径。",
-             param_desc={"arxiv_id": "论文 arXiv 编号"}),
+             "论文详情：原文摘要、最新 AI 总结、打分历史、笔记、阅读态、本地 PDF 路径。"),
     ToolDecl("read_activity", "get_activity", "read",
-             "归因面：①操作事件流（可按操作者/操作类型/序号过滤）②近期运行、AI 调用与简报统计。",
-             param_desc={"since_seq": "只回此序号之后的事件", "actor": "按操作者过滤",
-                         "op": "按操作类型过滤", "days": "背景统计的回溯天数",
-                         "limit": "事件最多返回条数"}),
+             "归因面：①操作事件流（可按操作者/操作类型/序号过滤）②近期运行、AI 调用与简报统计。"),
     ToolDecl("review_status", "review_status", "read",
-             "查看某天评审进度：候选数、已评审数、状态。",
-             param_desc={"date": "日期 ISO 格式（省略=今天）"}),
+             "查看某天评审进度：候选数、已评审数、状态。"),
     ToolDecl("paper_metrics", "paper_metrics", "read",
              "一篇论文的影响力指标：被引数、参考数、高影响引用数、年份、发表场所、要点摘要。"
-             "用于判断分量与质量信号。",
-             param_desc={"arxiv_id": "论文 arXiv 编号"}),
+             "用于判断分量与质量信号。"),
     ToolDecl("read_references", "get_references", "read",
              "取一篇论文引用的文献（往前追溯技术起源）。默认按被引论文引用数降序——排最前的"
-             "即起源/奠基候选；含引用意图与是否高影响引用。可对结果递归再查以继续往前追溯。",
-             param_desc={"arxiv_id": "论文 arXiv 编号", "limit": "最多返回条数（≤100）",
-                         "sort_by_citations": "是否按引用数降序"}),
+             "即起源/奠基候选；含引用意图与是否高影响引用。可对结果递归再查以继续往前追溯。"),
     ToolDecl("read_citations", "get_citations", "read",
-             "取引用了这篇论文的文献（往后看影响力扩散与后续工作）。可按引用数降序。",
-             param_desc={"arxiv_id": "论文 arXiv 编号", "limit": "最多返回条数（≤100）",
-                         "sort_by_citations": "是否按引用数降序"}),
+             "取引用了这篇论文的文献（往后看影响力扩散与后续工作）。可按引用数降序。"),
     # ------------------------------------------------------------ 写入 / 运行面（13）
     ToolDecl("undo_change", "undo", "write",
              "撤销一条可逆的写入（seq=0=最近一条可逆操作）。入库与定稿不可逆，会明确说明。",
-             omit=("actor",),
-             param_desc={"seq": "要撤销的事件序号（0=最近一条可逆）",
-                         "reason": "一句话中文说明撤销原因"}),
+             omit=("actor",)),
     ToolDecl("fetch_papers", "fetch_papers", "write",
              "按主题抓取 arXiv 最近 N 天提交的新论文入库（遵守 arXiv 限速，可能较慢）。",
-             omit=("actor",),
-             param_desc={"days": "回溯天数", "reason": "一句话中文说明本次抓取目的"}),
+             omit=("actor",)),
     ToolDecl("download_paper", "download_paper", "write",
              "下载论文 PDF 到本地库并归档（幂等：已下载直接返回本地路径）。",
-             omit=("actor",),
-             param_desc={"arxiv_id": "论文 arXiv 编号", "reason": "一句话中文说明下载原因"}),
+             omit=("actor",)),
     ToolDecl("prepare_review", "prepare_review", "write",
              "评审阶段1：取过规则后的候选清单（含主题画像、摘要截断、基线分），等待评审。",
-             omit=("actor",),
-             param_desc={"date": "日期 ISO 格式（省略=今天）", "reason": "一句话中文说明目的"}),
+             omit=("actor",)),
     ToolDecl("submit_review", "submit_review", "write",
              "评审阶段2：提交对候选的评审。reviews=[{arxiv_id,score,label,reason,tags?,summary?}]。",
-             omit=("actor",),
-             param_desc={"date": "评审对应日期 ISO 格式", "reviews": "评审列表",
-                         "reason": "一句话中文说明目的"}),
+             omit=("actor",)),
     ToolDecl("finalize_briefing", "finalize_briefing", "write",
              "评审阶段3：用已提交评审（缺的用基线分）筛选、精读、生成简报并落库。",
-             omit=("actor",),
-             param_desc={"date": "日期 ISO 格式（省略=今天）", "force": "已定稿时是否强制重跑",
-                         "reason": "一句话中文说明目的"}),
+             omit=("actor",)),
     ToolDecl("run_pipeline", "run_pipeline", "write",
              "一键全流程（无外部评审）：候选→规则→程序化打分（未配模型时用启发式兜底）→简报。",
-             via_surface=True, omit=("actor",),
-             param_desc={"date": "日期 ISO 格式（省略=今天）", "force": "已存在时是否强制重跑",
-                         "reason": "一句话中文说明目的"}),
+             via_surface=True, omit=("actor",)),
     ToolDecl("add_topic", "add_topic", "write",
              "新增研究主题（即时生效）。keywords/categories/exclude_keywords 用逗号分隔。",
-             omit=("actor",),
-             param_desc={"name": "主题名", "keywords": "关键词，逗号分隔",
-                         "categories": "arXiv 分类白名单，逗号分隔", "description": "主题描述",
-                         "exclude_keywords": "排除词，逗号分隔", "quota": "每主题配额",
-                         "threshold": "入选评分阈值", "reason": "一句话中文说明新增原因"}),
+             omit=("actor",)),
     ToolDecl("set_topic_enabled", "set_topic_enabled", "write",
              "启用或停用某个研究主题。",
-             omit=("actor",),
-             param_desc={"name": "主题名", "enabled": "True 启用 / False 停用",
-                         "reason": "一句话中文说明原因"}),
+             omit=("actor",)),
     ToolDecl("mark_read", "mark_read", "write",
              "标记论文为已读或未读。",
-             omit=("actor",),
-             param_desc={"arxiv_id": "论文 arXiv 编号", "read": "True 已读 / False 未读",
-                         "reason": "一句话中文说明原因"}),
+             omit=("actor",)),
     ToolDecl("star_paper", "star_paper", "write",
              "收藏或取消收藏论文。",
-             omit=("actor",),
-             param_desc={"arxiv_id": "论文 arXiv 编号", "reason": "一句话中文说明原因"}),
+             omit=("actor",)),
     ToolDecl("skip_paper", "skip_paper", "write",
              "标记论文为不感兴趣（同类下次过滤）。",
-             omit=("actor",),
-             param_desc={"arxiv_id": "论文 arXiv 编号", "reason": "一句话中文说明原因"}),
+             omit=("actor",)),
     ToolDecl("add_note", "add_note", "write",
              "给论文添加笔记（调研沉淀）。",
-             omit=("actor",),
-             param_desc={"arxiv_id": "论文 arXiv 编号", "content": "笔记正文",
-                         "reason": "一句话中文说明原因"}),
+             omit=("actor",)),
 )
 
 #: mecha 名 → 能力名（判据/宿主自省用的单一来源投影）。
@@ -186,8 +154,9 @@ def _derive_parameters(cap_params: Mapping[str, dict], decl: ToolDecl) -> dict:
         # 可选项且真默认非 None ⇒ 必须声明 default（框架 null 垫片只读声明）。
         if not info.get("required") and info.get("default") is not None:
             entry["default"] = info["default"]
-        if pname in decl.param_desc:
-            entry["description"] = decl.param_desc[pname]
+        desc = info.get("description")        # N8：描述从能力 spec 透传（单一来源，不再手抄）
+        if desc:
+            entry["description"] = desc
         out[pname] = entry
     return out
 
@@ -197,17 +166,32 @@ def _required_names(cap_params: Mapping[str, dict], decl: ToolDecl) -> list[str]
             if i.get("required") and p not in decl.omit]
 
 
-def _raise_from_envelope(res: Mapping[str, object]) -> None:
-    """把能力失败信封转成 MechaError 抛出（ToolRegistry.execute 会归一化）。"""
-    e = res.get("error") or {}
-    if not isinstance(e, Mapping):
-        e = {}
-    raise MechaError(
+def envelope_to_error(res: Mapping[str, object]) -> MechaError:
+    """能力失败信封 → MechaError（读/写两路共用，单一来源）。
+
+    ⚠ 非标准信封兜底（N2）：能力返 `ok:false` 却**不带 `error`** 时，绝不吞成
+    一口“调用失败”——用 `bad_envelope` + 截断透传原始 JSON，让模型看得见到底返了
+    什么。根子（“允许裸 ok:false”）已回馈框架（见 MECHA-N3）。
+    """
+    e = res.get("error")
+    if not isinstance(e, Mapping) or not e:
+        raw = json.dumps(res, ensure_ascii=False, default=str)[:500]
+        return MechaError(
+            f"能力返回了非标准失败信封（ok:false 却无 error）：{raw}",
+            kind="bad_envelope",
+            hint="能力层失败须返回 {ok:false, error:{kind,message,hint}}；这是能力层的信封 bug。",
+        )
+    return MechaError(
         str(e.get("message") or "调用失败"),
         kind=str(e.get("kind") or "error"),
         hint=str(e.get("hint") or ""),
         suggest=_suggest_text(e.get("suggest")),
     )
+
+
+def _raise_from_envelope(res: Mapping[str, object]) -> None:
+    """把能力失败信封转成 MechaError 抛出（ToolRegistry.execute 会归一化）。"""
+    raise envelope_to_error(res)
 
 
 def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRegistry:
@@ -239,6 +223,8 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
             banned_words=_BANNED_WORDS,
         ))
     _register_config_tools(reg, sw.gate, channel)
+    _register_authority_tool(reg, sw.authority)
+    _register_job_tools(reg, sw, channel, container)
     return reg
 
 
@@ -347,6 +333,124 @@ def _read_config(gate):
             "config": {k: snap[k] for k in CONFIG_SCHEMA if k in snap},
             "keys": {k: {kk: v.get(kk) for kk in ("type", "lo", "hi", "desc")}
                      for k, v in CONFIG_SCHEMA.items()}}
+
+
+def _authority_view(authority) -> dict:
+    """写权自省（N5）：当前模式 + AI/人谁能写 + 怎么开。用 gate(side) 纯查询探侧（无副作用）。"""
+    def _can(side: str) -> bool:
+        try:
+            authority.gate(side)          # 只判 mode与side 是否匹配，不改任何东西
+            return True
+        except Exception:  # noqa: BLE001 - GateDenied 即“不能写”
+            return False
+    mode = str(getattr(authority.mode, "value", authority.mode))
+    return {"ok": True, "mode": mode,
+            "ai_can_write": _can("ai"), "human_holds": _can("human"),
+            "how_to_open": ("写权由人类侧授予：在 Web 的 /settings 「写权模式」卡点“授予 AI 写权”"
+                            "（需控制口令），或用 `paperpilot serve/ai --open-gate` 启动。"
+                            "AI 侧不能自解锁（单写权）。")}
+
+
+def _register_authority_tool(reg: ToolRegistry, authority) -> None:
+    """只读工具 read_authority：写工具被拒的 hint 会引用它（先查后写，不盲撞）。"""
+    reg.register(define_tool(
+        name="read_authority",
+        description=(
+            "读当前写权模式：AI 此刻能不能写、人在不在写、以及怎么开闸。"
+            "发起写入前先查它，避免在锁定态下写了才被拒。单写权：同一时刻只一侧能写。"
+        ),
+        parameters={},
+        output_schema={"type": "object", "required": ["ok", "mode", "ai_can_write"]},
+        execute=lambda: _authority_view(authority),
+        banned_words=_BANNED_WORDS,
+    ))
+
+
+def _register_job_tools(reg: ToolRegistry, sw, channel, container,
+                       max_concurrent: int = 2) -> None:
+    """长活 job 化（E2.1 / 缺口1）：submit/read/cancel，先接最慢的 run_pipeline。
+
+    ⚠ 框架 local JobRegistry **每次 submit 新起一个 daemon 线程、不排队、无上限**——
+    并发度必须项目自兜：这里用 `BoundedSemaphore` 兜住上限（超额响亮拒绝，不静默起线程）。
+    job 体走 run_pipeline **命令面**（同一道写权门 + 审计 + engine 取消点），不是绕开门直跑。
+    """
+    import threading
+
+    from .commands import invoke_command
+
+    sem = threading.BoundedSemaphore(max_concurrent)
+    commands, gate, jobs, authority = sw.commands, sw.gate, sw.jobs, sw.authority
+
+    def _err(kind: str, message: str, hint: str = "") -> dict:
+        return {"ok": False, "error": {"kind": kind, "message": message, "hint": hint}}
+
+    def _submit(reason: str = "") -> dict:
+        # 先查写权：别提交一个注定被门拒的 job（N5 同源纪律）。
+        try:
+            authority.gate(channel.side)
+        except MechaError as e:
+            return _err(e.kind, e.message, f"{e.hint} 先 read_authority 查写权。")
+        if not sem.acquire(blocking=False):               # 项目兜并发上限（框架不给队列）
+            return _err("job_limit", f"并发后台任务已满（上限 {max_concurrent}）",
+                        "用 read_job 看进度、等某个跑完再提交；不要反复重试。")
+
+        def _work(ctx):
+            try:
+                return invoke_command(commands, gate, channel, "run_pipeline",
+                                      {"reason": reason or "后台流水线"}, context=ctx)
+            finally:
+                sem.release()
+
+        job = jobs.submit(_work, command="run_pipeline", cancel_supported=True)
+        return {"ok": True, "job_id": job.id, "state": job.state.value,
+                "hint": "read_job(job_id) 轮询进度/结果；cancel_job(job_id) 可取消"
+                        "（协作式：跑到写库前取消才不产生副作用）"}
+
+    def _read(job_id: str = "") -> dict:
+        if not job_id:
+            return {"ok": True, "jobs": jobs.list()}
+        try:
+            job = jobs.get(job_id)
+        except MechaError as e:
+            return _err(e.kind, e.message, e.hint)
+        out: dict = {"ok": True, **job.status()}
+        if job.state.value == "done":
+            out["result"] = job.result
+        elif job.state.value == "failed":
+            out["error_detail"] = job.error
+        return out
+
+    def _cancel(job_id: str) -> dict:
+        try:
+            jobs.cancel(job_id)
+        except MechaError as e:
+            return _err(e.kind, e.message, e.hint)
+        return {"ok": True, "job_id": job_id, "state": jobs.get(job_id).state.value,
+                "note": "取消已登记；协作式取消——已在写的会跑完，未开工的直接不写"}
+
+    reg.register(define_tool(
+        name="submit_job",
+        description="把每日流水线作为后台任务提交（不阻塞对话），立刻拿 job_id。配合 read_job 轮询、cancel_job 取消。",
+        parameters={"reason": {"type": "string", "default": "",
+                               "description": "一句话中文说明本次后台跑批目的"}},
+        output_schema={"type": "object", "required": ["ok"]},
+        execute=_submit, banned_words=_BANNED_WORDS,
+    ))
+    reg.register(define_tool(
+        name="read_job",
+        description="读后台任务状态：给 job_id 查单个（done 时带结果），不给则列全部。用于轮询进度。",
+        parameters={"job_id": {"type": "string", "default": "",
+                               "description": "submit_job 返回的任务 id（省略=列全部）"}},
+        output_schema={"type": "object", "required": ["ok"]},
+        execute=_read, banned_words=_BANNED_WORDS,
+    ))
+    reg.register(define_tool(
+        name="cancel_job",
+        description="请求取消一个后台任务（协作式：在安全点停下，不强杀线程）。",
+        parameters={"job_id": {"type": "string", "description": "要取消的任务 id"}},
+        output_schema={"type": "object", "required": ["ok"]},
+        execute=_cancel, banned_words=_BANNED_WORDS,
+    ))
 
 
 class PaperPilotRequiredSource:

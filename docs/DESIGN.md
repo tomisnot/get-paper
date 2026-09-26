@@ -610,4 +610,14 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 - **Web=human 侧写权接线**：`create_app(container, stack)` 给栈时，论文库写（read/star/skip/note/download）+ 跑批经 `human_write`（human 通道命令面，自动取 HUMAN 写权），写同时落 repo.events（actor=human）+ mecha 审计。写权模式卡在 `/settings`（含控制口令），控制端点 `POST /monitor/mode` 供人类侧开闸——`/monitor` **视图页已退役**（AI 监控改走 dsh 原生 tab，见 `docs/MECHA-N3.md` §6）。
 - ⭐ **新 n=3 发现 9**（Web 接线时抓到）：`CommandRegistry.invoke` **不把调用方 channel 传给 handler**——多操作者共享一个命令表时，handler 闭包捕获的装配期通道会让**人类写误归因为 ai**、且写权闸看错 side。已修：`contextvars` 经统一入口 `invoke_command` 把实际通道传进 handler（详 `docs/MECHA-N3.md` 发现 9）。
 - 验收：`test_web_mecha.py`（Web 门控写双 journal 都记 actor=human、**`/settings` 写权卡**、无栈如实报未接、写权切换）。退役后 `pytest 121 绿`（删 18 旧 mcp 测、迁入/新增后净减）、`ruff` 净。
-- ⭐ **“dsh 侧栏没有按钮 / 面板打不开”的真根因（已修）**：`cli.py` 的 `PROJECT_ROOT` 少一层（写 `parents[2]`，该文件在 `src/paperpilot/app/` ⇒ 应为 `parents[3]`）⇒ `DSH_DIR` 指向不存在的 `<项目>/src/dsh` ⇒ 两个 `--patch` 被**静默过滤丢弃** ⇒ **插件根本没加载**（与面板代码无关）。已修路径、把静默过滤改为**响亮失败**、并补判据（`tests/test_cli_startup.py`）——单一陈述处见 `docs/MECHA-N3.md` §6。
+- ⭐ **“dsh 侧栅没有按钮 / 面板打不开”的真根因（已修）**：`cli.py` 的 `PROJECT_ROOT` 少一层（写 `parents[2]`，该文件在 `src/paperpilot/app/` ⇒ 应为 `parents[3]`）⇒ `DSH_DIR` 指向不存在的 `<项目>/src/dsh` ⇒ 两个 `--patch` 被**静默过滤丢弃** ⇒ **插件根本没加载**（与面板代码无关）。已修路径、把静默过滤改为**响亮失败**、并补判据（`tests/test_cli_startup.py`）——单一陈述处见 `docs/MECHA-N3.md` §6。
+
+### AI 调用体验打磨（EXP-1~4，2026-09-26，已完成）
+
+硅基用户实测（`docs/AI-EXPERIENCE-2026-09-26.md`）提出 N1~N10；按 `docs/AI-EXPERIENCE-PLAN-2026-09-26.md` 分四批修。**差的不是功能，是“出错能诊断 + 边界能自省”**：
+
+- **EXP-1 止血（P0）**：N1 `submit_review` 改 **per-item fail**（坏 item 进 `rejected`、捕 `KeyError`，不再一根手滑整批蒸发）；N2 `review_status` 走**标准信封** + 桥接 `bad_envelope` 兜底透传（读写两路一致）；N5 新增只读工具 **`read_authority`**（写前自省写权，被拒 hint 指回它）；N6 三段 `date` 对称（`submit_review` 默认今天）；N9 label 归一化+enum（尾空格仍直连、非法值进 rejected）；N3 `prepare_review` 评审输入**豁免体积闸**（40 篇全达、不再静默砍半）。判据：`tests/test_ai_experience.py`。
+- **EXP-2 长活不阻塞**：`run_pipeline` **job 化**（`submit_job`/`read_job`/`cancel_job`）——走 run_pipeline 命令面（同写权门+审计+engine 取消点），项目侧 `BoundedSemaphore` 兜并发上限（框架 local JobRegistry 不排队）；命令 `estimate_sec` 改**非零/callable**（AI 能据此判断要不要 job 化）。判据含“取消后副作用不继续”（引擎级确定性）与并发上限。
+- **EXP-3 视野/自描述**：N4 `search_papers` 加 `offset`/`next_offset`（retrieval/repo 透传，翻页零交集）；N8 参数描述**下沉为单一事实源**（住 `ToolSpec.params[..]["description"]`，mecha 层透传，不再两份手抄；`attach_param_descriptions` 漂移即响亮报错）。
+- **EXP-4 AI 面守卫**（钉住“改对后的面”）：`test_ai_surface.py`（命名 snake_case 动词_宾语、禁 get_/list_、描述无实现词）、`test_capability_map.py`（声明==投影：22 能力 + 6 非能力面 = 28 工具，两侧都数）。工具面从 24 → **28**。
+- 框架回馈见 `docs/MECHA-N3.md` §9；验收：`ruff` 净、`pytest` 全绿（EXP 判据均配“能红 + 不误报”对偶）。

@@ -24,8 +24,10 @@ from paperpilot.mecha_adapter.tools import TOOL_TO_CAPABILITY
 
 from .conftest import SAMPLE_XML, make_settings
 
-# 24 工具的模型可见名（22 能力投影 + set_config/read_config）。
-EXPECTED_TOOLS = set(TOOL_TO_CAPABILITY) | {"set_config", "read_config"}
+# 28 工具的模型可见名（22 能力投影 + 配置/自省/长活面 6：set_config/read_config/read_authority/submit_job/read_job/cancel_job）。
+NON_CAPABILITY_TOOLS = {"set_config", "read_config", "read_authority",
+                        "submit_job", "read_job", "cancel_job"}
+EXPECTED_TOOLS = set(TOOL_TO_CAPABILITY) | NON_CAPABILITY_TOOLS
 
 
 def _container(tmp_path):

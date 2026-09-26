@@ -711,11 +711,14 @@ class PaperRepository:
         label: str | None = None,
         primary_category: str | None = None,
         limit: int = 50,
+        offset: int = 0,
     ) -> list[Paper]:
+        offset = max(0, int(offset))
         with self.sf() as s:
             stmt = select(Paper).options(*_PAPER_EAGER)
             if query and self.index is not None:
-                ids = self.index.search(query, limit=limit)
+                # N4：取 limit+offset 再切窗口（FTS 层无 OFFSET，只能多取后页切）。
+                ids = self.index.search(query, limit=limit + offset)[offset:offset + limit]
                 if not ids:
                     return []
                 stmt = stmt.where(Paper.id.in_(ids))
@@ -726,9 +729,8 @@ class PaperRepository:
                     stmt = stmt.where(Paper.primary_category == primary_category)
                 ordered = list(
                     s.scalars(
-                        stmt.order_by(Paper.published_at.desc().nullslast(), Paper.id.desc()).limit(
-                            limit
-                        )
+                        stmt.order_by(Paper.published_at.desc().nullslast(), Paper.id.desc())
+                        .offset(offset).limit(limit)
                     )
                 )
             if label:

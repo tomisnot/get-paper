@@ -45,9 +45,10 @@ class RetrievalService:
         label: str | None = None,
         primary_category: str | None = None,
         limit: int = 50,
+        offset: int = 0,
     ):
         return self.repo.search_papers(
-            query, label=label, primary_category=primary_category, limit=limit
+            query, label=label, primary_category=primary_category, limit=limit, offset=offset
         )
 
     # ---- 人工状态（actor 默认 human：Web 是人在用）----

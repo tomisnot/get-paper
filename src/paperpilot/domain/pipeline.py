@@ -55,6 +55,9 @@ log = logging.getLogger("paperpilot.pipeline")
 _MAX_REVIEW_CANDIDATES = 40
 _REVIEW_ABSTRACT_CHARS = 700
 
+#: 合法标签的单一事实源（N9）：越界不静默降级，而是进 rejected。
+_RELEVANT_LABELS = ("must_read", "worth", "skip")
+
 #: 本次运行（当前线程）的配置覆盖：线程隔离，**不改共享 settings**。
 #: 供 mecha 适配层把 Gate 里的配置态权威地作用于单次 Engine.run，而不污染
 #: Web「立即运行」/scheduler/CLI 等并发线程读到的人类配置（settings.yaml）。
@@ -250,19 +253,35 @@ class DailyPipelineService:
         by_id = {c["arxiv_id"]: c for c in stored["candidates"]}
 
         accepted, rejected = 0, []
-        for item in reviews:
+        for idx, item in enumerate(reviews):
+            # ⭐ per-item fail（N1）：坏苹果单独进 rejected，绝不击穿整批——一次手滑不等于整只手罢工。
+            if not isinstance(item, dict):
+                rejected.append({"arxiv_id": "", "why": f"第{idx}项不是对象，需 {{arxiv_id,score,label}}"})
+                continue
             arxiv_id = str(item.get("arxiv_id", "")).strip()
+            if not arxiv_id:
+                rejected.append({"arxiv_id": "", "why": f"第{idx}项缺必填字段 arxiv_id"})
+                continue
             if arxiv_id not in by_id:
                 rejected.append({"arxiv_id": arxiv_id, "why": "不在本次候选清单内"})
+                continue
+            if item.get("score") is None:                # N1：缺 score 不再直接索引报 KeyError
+                rejected.append({"arxiv_id": arxiv_id,
+                                 "why": "缺必填字段 score（reviews 每项需 arxiv_id/score/label）"})
+                continue
+            label = str(item.get("label", "skip")).strip().lower()   # N9 归一化（尾空格/大小写）
+            if label not in _RELEVANT_LABELS:
+                rejected.append({"arxiv_id": arxiv_id,
+                                 "why": f"label={item.get('label')!r} 非法，须为 {'/'.join(_RELEVANT_LABELS)}"})
                 continue
             try:
                 score = RelevanceScore(
                     score=float(item["score"]),
-                    label=str(item.get("label", "skip")),
+                    label=label,
                     reason=str(item.get("reason", "")),
                     tags=[str(t) for t in item.get("tags", [])][:5],
                 )
-            except (ValueError, TypeError) as exc:
+            except (ValueError, TypeError, KeyError) as exc:   # KeyError 也纳入（N1 同类隐患）
                 rejected.append({"arxiv_id": arxiv_id, "why": f"字段非法: {exc}"})
                 continue
             by_id[arxiv_id]["ai"] = score.model_dump()
@@ -360,7 +379,12 @@ class DailyPipelineService:
     def review_status(self, date_str: str) -> dict:
         path = self._review_path(date_str)
         if not path.exists():
-            return {"ok": False, "date": date_str, "status": "none"}
+            # N2：失败走**标准信封**（带 error{kind,message,hint}），不再裸 ok:false——
+            # 否则过 MCP 桥后顶层状态被吞成“调用失败”，模型无从自纠。
+            return {"ok": False, "date": date_str, "status": "none",
+                    "error": {"kind": "no_review",
+                              "message": f"{date_str} 没有待评审的候选",
+                              "hint": "先调用 prepare_review(date) 生成候选清单再 submit_review"}}
         stored = json.loads(path.read_text(encoding="utf-8"))
         reviewed = sum(1 for c in stored["candidates"] if c.get("ai"))
         return {

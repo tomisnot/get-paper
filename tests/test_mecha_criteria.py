@@ -101,7 +101,7 @@ def test_required_projection_not_hollowed_by_kwargs(tmp_path):
     cases = {
         "read_paper": {"arxiv_id"},
         "add_note": {"arxiv_id", "content"},
-        "submit_review": {"date", "reviews"},
+        "submit_review": {"reviews"},        # N6：date 已改默认""（可选），只 reviews 必填
         "add_topic": {"name"},
         "set_topic_enabled": {"name", "enabled"},
     }
@@ -112,7 +112,8 @@ def test_required_projection_not_hollowed_by_kwargs(tmp_path):
     assert resolve_required("fetch_papers", tools.get("fetch_papers"), rs) == []
 
 
-def test_expected_tools_covers_config_surface():
-    """不许误报：模型可见面 = 22 能力投影 + set_config/read_config（配置态工具）。"""
-    assert EXPECTED_TOOLS == set(TOOL_TO_CAPABILITY) | {"set_config", "read_config"}
-    assert len(EXPECTED_TOOLS) == 24
+def test_expected_tools_covers_config_and_authority_surface():
+    """不许误报：模型可见面 = 22 能力 + 非能力面 6（配置/自省/长活）。"""
+    from .test_mecha_adapter import NON_CAPABILITY_TOOLS
+    assert EXPECTED_TOOLS == set(TOOL_TO_CAPABILITY) | NON_CAPABILITY_TOOLS
+    assert len(EXPECTED_TOOLS) == 28
