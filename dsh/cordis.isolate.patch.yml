@@ -9,22 +9,23 @@
 # 本 overlay 经 `--patch` 加载 = **进程级**覆盖，不落在任何 profile 文件里 ⇒ 只影响带它的
 # 本实例；官方 dsh 与其他项目实例完全不受影响（§1/§2）。
 #
-# 复核（只读）：`paperpilot dsh-config`，应看到 webserver 行带 `!!js` 表达式、
-# 下面三个插件行带 `disabled: true`。
+# 复核（只读）：`paperpilot dsh-config`，应看到 `paperpilot` 条目在列、webserver 行带
+# `!!js` 表达式、且 `remote-web-ui` 行带 `disabled: true`（本 overlay 只做这两件事）。
 
 # ① 禁用"钉端口 + 回写共享 profile"的插件。本开发实例不需要局域网远程访问；
 #    确需它的项目退路是专用 profile（《并存原理》§9.5），默认不用。
 - id: remote-web-ui
   disabled: true
 
-# ② 禁用**别项目**挂在共享 profile 上的 MCP client：本实例不连它们的 server、
-#    不把它们的工具混进本域 AI 上下文（进程级禁用，不影响它们自己的 dsh 实例）。
-- id: mcp-energy-level
-  disabled: true
-- id: mcp-re0-mecha
-  disabled: true
+# ⚠ 这里**刻意不列举别项目的插件 id**：曾写过 `mcp-energy-level` / `mcp-re0-mecha` 两条
+#    `disabled: true`，本批已删。那是**跨项目知识**——别家改名/退役，本仓的列举就静默失效
+#    （实测：共享 profile 2026-09-24 清理掉这两个 id 后，本 overlay 只剩 dsh 的
+#    `patch: entry "…" not found` 警告，且它以前因 overlay 未生效连警告都没出现）。
+#    正确形态：**overlay 只写本实例需要的隔离**；别家的隔离由别家自己的 overlay 负责；
+#    若确有"同一 profile 混进别家 mcp client"的问题，该由**共享 profile 清**，
+#    而不是由本项目 overlay 列举别人。详 `docs/MECHA-N3.md` §6。
 
-# ③ 还原 webserver 的端口表达式，让 launcher 的 `--port` 恢复生效。
+# ② 还原 webserver 的端口表达式，让 launcher 的 `--port` 恢复生效。
 #    ⚠ 同 id 的 patch 是**整块替换** config、不是深合并 ⇒ 必须把 bundle 原始行
 #    （dsh-web-app/cordis.patch.yml 的 webserver 行）的**全部字段**照抄，漏一个丢默认值；
 #    `name` 必须与目标行一致（否则 patch 被跳过并告警）；
