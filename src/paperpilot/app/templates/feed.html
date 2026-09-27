@@ -3,28 +3,41 @@
 {% block content %}
 <h1>🌊 推荐流</h1>
 <div class="muted" style="margin-bottom:14px;">
-  {{ meta.count_pool or "" }}共 {{ count }} 条 · mix={{ meta.mix }} ·
-  探索占比 {{ meta.explore_share_pct }}% · 分类熵 {{ meta.category_entropy }}
-  {% if meta.days is defined %} · 近 {{ meta.days }} 天{% endif %}
+  共 {{ count }} 条 · mix={{ meta.mix }} · 探索占比 {{ meta.explore_share_pct }}% ·
+  分类熵 {{ meta.category_entropy }} · 近 {{ meta.days }} 天
+  {% if meta.pool %}· 候选池 {{ meta.pool }} 篇{% endif %}
   {% for n in meta.notes %} · <b>{{ n }}</b>{% endfor %}
 </div>
 {% if not entries %}
   <div class="flash">这一屏没端出论文——多半是库里窗口内无新文，让 AI 跑一次 fetch_papers 再刷。</div>
 {% endif %}
 {% for it in entries %}
-  <div class="card" style="margin-bottom:12px;">
-    <div style="display:flex;gap:8px;align-items:baseline;">
-      {% if it.lane == "explore" %}<span class="chip" style="background:#eef;color:#33c;">探索</span>
-      {% elif it.lane == "adjacent" %}<span class="chip">邻接</span>
-      {% elif it.lane == "hot" %}<span class="chip">热点</span>
-      {% else %}<span class="chip" style="background:#e8f6e8;color:#274;">主兴趣</span>{% endif %}
-      <a href="/papers/{{ it.arxiv_id }}" style="font-weight:600;color:var(--ink);text-decoration:none;">{{ it.title }}</a>
+  <div class="card">
+    <div class="item-title">{{ loop.index }}. <a href="/papers/{{ it.arxiv_id }}">{{ it.title }}</a></div>
+    <div class="muted" style="margin:4px 0 8px;">
+      {{ (it.authors[:3] | join(", ")) if it.authors else "" }}{% if it.authors | length > 3 %} 等{% endif %}
+      · {{ it.primary_category }}
+      {% if it.published %} · {{ it.published[:10] }}{% endif %}
+      · 画像分 <strong>{{ "%.2f"|format(it.score) }}</strong>
+      <span class="chip">{{ it.lane_label }}</span>
     </div>
-    <div class="muted" style="font-size:13px;margin-top:4px;">
-      {{ it.arxiv_id }} · {{ it.primary_category }} · 分 {{ it.score }} · {{ it.published }}
-    </div>
-    <div style="font-size:13px;margin-top:6px;color:var(--muted);">why：{{ it.why | join("；") }}</div>
-    <div class="actions" style="margin-top:8px;">
+    {% if it.review_reason %}
+      <div class="why"><span class="lbl">💡 为什么推荐给你（上次评审的理由）</span>{{ it.review_reason }}</div>
+    {% elif it.why %}
+      <div class="why"><span class="lbl">💡 为什么推荐给你</span>{{ it.why | join("；") }}</div>
+    {% endif %}
+    {% set s = it.summary %}
+    {% if s %}
+      {% if s.tldr %}<div class="kv" style="background:var(--accent-soft);padding:8px 10px;border-radius:8px;"><b>TL;DR</b>{{ s.tldr }}</div>{% endif %}
+      {% if s.problem %}<div class="kv"><b>问题</b>{{ s.problem }}</div>{% endif %}
+      {% if s.method %}<div class="kv"><b>方法</b>{{ s.method }}</div>{% endif %}
+      {% if s.results %}<div class="kv"><b>结论</b>{{ s.results }}</div>{% endif %}
+      {% if s.novelty %}<div class="kv"><b>贡献</b>{{ s.novelty }}</div>{% endif %}
+      {% if not it.ai_summary %}<div class="muted">（AI 未启用或未总结过，以上为原文摘编）</div>{% endif %}
+    {% else %}
+      <div class="kv muted">这篇还没有中文摘要——在 dsh 里说一句「评审这篇」，下次端出来就带 TL;DR 了。</div>
+    {% endif %}
+    <div class="actions">
       <a class="btn ghost" href="/papers/{{ it.arxiv_id }}/go" target="_blank" rel="noopener">arXiv 原文</a>
       <a class="btn ghost" href="/papers/{{ it.arxiv_id }}/pdf" target="_blank" rel="noopener">⬇ 直下 PDF</a>
       <form method="post" action="/papers/{{ it.arxiv_id }}/star"><button class="ghost">☆ 收藏</button></form>

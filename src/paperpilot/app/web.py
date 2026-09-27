@@ -112,17 +112,34 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         return render(request, "paper_detail.html", detail=detail, arxiv_id=arxiv_id)
 
     # ---------------------------------------------------------------- 推荐流（M2：只读面，无写权闸）
+    _LANE_LABEL = {"primary": "主兴趣", "adjacent": "邻接", "hot": "热点", "explore": "探索"}
+
     @app.get("/feed", response_class=HTMLResponse)
-    def feed_page(request: Request, limit: int = 25, mix: str = "auto", days: int = 14):
+    def feed_page(request: Request, limit: int = 25, mix: str = "auto", days: int = 14,
+                  seen_days: int = 7):
         res = registry_for(container).invoke("feed_generate",
-                                             limit=limit, mix=mix, days=days)
+                                             limit=limit, mix=mix, days=days,
+                                             seen_days=seen_days)
         if not res.get("ok"):
             return render(request, "feed.html", entries=[], count=0,
                           meta={"mix": mix, "explore_share_pct": 0, "notes": [],
                                 "category_entropy": 0,
                                 "days": days},
                           msg=res.get("error", {}).get("message", "生成失败"))
-        return render(request, "feed.html", entries=res.get("feed", []),
+        # 卡片富化：复用简报那条卡的料——已有中文摘要（评审/总结产物）直接展示，
+        # 有 AI 评审理由优先当“为什么推荐给你”（比道属更具体）。
+        entries = []
+        for e in res.get("feed", []):
+            d = container.retrieval.detail(e["arxiv_id"])
+            s = d["summary"] if d else None
+            sc = max(d["scores"], key=lambda x: x.id, default=None) if d else None
+            entries.append({**e,
+                "lane_label": _LANE_LABEL.get(e["lane"], e["lane"]),
+                "summary": ({"tldr": s.tldr, "problem": s.problem, "method": s.method,
+                             "results": s.results, "novelty": s.novelty} if s else None),
+                "ai_summary": bool(s and s.model and s.model != "heuristic"),
+                "review_reason": (sc.reason if sc and sc.reason else "")})
+        return render(request, "feed.html", entries=entries,
                       count=res.get("count", 0), meta=res.get("meta", {}))
 
     @app.post("/papers/{arxiv_id}/uninterested")

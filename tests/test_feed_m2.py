@@ -119,3 +119,37 @@ def test_finalize_max_items_explicit_beats_config(tmp_path):
     assert _c.settings.scoring.max_papers == before_max          # 共享态一字未动
     plain = reg.invoke("finalize_briefing", force=True)          # 不传=按配置（>2）
     assert plain["ok"] and plain["selected"] > 2, plain
+
+
+def test_feed_page_reuses_digest_card(tmp_path):
+    """能红（UI 复用）：/feed 卡片与简报同款——评过的篇目带 TL;DR 与
+    上次评审理由；没评过的给指位文案（不假装有摘要）。"""
+    _c, reg = _reg(tmp_path)
+    from fastapi.testclient import TestClient
+    from sqlalchemy import select
+
+    from paperpilot.app.web import create_app
+    from paperpilot.infra.arxiv import parse_atom
+    from paperpilot.infra.orm import Paper, PaperScore, PaperSummaryRow
+
+    from .conftest import SAMPLE_XML
+    papers = parse_atom(SAMPLE_XML.read_text(encoding="utf-8"))
+    _c.repo.upsert_papers(papers, actor="human", reason="seed")
+    reg.invoke("record_signal", arxiv_id=papers[0].arxiv_id, signal="download")
+    with _c.repo.sf() as s:
+        pid = s.scalar(select(Paper.id).where(Paper.arxiv_id == papers[0].arxiv_id))
+        s.add(PaperSummaryRow(run_id="r1", paper_id=pid, tldr="一句话结论",
+                              problem="问题", method="方法", results="果",
+                              novelty="献", model="dsh-test"))
+        s.add(PaperScore(run_id="r1", paper_id=pid, score=0.9, label="must_read",
+                         reason="与你的方向很相关", model="dsh-test"))
+        s.commit()
+
+    client = TestClient(create_app(_c, None))
+    r = client.get("/feed?days=120&limit=10&seen_days=0")   # 本跳刚下载过也算要看（不排）
+    assert r.status_code == 200
+    body = r.text
+    assert "🌊 推荐流" in body and "为什么推荐给你" in body
+    assert "TL;DR" in body and "一句话结论" in body           # 简报同款摘要块直接复用
+    assert "与你的方向很相关" in body                        # 评审过⇒理由优先于道属
+    assert "还没有中文摘要" in body                          # 没评过的给指路，不装
