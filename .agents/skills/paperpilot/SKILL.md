@@ -2,18 +2,30 @@
 name: paperpilot
 description: >-
   PaperPilot 论文情报系统的操作纪律（DSH 对话驱动）。当抓取 arXiv、评审候选、
-  生成日报或月度合集、调整主题/配额时必读。覆盖三段评审 SOP、token 经济姿势、
-  requeue 回炉规则、写权边界与人类专属操作。
+  生成日报或月度合集、刷推荐流（feed）、调主题/配额/画像参数时必读。覆盖三段评审
+  SOP、feed 四道召回与刷新自由、行为信号与画像纪律、token 经济姿势、requeue 回炉、
+  写权边界与人类专属操作。
 ---
 
 # PaperPilot 操作纪律（AI 面）
 
 ## 核心定位
 
-- AI 面（`mcp__paperpilot__*` 工具）是**主轨**：智能筛选由 DSH 里的 AI 完成；
+- AI 面（`mcp__paperpilot__*` 工具，约 34 个）是**主轨**：智能筛选由 DSH 里的 AI 完成；
   软件内**不接 LLM key**（unified/heuristic 只是无人时的兜底档，别主动启用）。
 - 所有写入过同一道写权门。发起写入前先 `read_authority`（mode / ai_can_write /
   how_to_open）——被拒了再查是盲撞。
+- 读操作不进监控面（那是状态机的事）；你的每次刷流/信号会进域归因总线，
+  Web `/activity` 可查——所以**不需要为"留痕"额外发明调用**。
+
+## 一条总纲：显式意图 > 启发式/配置
+
+系里到处是同一个原则的实例，碰到没见过的工具也照此推：
+`arxiv_ids` 点名不受 review_floor 拦（N12）；`finalize_briefing(max_items)` 胜
+配置篇数；`offset/mix/quotas` 参数胜默认预设；gate 配置（set_config）经命令面全段
+生效、但显式调用参数又胜 gate。次序：**用户当场的话 > 你本次调用的参数 > 运行配置
+> 出厂默认**；系统被配置拦下时会响亮给路（notes/hint/suggest），静默空转不存在——
+遇到就截图报给用户，那是 bug。
 
 ## 日常三段评审 SOP（省 token 姿势）
 
@@ -77,8 +89,18 @@ description: >-
 ## 人类专属（AI 不碰，别绕侧门）
 
 - 删主题 / 删简报 / 改主题名：仅 Web `/settings`。AI 工具面无删除是治理设计
-  （删除权归人）；`authors` 关注学者也只能在 Web 表单设置（update_topic 暂无此参数）。
--  SQLite/YAML 直改只在披露过的操作员一次性脚本里出现（用 repo API 并留 actor/reason）。
+  （删除权归人）；`reset_profile`（清画像）同样人类专属——你只读不删。
+- SQLite/YAML 直改只在披露过的操作员一次性脚本里出现（用 repo API 并留 actor/reason）。
+
+## 下载与信号（M0 后的形态，本地 PDF 已退役）
+
+- **没有也不需找 download_paper / 本地文件**：站内「⬇ 直下 PDF」/「arXiv 原文」都经
+  Web 跳转路由直下，跳转时自动记 `download`/`outbound` 信号（实测）。
+- 对话里的口头声明同样算数：用户说“下了/看了/不感兴趣”
+  ⇒ `record_signal(download|view|uninterested)`，与实测同表同权；需论文已入库
+  （没入库先 `fetch_paper_by_id`）。
+- 想给用户一份中文摘要：`fetch_paper_by_id` → 单篇评审（prepare 点名 + submit +
+  finalize 小 max_items）或直接 write_note；feed 卡会自动复用这条总结。
 
 ## 排障速查
 
@@ -90,11 +112,10 @@ description: >-
 - 提交被 rejected：列表会点名哪篇缺什么；补齐重提即可（增量合并，不伤已评）。
 - 不确定某项能力怎么用：`paperpilot tools` 或 registry `specs()` 有自描述清单。
 
-## 推荐流（feed，M2）
+## 推荐流（feed）：四道召回与刷新自由
 
-- 刷流：`feed_generate(limit=25~40, mix=auto|strict|explorer, days=14)`。用户说“今天想看点野的”⇒ `mix=explorer`；想看多点⇒抬 `limit`。
-- 每条带 lane（主兴趣/邻接/热点/探索）与 why；**播报前 6 条时逐条念 why**，探索条说清“这是扩边界位”。
-- 反馈随手记：用户说“下了/看了/不感兴趣” ⇒ `record_signal(download|read|uninterested)`；站内点击已自动实测，同表同权。
-- 画像审计：`get_profile` 看分类熵与 top 权重；熵过低时系统会自动加倍探索道（代码保底，你可再抬不可压穿）；`reset_profile` 是人类专属，别想着自改锚点。
-- 数量自由：日报 `finalize_briefing(max_items=N)` 可按当次语境定篇数（显式 > 配置）。
-- 刷新的决定权全在你（Web 故意不设刷新按钮）：接着往下端 `offset=`上次回执的 meta.next_offset；换口味改 mix/quotas，换窗口改 days/seen_days；池子浅了 fetch_papers 补货。用户只需要说话，手段组合由你判。
+- 刷流：`feed_generate(limit=25~40, mix=auto|strict|explorer, days=14)`。用户说“今天想看点野的”⇒ `mix=explorer`；想看多点⇒抬 `limit`。四道=主兴趣/邻接桥/热点作者/探索，**探索 10% 硬地板压不穿**（可顶高）；平时无聊可 `quotas="40,25,10,25"` 这种显式配比微调。
+- 每条带 lane 与 why；**播报前 6 条逐条念 why**，探索条说清“这是扩边界位”；why 为空是 bug，举报。
+- **刷新决定权全在你**（Web 故意不设刷新按钮）：接着往下端 `offset=`上次回执的 `meta.next_offset`（序列前缀稳定，换屏零重叠零空洞）；换口味改 mix/quotas，排重用 seen_days；`meta.pool_left`小/notes 提“池底”⇒ 先 `fetch_papers` 补货再刷。用户只说话，手段组合你判。
+- 画像纪律：`get_profile`（工具名 query_profile）看分类熵与 top 权重；熵<1.0 系统自动加倍探索道（代码保底）；主题只是种子，行为信号才是主画像——想让某人/某类多进快 `record_signal`，想冷却某方向用 `uninterested`（降权不是封杀）。
+- 确定性：同参数同画像必同结果——调试时放心重跑；你的痕迹（每次刷流的道组成）在 /activity。
