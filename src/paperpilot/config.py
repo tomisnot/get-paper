@@ -131,8 +131,40 @@ def discover_config() -> Path | None:
     return None
 
 
+def discover_example() -> Path | None:
+    """找**发布版示例配置** `config/settings.example.yaml`（真配置缺失时的回落）。
+
+    ⚠ 为什么要有这个：`settings.yaml` **不进仓**（开源发布的是示例；见 `.gitignore`）
+    ⇒ 陌生人 clone 下来必须**仍有可用配置**，否则"能跑"就成了空话。
+    """
+    for candidate in (Path("config/settings.example.yaml"),
+                      _PACKAGE_ROOT / "config/settings.example.yaml"):
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def load_settings(path: Path | str | None = None) -> Settings:
-    cfg_path = Path(path) if path else discover_config()
+    """读配置。**回落链**：显式 `path` > 环境变量 > cwd/项目根 `settings.yaml` > 示例 > 代码内默认值。
+
+    ⚠ 两条不变量：
+    * **示例不是真配置**：回落到示例时 `config_path` 记 **None** ⇒ 设置页保存时**不会写回示例**
+      （否则 `save_settings` 会改掉发布物），而是按默认目标写我们自己的 `config/settings.yaml`；
+    * **显式给的路径不被示例顶替**（显式说去哪儿就去哪儿，哪怕那文件还不存在）。
+    """
+    explicit = Path(path) if path else None
+    cfg_path = explicit or discover_config()
+    real_path = cfg_path                     # 真配置（显式给的 / 发现到的）就是写回目标
+    if explicit is None and (cfg_path is None or not cfg_path.exists()):
+        example = discover_example()
+        if example is not None:
+            cfg_path = example
+        real_path = None                     # 示例不是真配置 ⇒ 不往它里面写回
+        # ⚠ 这里**只**在"回落示例"时把 real_path 清成 None：正常发现到真配置时必须保持
+        # `cfg_path`（我第一版写成 `real_path = explicit` ⇒ 正常路径也变 None ⇒ 保存会按
+        # cwd 相对默认目标写、而非发现到的那个文件；判据
+        # `test_discovered_real_config_is_recorded_as_config_path` 钉住这一点）。
+
     data: dict = {}
     if cfg_path and cfg_path.exists():
         data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
@@ -140,7 +172,7 @@ def load_settings(path: Path | str | None = None) -> Settings:
         data.setdefault("data_dir", os.environ["PAPERPILOT_DATA_DIR"])
 
     settings = Settings(**data)
-    settings.config_path = cfg_path
+    settings.config_path = real_path
     _resolve_data_dir(settings, cfg_path)
     settings.ensure_dirs()
     return settings

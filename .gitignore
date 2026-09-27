@@ -21,6 +21,10 @@ backups/
 .pytest_cache/
 .ruff_cache/
 
+# 本地真配置（**不进仓**；发布的是 config/settings.example.yaml）
+# ⚠ 里面有自己的数据目录/主题/key ⇒ 只在本机存在；缺它时程序回落到 example（见 config.py::load_settings）
+config/settings.yaml
+
 # DSH 插件（node 生态）
 dsh/node_modules/
 dsh/lib/

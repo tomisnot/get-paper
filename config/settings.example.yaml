@@ -1,0 +1,66 @@
+# PaperPilot 发布版**示例配置**（空值/默认值）—— 你可以直接复制成 `settings.yaml` 再改。
+#
+# ⚠ 要点（三条）：
+#   1. **真配置 `settings.yaml` 不进仓**（见 `.gitignore`）⇒ 里面放你自己的数据目录、主题、key；
+#   2. **没有 `settings.yaml` 时程序会回落到本文件**（本文件也没有就用代码内默认值）
+#      ⇒ 陌生人 clone 下来**直接能跑**，不用先手写配置；
+#   3. ⚠ 设置页保存时**只写你的 `settings.yaml`**，**不会**写回本文件（本文件是发布物）。
+#
+# 环境变量（可选）：`PAPERPILOT_CONFIG`（指定配置文件）· `PAPERPILOT_DATA_DIR`（数据目录）·
+#                  `PAPERPILOT_API_KEY` / `DEEPSEEK_API_KEY`（AI key，建议用它而不是写进 yaml）。
+
+data_dir: data # 相对路径基于项目根 ⇒ 从任何 cwd 启动都写到同一处
+lookback_days: 7
+arxiv_categories:
+  - cs.CL
+  - cs.AI
+  - cs.LG
+max_results_per_query: 50
+fetch_global_fallback: true
+
+scoring:
+  threshold: 0.6
+  quota_per_topic: 4
+  max_papers: 12
+  max_per_author: 1
+  must_read_cap: 3
+  review_floor: 0.4
+
+ai:
+  provider: auto # auto | unified | heuristic | off（没有 key 时 auto 自动落 heuristic）
+  model: deepseek-chat
+  temperature: 0.2
+  max_concurrency: 2
+  max_abstract_chars: 1600
+  api_key: "" # 建议留空，用环境变量 PAPERPILOT_API_KEY / DEEPSEEK_API_KEY
+  base_url: https://api.deepseek.com
+  timeout_seconds: 60.0
+  max_retries: 3
+
+notify:
+  enabled: false
+  webhook_url: ""
+
+web:
+  host: 127.0.0.1
+  port: 8080
+
+mcp:
+  enabled: true
+  host: 127.0.0.1
+  port: 8780
+
+# 研究主题：这里**故意留空**（按需自己加）。没有主题时靠上面的 `arxiv_categories` + 全局兜底抓取。
+# 加主题的写法（把 `topics: []` 换成下面这块即可）：
+#
+# topics:
+#   - name: 示例主题：大语言模型
+#     description: 一句话说明你关注什么（会进打分提示，写清"看什么/不看什么"）
+#     keywords: [large language model, llm, instruction tuning]
+#     exclude_keywords: []
+#     categories: [cs.CL, cs.LG]
+#     authors: []
+#     quota: 4
+#     threshold: 0.6
+#     enabled: true
+topics: []
