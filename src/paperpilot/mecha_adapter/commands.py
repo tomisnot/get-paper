@@ -78,7 +78,7 @@ def invoke_command(commands, gate, channel, cmd_name: str, args: dict,
 #: 命令 scope（声明字段；进审计记录供 cockpit/归因，未绑 ScopePolicy 则不做过滤——
 #: 与 EL 单宿主同款。scope 是「能写但有作用域边界」的维度，留待需要细粒度时绑定）。
 _SCOPES: dict[str, tuple[str, ...]] = {
-    "download_paper": ("library",), "mark_read": ("library",),
+    "mark_read": ("library",),
     "star_paper": ("library",), "skip_paper": ("library",), "add_note": ("library",),
     "add_topic": ("topics",), "set_topic_enabled": ("topics",),
     "prepare_review": ("review",), "submit_review": ("review",),
@@ -152,8 +152,6 @@ def _estimate(cap_name: str, container):
         return lambda _args: float(n_topics * lookback * 3 + 5)
     if cap_name == "fetch_papers":
         return lambda args: float(max(1, int(args.get("days") or lookback)) * n_topics * 3)
-    if cap_name == "download_paper":
-        return 10.0                       # 拉一份 PDF：网络 + 落盘
     return 1.0                            # 本地写（评审/笔记/主题…）：小而非零
 
 

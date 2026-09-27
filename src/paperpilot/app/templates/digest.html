@@ -65,12 +65,8 @@
             {% if not item.ai_summary %}<div class="muted">（AI 不可用，以上为原文摘编）</div>{% endif %}
           {% endif %}
           <div class="actions">
-            <a class="btn ghost" href="{{ item.abs_url }}" target="_blank" rel="noopener">arXiv 原文</a>
-            <form method="post" action="/papers/{{ item.arxiv_id }}/download" style="display:inline">
-              <input type="hidden" name="next_url" value="/digest/{{ date }}">
-              <button class="ghost">⬇ 下载归档</button>
-            </form>
-            <a class="btn ghost" href="/papers/{{ item.arxiv_id }}/pdf" target="_blank" rel="noopener">本地 PDF</a>
+            <a class="btn ghost" href="/papers/{{ item.arxiv_id }}/go" target="_blank" rel="noopener">arXiv 原文</a>
+            <a class="btn ghost" href="/papers/{{ item.arxiv_id }}/pdf" target="_blank" rel="noopener">⬇ 直下 PDF</a>
             <form method="post" action="/papers/{{ item.arxiv_id }}/star"><button class="ghost">☆ 收藏</button></form>
             <form method="post" action="/papers/{{ item.arxiv_id }}/skip"><button class="ghost">不感兴趣</button></form>
           </div>

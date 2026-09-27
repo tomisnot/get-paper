@@ -312,37 +312,6 @@ class ArxivClient:
         papers, _total = parse_feed(xml)
         return papers
 
-    def download_pdf(self, url: str, dest: Path, *, chunk_size: int = 65536) -> int:
-        """下载 PDF 到 dest（限速 + 指数退避重试）；返回写入字节数。
-
-        先写 .part 再原子替换，避免半截文件被当成已下载（幂等由调用方按 dest 是否存在判断）。
-        """
-        dest = Path(dest)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        last_error: Exception | None = None
-        for attempt in range(self.retries):
-            self._rate_limit()
-            tmp = dest.with_suffix(dest.suffix + ".part")
-            try:
-                with self._http().stream("GET", url) as resp:
-                    if resp.status_code == 429 or resp.status_code >= 500:
-                        raise ArxivError(f"HTTP {resp.status_code}")
-                    resp.raise_for_status()
-                    written = 0
-                    with open(tmp, "wb") as fh:
-                        for block in resp.iter_bytes(chunk_size):
-                            fh.write(block)
-                            written += len(block)
-                tmp.replace(dest)
-                return written
-            except Exception as exc:  # noqa: BLE001
-                last_error = exc
-                tmp.unlink(missing_ok=True)
-                backoff = self.min_interval * (2**attempt) + 1
-                logger.warning("PDF 下载失败（第 %d 次）: %s；%.1fs 后重试", attempt + 1, exc, backoff)
-                self._sleep(backoff)
-        raise ArxivError(f"PDF 下载多次失败: {last_error}")
-
     def _fetch_feed(
         self, search_query: str, start: int, max_results: int
     ) -> tuple[list[NormalizedPaper], int | None]:

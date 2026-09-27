@@ -41,7 +41,6 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "fetch_papers": {"days": "回溯天数", "reason": "一句话中文说明本次抓取目的"},
     "fetch_paper_by_id": {"arxiv_id": "论文 arXiv 编号（形如 1706.03762，可带 vN，勿带 URL）",
                           "reason": "一句话中文说明入库原因"},
-    "download_paper": {"arxiv_id": "论文 arXiv 编号", "reason": "一句话中文说明下载原因"},
     "prepare_review": {"date": "日期 ISO 格式（省略=今天）",
                        "requeue": "适用：池子被上轮消费光、想原班人马再审——把近 lookback 内 "
                                   "archived/in_briefing 拉回 new 重新出题（可 undo 回退）",
@@ -178,14 +177,13 @@ def build_registry(container) -> Registry:
         ])
 
     @reg.tool(name="get_paper", kind="read",
-              description="论文详情：原文摘要 + 最新 AI 总结 + 打分历史 + 笔记 + 阅读态 + 本地PDF路径。")
+              description="论文详情：原文摘要 + 最新 AI 总结 + 打分历史 + 笔记 + 阅读态 + arXiv 直链。")
     def get_paper(arxiv_id: str) -> dict:
         detail = retrieval.detail(arxiv_id)
         if detail is None:
             return err("not_found", f"找不到论文 {arxiv_id}",
                        hint="先用 search_papers 搜到正确 arxiv_id")
         p, s = detail["paper"], detail["summary"]
-        pdf_path = settings.pdf_dir / f"{p.arxiv_id}.pdf"
         return ok(
             paper={
                 "arxiv_id": p.arxiv_id, "title": p.title,
@@ -194,7 +192,6 @@ def build_registry(container) -> Registry:
                 "published_at": p.published_at.isoformat() if p.published_at else None,
                 "abs_url": p.abs_url, "pdf_url": p.pdf_url, "status": p.status,
                 "abstract": p.abstract,
-                "local_pdf": str(pdf_path) if pdf_path.exists() else None,
             },
             summary=(
                 {"tldr": s.tldr, "problem": s.problem, "method": s.method,
@@ -271,7 +268,7 @@ def build_registry(container) -> Registry:
 
     @reg.tool(name="fetch_paper_by_id", kind="write",
               description="按 arXiv id 把单篇拉进入库（对话里'这篇加进来'）；幂等，已在库回 cached。"
-                          "拉入后即可 read_paper/add_note/mark_read，配合 download_paper 存 PDF。")
+                          "拉入后即可 read_paper/add_note/mark_read；站内下载走 /papers/{id}/pdf 跳转。")
     def fetch_paper_by_id(arxiv_id: str, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
         client = ArxivClient(cache_dir=settings.cache_dir / "arxiv")
         try:
@@ -287,27 +284,7 @@ def build_registry(container) -> Registry:
         return ok(arxiv_id=papers[0].arxiv_id, title=papers[0].title,
                   new=result.get("new"), updated=result.get("updated"), cached=cached,
                   hint="已在库（幂等）" if cached
-                  else "已入库，可 read_paper/add_note/download_paper")
-
-    @reg.tool(name="download_paper", kind="write",
-              description="下载论文 PDF 到本地库并归档（幂等：已下载直接返回本地路径）。")
-    def download_paper(arxiv_id: str, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
-        paper = repo.get_paper(arxiv_id)
-        if paper is None:
-            return err("not_found", f"找不到论文 {arxiv_id}",
-                       hint="先用 search_papers 搜到正确 arxiv_id")
-        dest = settings.pdf_dir / f"{arxiv_id}.pdf"
-        if dest.exists() and dest.stat().st_size > 0:
-            return ok(arxiv_id=arxiv_id, path=str(dest), bytes=dest.stat().st_size, cached=True)
-        url = paper.pdf_url or f"https://arxiv.org/pdf/{arxiv_id}"
-        client = ArxivClient(cache_dir=settings.cache_dir / "arxiv")
-        try:
-            n = client.download_pdf(url, dest)
-        finally:
-            client.close()
-        repo.record_download(paper, str(dest), actor=actor,
-                             reason=reason or f"下载 {arxiv_id} 的 PDF")
-        return ok(arxiv_id=arxiv_id, path=str(dest), bytes=n, cached=False)
+                  else "已入库，可 read_paper/add_note/站内直下 PDF")
 
     @reg.tool(name="prepare_review", kind="write",
               description="阶段1：取过规则后的候选清单（含主题画像+摘要截断+基线分），等外部评审。"

@@ -435,18 +435,21 @@ class PaperRepository:
         flipped = self.reset_statuses(ids, status=to_status, actor=actor, reason=reason)
         return {"ok": True, "flipped": int(flipped)}
 
-    def record_download(
-        self, paper: Paper, path: str, *, actor: str = "system", reason: str = ""
-    ) -> None:
-        """记一条下载归档事件（append-only 归因）。下载是幂等的缓存式动作，标 reversible=0。"""
+    def record_signal(self, arxiv_id: str, signal: str, *, source: str = "measured",
+                      actor: str = "human", reason: str = "") -> None:
+        """M0 漏斗信号记账（view/outbound/download…）：append-only，reversible=0。
+
+        信号是轻量人类操作，与 delete_note 同族（不与 AI 争写、无可回滚状态），
+        但**进事件总线留痕**；M1 画像层消费 `signal:*` 事件更新 profile 权重。
+        """
         with self.sf() as s:
             self._event(
                 s,
-                op="download_paper",
+                op=f"signal:{signal}",
                 actor=actor,
                 reason=reason,
-                target=paper.arxiv_id,
-                after={"arxiv_id": paper.arxiv_id, "path": path},
+                target=arxiv_id,
+                after={"arxiv_id": arxiv_id, "signal": signal, "source": source},
                 reversible=0,
             )
             s.commit()

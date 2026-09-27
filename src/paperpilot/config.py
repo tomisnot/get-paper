@@ -114,14 +114,9 @@ class Settings(BaseModel):
     def cache_dir(self) -> Path:
         return self.data_dir / "cache"
 
-    @property
-    def pdf_dir(self) -> Path:
-        return self.data_dir / "pdfs"
-
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.pdf_dir.mkdir(parents=True, exist_ok=True)
         (self.data_dir / "logs").mkdir(parents=True, exist_ok=True)
 
 

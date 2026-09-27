@@ -93,9 +93,6 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
     ToolDecl("fetch_paper_by_id", "fetch_paper_by_id", "write",
              "按 arXiv id 把单篇拉进入库（对话里‘这篇加进来’）；幂等，已在库回 cached。",
              omit=("actor",)),
-    ToolDecl("download_paper", "download_paper", "write",
-             "下载论文 PDF 到本地库并归档（幂等：已下载直接返回本地路径）。",
-             omit=("actor",)),
     ToolDecl("prepare_review", "prepare_review", "write",
              "评审阶段1：取过规则后的候选清单（含主题画像、摘要截断、基线分），等待评审。"
              "两阶段（W5 省 token）：stage=brief 只看标题+短摘粗筛，再 stage=full+arxiv_ids "

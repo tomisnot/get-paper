@@ -1,24 +1,19 @@
-"""中性能力层测试：自描述、统一信封、读写归因、体积闸、download_paper、CLI 参数解析。
+"""中性能力层测试：自描述、统一信封、读写归因、体积闸、出站信号、CLI 参数解析。
 
 对应 docs/SPEC.md §3–§4（能力清单 + 外部调用形式）与 docs/PRINCIPLES.md 信条 9。
 """
 
 from __future__ import annotations
 
-import httpx
-import pytest
-
 from paperpilot.capabilities import invoke, specs
 from paperpilot.capabilities.base import gate
-from paperpilot.infra.arxiv import ArxivClient, ArxivError
 
 
 # ------------------------------------------------------------------ 自描述 & 调度
 def test_specs_are_self_describing(container):
     specs_list = specs(container)
     by_name = {s["name"]: s for s in specs_list}
-    assert {"search_papers", "get_paper", "download_paper", "run_pipeline", "undo"} <= set(by_name)
-    assert by_name["download_paper"]["kind"] == "write"
+    assert {"search_papers", "get_paper", "fetch_paper_by_id", "run_pipeline", "undo"} <= set(by_name)
     assert by_name["search_papers"]["kind"] == "read"
     # 入参 schema 自动从签名推导
     assert "query" in by_name["search_papers"]["params"]
@@ -57,7 +52,6 @@ def test_search_and_get_paper(container, sample_papers):
     detail = invoke(container, "get_paper", arxiv_id=pid)
     assert detail["ok"] is True
     assert detail["paper"]["arxiv_id"] == pid
-    assert detail["paper"]["local_pdf"] is None
 
     missing = invoke(container, "get_paper", arxiv_id="nope.999")
     assert missing["ok"] is False and missing["error"]["kind"] == "not_found"
@@ -78,48 +72,54 @@ def test_write_records_actor_and_undo(container, sample_papers):
     assert u["ok"] is True
 
 
-# ------------------------------------------------------------------ download_paper
-def test_download_paper_idempotent_and_archived(container, sample_papers, monkeypatch):
+# ------------------------------------------------------------------ M0 出站信号（漏斗记账，不落本地文件）
+def test_record_signal_is_append_only_event(container, sample_papers):
+    """能红：信号进事件总线可查；不可逆（undo 不抓它）。"""
     container.repo.upsert_papers(sample_papers[:1], actor="human", reason="seed")
     pid = sample_papers[0].arxiv_id
-
-    import paperpilot.capabilities.tools as tools_mod
-
-    calls = {"n": 0}
-
-    class FakeClient:
-        def __init__(self, *a, **k):
-            pass
-
-        def download_pdf(self, url, dest, **k):
-            calls["n"] += 1
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(b"%PDF-1.4 fake")
-            return 13
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(tools_mod, "ArxivClient", FakeClient)
-
-    r1 = invoke(container, "download_paper", arxiv_id=pid, actor="human", reason="下载")
-    assert r1["ok"] is True and r1["cached"] is False and r1["bytes"] == 13
-    assert (container.settings.pdf_dir / f"{pid}.pdf").exists()
-
-    r2 = invoke(container, "download_paper", arxiv_id=pid, actor="human", reason="再下")
-    assert r2["ok"] is True and r2["cached"] is True
-    assert calls["n"] == 1  # 幂等：未重复下载
-
-    detail = invoke(container, "get_paper", arxiv_id=pid)
-    assert detail["paper"]["local_pdf"] is not None
-
-    ev = invoke(container, "get_activity", op="download_paper")
-    assert ev["events_count"] >= 1
+    container.repo.record_signal(pid, "download", source="measured",
+                                 actor="human", reason="直下跳转")
+    ev = invoke(container, "get_activity", op="signal:download")
+    assert ev["ok"] and ev["events_count"] == 1
+    assert ev["events"][-1]["after"]["source"] == "measured"
+    seq = ev["events"][-1]["seq"]
+    u = invoke(container, "undo", seq=seq, actor="human")
+    assert u["ok"] is False and u["error"]["kind"] == "irreversible"   # 信号本身不可回滚
 
 
-def test_download_paper_not_found(container):
-    r = invoke(container, "download_paper", arxiv_id="nope.1")
-    assert r["ok"] is False and r["error"]["kind"] == "not_found"
+def test_pdf_route_redirects_records_signal_and_writes_no_file(container, sample_papers):
+    """能红（M0 主案）：/pdf 路由记 download 信号并 302 到 arXiv；不产生任何本地文件，
+    pdf_dir 已整体消失（红证：属性不存在）。"""
+    from fastapi.testclient import TestClient
+
+    from paperpilot.app.web import create_app
+
+    container.repo.upsert_papers(sample_papers[:1], actor="human", reason="seed")
+    pid = sample_papers[0].arxiv_id
+    client = TestClient(create_app(container, None), follow_redirects=False)
+
+    r = client.get(f"/papers/{pid}/pdf")
+    assert r.status_code in (302, 307)
+    assert "arxiv.org/pdf" in r.headers["location"]
+    assert invoke(container, "get_activity", op="signal:download")["events_count"] == 1
+
+    g = client.get(f"/papers/{pid}/go")
+    assert g.status_code in (302, 307) and "arxiv.org/abs" in g.headers["location"]
+    assert invoke(container, "get_activity", op="signal:outbound")["events_count"] == 1
+
+    assert not hasattr(container.settings, "pdf_dir")          # 本地 PDF 体系已拆
+
+
+def test_record_signal_bad_paper_still_logged_not_raised(container):
+    """不误报/不阻断：库内无此篇时路由照常 302（信号写失败不拦用户），但跳转不断。"""
+    from fastapi.testclient import TestClient
+
+    from paperpilot.app.web import create_app
+
+    client = TestClient(create_app(container, None), follow_redirects=False)
+    r = client.get("/papers/nope.0000/pdf")   # 库里没有：仍 302 到构造地址
+    assert r.status_code in (302, 307)
+    assert r.headers["location"] == "https://arxiv.org/pdf/nope.0000"
 
 
 # ------------------------------------------------------------------ 体积闸
@@ -130,35 +130,7 @@ def test_gate_truncates_long_lists():
     assert gated["_papers_truncated"]["total"] == 50
 
 
-# ------------------------------------------------------------------ infra: download_pdf
-def test_arxiv_download_pdf_streams_to_file(tmp_path):
-    payload = b"%PDF-1.4 real-ish bytes"
-
-    def handler(request):
-        return httpx.Response(200, content=payload)
-
-    client = ArxivClient(
-        cache_dir=tmp_path / "cache", min_interval=0.0,
-        transport=httpx.MockTransport(handler), sleeper=lambda s: None,
-    )
-    dest = tmp_path / "pdfs" / "x.pdf"
-    n = client.download_pdf("https://arxiv.org/pdf/x", dest)
-    client.close()
-    assert n == len(payload)
-    assert dest.read_bytes() == payload
-
-
-def test_arxiv_download_pdf_retries_then_fails(tmp_path):
-    def handler(request):
-        return httpx.Response(500)
-
-    client = ArxivClient(
-        cache_dir=tmp_path / "cache", min_interval=0.0, retries=2,
-        transport=httpx.MockTransport(handler), sleeper=lambda s: None,
-    )
-    with pytest.raises(ArxivError):
-        client.download_pdf("https://arxiv.org/pdf/x", tmp_path / "y.pdf")
-    client.close()
+# ------------------------------------------------------------------ infra: 无本地下载（M0 后 download_pdf 已退役）
 
 
 # ------------------------------------------------------------------ CLI 参数解析（按 schema 强制类型）

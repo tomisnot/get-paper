@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ..capabilities import registry_for
@@ -146,40 +146,31 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         container.retrieval.delete_note(note_id)
         return RedirectResponse(_back(arxiv_id), status_code=303)
 
-    # ---------------------------------------- 下载归档（经中性能力层/命令面）
-    @app.post("/papers/{arxiv_id}/download")
-    def download_paper(arxiv_id: str, next_url: str = Form("")):
-        target = next_url or _back(arxiv_id)
-        if stack is None:
-            result = registry_for(container).invoke(
-                "download_paper", arxiv_id=arxiv_id, actor="human", reason="Web 界面下载归档"
-            )
-            if result.get("ok"):
-                msg = "已下载归档到本地" + ("（此前已下载）" if result.get("cached") else "")
-            else:
-                msg = f"下载失败：{result.get('error', {}).get('message', '未知错误')}"
-            return RedirectResponse(_with_msg(target, msg), status_code=303)
-        from ..mecha_adapter.hub import human_write
+    # ------------------------------------ 出站跳转（M0：本地 PDF 退役，下载=浏览器直下；跳转顺手记信号）
+    # 漏斗三层可测：view（详情页）→ outbound（经我方跳 arXiv abs）→ download（经我方直下 PDF）。
+    # 信号与 delete_note 同族：直写 repo、不经命令面（不与 AI 争写），但进事件总线留痕；M1 画像消费。
+    def _signal_then_redirect(arxiv_id: str, signal: str, url: str) -> RedirectResponse:
+        try:
+            container.repo.record_signal(arxiv_id, signal, source="measured",
+                                         actor="human", reason=f"Web {signal} 跳转")
+        except Exception:  # noqa: BLE001 — 记账失败绝不拦用户的跳转，但要留日志可查
+            import logging
+            logging.getLogger("paperpilot.web").exception("record_signal 失败，跳转照常")
+        return RedirectResponse(url)
 
-        res = human_write(stack, "download_paper", arxiv_id=arxiv_id, reason="Web 界面下载归档")
-        if res.get("is_error"):
-            info = res["error"].get("info", {})
-            msg = f"下载失败：{res['error'].get('message', '')}（{info.get('kind', '')}）"
-        else:
-            value = res.get("value", {})
-            msg = "已下载归档到本地" + ("（此前已下载）" if value.get("cached") else "")
-        return RedirectResponse(_with_msg(target, msg), status_code=303)
+    @app.get("/papers/{arxiv_id}/go")
+    def go_arxiv(arxiv_id: str):
+        """去 arXiv abs 页（outbound 信号 + 302）。"""
+        detail = container.retrieval.detail(arxiv_id)
+        url = (detail["paper"].abs_url if detail else "") or f"https://arxiv.org/abs/{arxiv_id}"
+        return _signal_then_redirect(arxiv_id, "outbound", url)
 
     @app.get("/papers/{arxiv_id}/pdf")
-    def local_pdf(arxiv_id: str):
-        path = container.settings.pdf_dir / f"{arxiv_id}.pdf"
-        if path.exists():
-            return FileResponse(
-                str(path), media_type="application/pdf", filename=f"{arxiv_id}.pdf"
-            )
+    def download_pdf(arxiv_id: str):
+        """直下 PDF（download 信号 + 302 到 arXiv；文件不落库，无本地缓存）。"""
         detail = container.retrieval.detail(arxiv_id)
         url = (detail["paper"].pdf_url if detail else "") or f"https://arxiv.org/pdf/{arxiv_id}"
-        return RedirectResponse(url)
+        return _signal_then_redirect(arxiv_id, "download", url)
 
     # ---------------------------------------------------------------- 设置
     @app.get("/settings", response_class=HTMLResponse)
