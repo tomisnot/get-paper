@@ -27,6 +27,11 @@ from pathlib import Path
 import typer
 
 from ..infra.arxiv import ArxivClient, parse_atom
+from ..mecha_adapter.hub import BOOT_MODE_DEFAULT
+
+#: `--mode` 的帮助文案（四个值逐一说清；尤其 `ai` = **只有 AI 能写**，别让名字猜）。
+_MODE_HELP = ("起步写权模式：open=两侧都能写（默认，不卡写权）、locked=谁都不能写（维护/急停）、"
+              "human=只有 Web 人侧能写、ai=只有 AI 能写")
 
 app = typer.Typer(
     help="PaperPilot — arXiv 每日文献情报系统",
@@ -251,22 +256,22 @@ def main(
         _serve_impl(config)
 
 
-def _boot_stack(settings, *, open_gate: bool, with_cockpit: bool, log):
+def _boot_stack(settings, *, mode: str, with_cockpit: bool, log):
     """建 container + **共享 mecha 栈**，起 MCP（AI 面）+ cockpit（监控面）后台线程。
 
     三面（Web 人类面 / MCP AI 面 / cockpit 监控面）**共享一个栈**（同一 authority/
     gate/history）——一个 data_dir 一个写租约，故必须同进程共栈。返回
     ``(container, stack, mcp_host, cockpit)``；调用方负责收尾（stop/close）。
+
+    ⚠ **起步模式由 ``mode`` 决定**（默认 `open`，见 `hub.BOOT_MODE_DEFAULT`）：
+    这是"GP 不卡写权"的落点；`locked` 仍是急停（人随时可切回去）。
     """
-    from ..mecha_adapter.hub import build_stack, make_host
+    from ..mecha_adapter.hub import boot_mode, build_stack, make_host
     from ..mecha_adapter.monitor import start_cockpit
     from .container import build_container
 
     container = build_container(settings)
-    stack = build_stack(container, settings.data_dir, "mecha")
-    if open_gate:
-        from mecha.authority import Mode
-        stack["authority"].switch_mode(Mode.AI, side="human")
+    stack = build_stack(container, settings.data_dir, "mecha", mode=boot_mode(mode))
     root = Path(settings.data_dir).parent
     mcp_host = make_host(stack, host=settings.mcp.host, port=0,
                          port_file=str(root / ".mcp-port"), log=log)
@@ -278,7 +283,7 @@ def _boot_stack(settings, *, open_gate: bool, with_cockpit: bool, log):
     return container, stack, mcp_host, cockpit
 
 
-def _serve_impl(config, host=None, port=None, open_gate=False, no_cockpit=False,
+def _serve_impl(config, host=None, port=None, mode=BOOT_MODE_DEFAULT, no_cockpit=False,
                 no_open=False) -> None:
     """统一启动实体（被 no-arg 默认与 ``serve`` 命令共用；普通默认值，非 Option）。"""
     import uvicorn
@@ -293,7 +298,7 @@ def _serve_impl(config, host=None, port=None, open_gate=False, no_cockpit=False,
     _ensure_port_free(web_host, web_port, "Web ")   # 预检：端口被占则不半启动
     _publish_web_port_when_ready(web_host, web_port, web_port_file)
     container, stack, mcp_host, cockpit = _boot_stack(
-        settings, open_gate=open_gate, with_cockpit=not no_cockpit, log=typer.echo)
+        settings, mode=mode, with_cockpit=not no_cockpit, log=typer.echo)
     typer.echo(f"🌐 Web（人类面）: http://{web_host}:{web_port}  (AI: {container.ai_provider})")
     typer.echo(f"🔌 MCP（AI 面）: {mcp_host.url}  ← .mcp-port")
     if cockpit is not None:
@@ -301,7 +306,7 @@ def _serve_impl(config, host=None, port=None, open_gate=False, no_cockpit=False,
     typer.echo(f"🧭 dsh 面板发现: {web_port_file.name} ← {web_port}（同源路由读它，不回落默认端口）")
     _publish_and_announce_control_token()
     typer.echo(f"🔐 写权模式: {stack['authority'].mode.value}"
-               "（Web 写自动取 human；AI 写需 --open-gate 或在监控面切换）")
+               "（默认 open=两侧都能写；要独占/急停去 /settings 的写权卡切）")
     if not no_open:
         _open_browser_when_ready(web_host, web_port)   # 自动开浏览器 = 人面前台可见
         typer.echo("🖥  已尝试打开浏览器（人面工作台）；未弹出就手动访问上面的 Web 地址。")
@@ -322,18 +327,19 @@ def serve(
     config: Path = typer.Option(None, "--config", "-c", help="配置文件路径"),
     host: str = typer.Option(None, "--host", help="Web 绑定地址（默认取 settings.web.host）"),
     port: int = typer.Option(None, "--port", "-p", help="Web 端口（默认取 settings.web.port）"),
-    open_gate: bool = typer.Option(False, "--open-gate", help="启动即把写权开到 AI（默认 LOCKED；Web 写自动取 human）"),
+    mode: str = typer.Option(BOOT_MODE_DEFAULT, "--mode", help=_MODE_HELP),
     no_cockpit: bool = typer.Option(False, "--no-cockpit", help="不起 cockpit 监控端点"),
     no_open: bool = typer.Option(False, "--no-open", help="不自动开浏览器（人面前台）"),
 ) -> None:
-    """统一启动入口：Web（人类面）+ mecha MCP（AI 面）+ cockpit（监控面）+ 每日调度，共享一个 mecha 栈。
+    """统一启动入口：Web（人类面）+ mecha MCP（AI 面）+ cockpit（监控面），共享一个 mecha 栈。
 
     人机同路：Web 写经 human 通道、AI 写经 ai 通道，同一道写权门 + 同一份审计。
+    ⚠ **写权默认 `--mode open`**（两侧都能写，用户裁决"不卡写权"）；`--mode locked` 是急停。
     dsh 经 `.mcp-port` 发现 MCP；右栏「📄简报」iframe Web 可视化面、「◈监控」是原生面板
     （mecha cockpit；原 `/monitor` 视图页已退役，写权模式卡在 Web 的 `/settings`）。
     （无参数运行 `paperpilot` 等价于本命令。）
     """
-    _serve_impl(config, host, port, open_gate, no_cockpit, no_open)
+    _serve_impl(config, host, port, mode, no_cockpit, no_open)
 
 
 @app.command()
@@ -467,16 +473,14 @@ def web(
 def mcp(
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(0, "--port", "-p", help="0=自动选空闲端口（写 .mcp-port 供发现）"),
-    open_gate: bool = typer.Option(False, "--open-gate", help="启动即开 AI 写权（默认 LOCKED）"),
+    mode: str = typer.Option(BOOT_MODE_DEFAULT, "--mode", help=_MODE_HELP),
     no_cockpit: bool = typer.Option(False, "--no-cockpit", help="不起 cockpit 监控端点"),
     config: Path = typer.Option(None, "--config", "-c"),
 ) -> None:
     """只起 mecha MCP 语义通道（headless，无 Web）；DSH 等 harness 经 .mcp-port attach。"""
     from ..mecha_adapter import hub as mecha_hub
 
-    argv = ["--host", host, "--port", str(port)]
-    if open_gate:
-        argv.append("--open-gate")
+    argv = ["--host", host, "--port", str(port), "--mode", mode]
     if not no_cockpit:
         argv.append("--cockpit")
     if config:
@@ -494,6 +498,7 @@ def ai(
         "--debug-home",
         help="调试：用项目内 .dsh-debug 作 DSH_HOME（会话/设置/凭据与共享 ~/.dsh 完全隔离）",
     ),
+    mode: str = typer.Option(BOOT_MODE_DEFAULT, "--mode", help=_MODE_HELP),
 ) -> None:
     """AI 模式：后台起 Web(:8080) + MCP 语义通道(写 .mcp-port)，**前台跑 dsh**。
 
@@ -522,7 +527,7 @@ def ai(
 
     # 1) 后台：MCP（AI 面）+ cockpit（监控面），共享一个 mecha 栈；AI 模式默认开闸到 AI
     container, stack, mcp_host, cockpit = _boot_stack(
-        settings, open_gate=True, with_cockpit=True, log=typer.echo)
+        settings, mode=mode, with_cockpit=True, log=typer.echo)
     typer.echo(f"  MCP（AI 面）: {mcp_host.url}（.mcp-port 已写；dsh 插件据此发现）")
     if cockpit is not None:
         typer.echo(f"  cockpit（监控面）: {cockpit.url}（.cockpit-port 已写）")

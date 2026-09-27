@@ -28,6 +28,57 @@ from paperpilot.app import cli
 from paperpilot.app.cli import _ensure_port_free
 
 
+# ---------------------------------------------------------------- 起步写权模式（本批行为变更）
+def test_boot_mode_default_is_open_and_maps_four_values():
+    """⭐ GP 以 **OPEN** 起步（"不卡写权"）；四个值都能映射，未知值**响亮拒绝**。
+
+    ⚠ 这是**行为变更**：从前启动默认是 LOCKED（AI 要等人类开闸），现在默认"两侧都能写"；
+    `locked` 仍在（维护/急停），`ai`/`human` 也仍在（= 从前的独占形态，能力没丢）。
+    """
+    from mecha.authority import Mode
+
+    from paperpilot.mecha_adapter import hub
+
+    assert hub.BOOT_MODE_DEFAULT == "open"
+    assert hub.boot_mode("open") is Mode.OPEN
+    assert hub.boot_mode("locked") is Mode.LOCKED
+    assert hub.boot_mode("human") is Mode.HUMAN
+    assert hub.boot_mode("ai") is Mode.AI
+    assert hub.boot_mode("") is Mode.OPEN                 # 空 ⇒ 默认（不猜别的）
+    with pytest.raises(ValueError):
+        hub.boot_mode("root")                             # 未知值不静默放过
+
+
+def test_cli_exposes_mode_flag_and_dropped_open_gate():
+    """CLI 契约：`--mode`（四值，默认 open）**取代** `--open-gate`；不留别名（别让名字撒谎）。
+
+    判据直接读**函数签名**（不起服务、不跑 uvicorn）——`serve` / `ai` 是 typer 命令的原函数。
+    """
+    import inspect
+
+    for fn in (cli.serve, cli.ai):
+        params = inspect.signature(fn).parameters
+        assert "mode" in params, f"{fn.__name__} 应当有 --mode（起步写权模式）"
+        default = params["mode"].default
+        assert getattr(default, "default", default) == "open", (
+            f"{fn.__name__} 的 --mode 默认应为 open，实际 {default!r}")
+        assert "open_gate" not in params, (
+            f"{fn.__name__} 不该再有 --open-gate（默认已是 open；那个 flag 的行为是'收成只有 AI 能写'，名字会撒谎）")
+
+
+def test_hub_arg_parser_has_mode_not_open_gate():
+    """`paperpilot-mecha` 那条 CLI 同一条口径：`--mode` 在场、`--open-gate` 已删。"""
+    from paperpilot.mecha_adapter import hub
+
+    parser = hub._arg_parser()
+    opts = {a for action in parser._actions for a in action.option_strings}
+    assert "--mode" in opts, f"应有 --mode：{sorted(opts)}"
+    assert "--open-gate" not in opts, f"--open-gate 应已删除：{sorted(opts)}"
+    ns = parser.parse_args([])
+    assert ns.mode == hub.BOOT_MODE_DEFAULT
+    assert parser.parse_args(["--mode", "locked"]).mode == "locked"
+
+
 def _grab_port() -> tuple[socket.socket, int]:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))

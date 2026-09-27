@@ -11,7 +11,7 @@ uvicorn 后台线程与端口回读、instructions 体积守卫、端口文件�
 ``LocalToolHost(真注册表)``。
 
 用法：``python -m paperpilot.mecha_adapter.hub [--config 路径] [--port 0]
-[--data-dir mecha] [--open-gate] [--port-file 路径]``
+[--data-dir mecha] [--mode open|locked|human|ai] [--port-file 路径]``
 """
 
 from __future__ import annotations
@@ -159,16 +159,17 @@ def make_host(stack: dict, *, host: str = "127.0.0.1", port: int = 0,
 
 
 def human_write(stack: dict, cmd_name: str, **args) -> dict:
-    """人类面（Web）经**同一道门**写：确保 HUMAN 模式 + 用 human 通道 invoke 命令。
+    """人类面（Web）经**同一道门**写：用 human 通道 invoke 命令。
 
-    单写权模型（用户已接受）：人类侧可切模式，故 Web 写时若写权不在 human
-    （LOCKED 或 AI 持有）则取回到 HUMAN（human 优先）。actor 由 human 通道钉死，
-    写落 repo.events（actor=human）+ mecha History（command.<name> 审计）——与 AI
-    写同一条门、同一审计面（cockpit 可见）。返回 invoke 的归一化回执 {is_error, value|error}。
+    ⚠ **抢占已删**（2026-09-26 行为变更）：从前这里会"发现模式不是 HUMAN 就切到 HUMAN"
+    （人写优先）。现在**不再动模式**——理由两条：
+    ① 用户裁决「不卡写权」⇒ 起步就是 `Mode.OPEN`（两侧都能写，见 `BOOT_MODE_DEFAULT`）；
+    ② **一个随时会被自己改掉的模式不是模式**：抢占让模式不可信。
+    ⇒ 于是 `AI`/`LOCKED` 之下人类写会被**框架拒**（`authority_mode_mismatch`/`authority_locked`），
+    拒绝消息里给得出路（在 `/settings` 切回"放开"）——**拒绝 ≠ 卡死**。
+    actor 仍由 human 通道钉死，写落 repo.events（actor=human）+ mecha History
+    （`command.<name>` 审计）——与 AI 写同一条门、同一审计面。返回归一化回执。
     """
-    authority = stack["authority"]
-    if authority.mode is not Mode.HUMAN:
-        authority.switch_mode(Mode.HUMAN, side="human")   # 人类侧取写权（side=human 可切）
     args.setdefault("reason", "")
     # `approval=sw.approval`：把审批通道接上（框架对 `approval_required` 的命令 fail-closed；
     # 本项目暂无命令声明它 ⇒ 今天不触发，但接线先做对——将来写上声明即生效）。
@@ -177,12 +178,31 @@ def human_write(stack: dict, cmd_name: str, **args) -> dict:
                           approval=stack["software"].approval)
 
 
-def main(argv=None) -> int:
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    from ..app.container import build_container
-    from ..config import load_settings
+#: 起步写权模式的**默认值**：`open` = 两侧都能写（用户裁决"不卡写权"）。
+#: ⚠ 框架的出厂默认仍是 `LOCKED`（安全默认没动）——**"GP 从哪起步"由本项目声明**。
+BOOT_MODE_DEFAULT = "open"
 
+#: 模式名 → 框架 `Mode`。四个值都能起步；`locked` 是保留的**急停/维护态**。
+_BOOT_MODES = {"open": Mode.OPEN, "locked": Mode.LOCKED, "human": Mode.HUMAN, "ai": Mode.AI}
+
+
+def boot_mode(value: str) -> Mode:
+    """起步模式解析：``""``（=默认 open）/ ``open`` / ``locked`` / ``human`` / ``ai``。
+
+    为什么要单独一层纯函数：`--mode` 是**给用户的 CLI 契约**，而 `Mode` 是框架枚举——
+    隔一层，判据就能**不起服务**地验"默认是 open、四个值都映射、未知值响亮拒绝"。
+    ⚠ 未知值**抛错、不回落默认**：把 `--mode loced` 静默当成 `open`，会让"我以为锁上了"
+    变成没设防——那正是本会话反复治的那类病（名字/行为和实际不一致）。
+    """
+    key = (value or BOOT_MODE_DEFAULT).strip().lower()
+    mapped = _BOOT_MODES.get(key)
+    if mapped is None:
+        raise ValueError(f"未知起步模式 {value!r}；可选：{'、'.join(_BOOT_MODES)}")
+    return mapped
+
+
+def _arg_parser() -> argparse.ArgumentParser:
+    """`paperpilot-mecha` 的参数面（**单独一个函数**：判据可以不起服务地检查 flag 契约）。"""
     ap = argparse.ArgumentParser(prog="paperpilot-mecha",
                                  description="PaperPilot 的 mecha v2 MCP Hub")
     ap.add_argument("--config", default=None, help="settings.yaml 路径（默认自动发现）")
@@ -192,22 +212,33 @@ def main(argv=None) -> int:
     ap.add_argument("--port", type=int, default=0, help="0=自动选空闲端口")
     ap.add_argument("--port-file", default="",
                     help="端口文件（默认 <项目根>/.mcp-port，与发现约定一致）")
-    ap.add_argument("--open-gate", action="store_true",
-                    help="启动即开 ai 写权（演示/测试；默认 LOCKED）")
+    # ⚠ **取代旧的 `--open-gate`**（那个 flag 的行为是"收成只有 AI 能写"，而默认已是 open
+    # ⇒ 名字会撒谎）。四个值都保留能力：open=两侧都能写（默认）/ locked=都不写（维护态）/
+    # human=只有人能写 / ai=只有 AI 能写。
+    ap.add_argument("--mode", default=BOOT_MODE_DEFAULT, choices=sorted(_BOOT_MODES),
+                    help="起步写权模式：open=两侧都能写（默认）、locked=都不写（维护态）、"
+                         "human=只有人能写、ai=只有 AI 能写")
     ap.add_argument("--cockpit", action="store_true",
                     help="同时起 cockpit 只读监控端点（供 dsh 侧边栏/面板轮询）")
     ap.add_argument("--cockpit-port", type=int, default=0,
                     help="cockpit 端口（0=自动；库内零端口字面量，勿硬编 3080）")
     ap.add_argument("--cockpit-port-file", default="",
                     help="cockpit 端口发现文件（默认 <项目根>/.cockpit-port）")
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv=None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    from ..app.container import build_container
+    from ..config import load_settings
+
+    args = _arg_parser().parse_args(argv)
 
     container = build_container(load_settings(args.config))
     data_root = args.data_root or str(container.settings.data_dir)
-    stack = build_stack(container, data_root, args.data_dir)
-    if args.open_gate:
-        stack["authority"].switch_mode(Mode.AI, side="human")
-        print("[hub] 写权已开到 ai 模式（--open-gate）")
+    stack = build_stack(container, data_root, args.data_dir, mode=boot_mode(args.mode))
+    print(f"[hub] 起步写权模式：{stack['authority'].mode.value}（--mode {args.mode}）")
 
     port_file = args.port_file or str(Path(data_root).parent / ".mcp-port")
     host = make_host(stack, host=args.host, port=args.port, port_file=port_file, log=print)

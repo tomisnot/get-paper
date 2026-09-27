@@ -414,9 +414,10 @@ def _authority_view(authority) -> dict:
     mode = str(getattr(authority.mode, "value", authority.mode))
     return {"ok": True, "mode": mode,
             "ai_can_write": _can("ai"), "human_holds": _can("human"),
-            "how_to_open": ("写权由人类侧授予：在 Web 的 /settings 「写权模式」卡点“授予 AI 写权”"
-                            "（需控制口令），或用 `paperpilot serve/ai --open-gate` 启动。"
-                            "AI 侧不能自解锁（单写权）。")}
+            "how_to_open": ("写权默认已是 open（两侧都能写，2026-09-26 起）。"
+                            "若被切成了 ai 独占/human 独占/locked：在 Web 的 /settings 「写权模式」"
+                            "卡点「放开（open）」（需控制口令）；也可用 "
+                            "`paperpilot serve/ai --mode open` 起步。AI 侧不能自解锁。")}
 
 
 def _register_authority_tool(reg: ToolRegistry, authority) -> None:

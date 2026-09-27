@@ -38,14 +38,15 @@
 <div class="card">
   <div class="kv">
     <b>当前</b>
-    {% if mode %}<span class="chip {% if mode == 'ai' %}worth{% elif mode == 'human' %}must{% endif %}">{{ mode }}</span>
-      <span class="muted">locked=谁都不可写 · human=Web 侧 · ai=AI 侧（单写权，人类侧开闸）</span>
+    {% if mode %}<span class="chip {% if mode == 'ai' %}worth{% elif mode == 'human' %}must{% elif mode == 'open' %}ok{% endif %}">{{ mode }}</span>
+      <span class="muted">open=两侧都能写（默认，不卡写权）· locked=谁都不能写（急停） · human=只有 Web 人侧能写 · ai=只有 AI 能写</span>
     {% else %}<span class="muted">未接监控面（本 Web 未经统一启动入口装配 mecha 栈）</span>{% endif %}
   </div>
   {% if mode %}
     <form method="post" action="/monitor/mode" class="actions">
       <input type="password" name="token" placeholder="控制口令" autocomplete="off" style="min-width:16em"
              title="启动 serve/ai 时控制台打印的那个口令（仓外 ~/.paperpilot/control-token）">
+      <button type="submit" name="target" value="open" class="ghost">放开（open）</button>
       <button type="submit" name="target" value="ai" class="ghost">授予 AI 写权</button>
       <button type="submit" name="target" value="human" class="ghost">取回 human</button>
       <button type="submit" name="target" value="locked" class="ghost">锁定</button>
@@ -58,7 +59,8 @@
       <div class="warn">本实例**未发布控制口令** ⇒ 写权切换会被一律拒绝（fail-closed，
         不会默认放开）。用 <code>paperpilot serve</code> / <code>paperpilot ai</code> 启动即可获得口令。</div>
     {% endif %}
-    <div class="muted">Web 写会自动取 human；要让 dsh 里的 AI 写，先“授予 AI 写权”并别在 Web 上写。</div>
+    <div class="muted">写权默认 <code>open</code>（两侧都能写，人机互不挤）。想让人或 AI 独占，或急停，
+      用上面的按钮切；模式一改**不会被谁偷偷改回去**（人写不再自动抢闸）。</div>
   {% endif %}
 </div>
 

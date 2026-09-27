@@ -30,11 +30,16 @@ def control_token(tmp_path, monkeypatch):
 
 
 def _gated(tmp_path):
-    """建 container + 共享 mecha 栈 + Web 客户端（stack 传入 → 走门）。"""
+    """建 container + 共享 mecha 栈 + Web 客户端（stack 传入 → 走门）。
+
+    ⚠ **栈以 `Mode.OPEN` 起步**（2026-09-26 行为变更）：GP 的启动默认从 LOCKED 改成 OPEN
+    （"不卡写权"），且 `human_write` **不再抢占**（人写不再自动把模式切成 HUMAN）。
+    ⇒ 判据要**显式摆好它假设的模式**，而不是像从前那样"靠人写自动取权"把模式弄对。
+    """
     settings = make_settings(tmp_path / "data")
     container = build_container(settings)
     container.repo.upsert_papers(parse_atom(SAMPLE_XML.read_text(encoding="utf-8")))
-    stack = build_stack(container, tmp_path, "mecha")
+    stack = build_stack(container, tmp_path, "mecha", mode=Mode.OPEN)
     return TestClient(create_app(container, stack)), container, stack
 
 
@@ -43,8 +48,8 @@ def test_web_write_goes_through_gate_both_journals(tmp_path):
     client, container, stack = _gated(tmp_path)
     resp = client.post("/papers/2608.01101/star", follow_redirects=False)
     assert resp.status_code == 303
-    # 人类面写入自动取写权（LOCKED → HUMAN）
-    assert stack["authority"].mode is Mode.HUMAN
+    # ⚠ 本批行为变更：人写**不再**自动取写权（`human_write` 的抢占已删）⇒ 模式**不变**（仍 OPEN）
+    assert stack["authority"].mode is Mode.OPEN
     # 域 journal：repo.events 记 actor=human 的 star_paper
     events = container.repo.events_since(since_seq=0, actor="human", op="star_paper")
     assert events["count"] >= 1
@@ -72,11 +77,11 @@ def test_settings_shows_write_mode_card(tmp_path):
     命令审计仍在（mecha History / cockpit 端点 / dsh 面板），只是**不再由 Web 渲染**。
     """
     client, _container, stack = _gated(tmp_path)
-    client.post("/papers/2608.01101/star", follow_redirects=False)   # Web 写 ⇒ 自动取 human
+    client.post("/papers/2608.01101/star", follow_redirects=False)   # Web 写（模式不变：仍 OPEN）
     page = client.get("/settings")
     assert page.status_code == 200
     assert "写权模式" in page.text
-    assert "human" in page.text
+    assert "open" in page.text                   # 卡片显示**当前模式**（本批：起步 OPEN）
     assert "/monitor/mode" in page.text          # 控制端点路径未动（只换 UI 落点）
     assert "控制口令" in page.text
 
@@ -92,16 +97,93 @@ def test_settings_without_stack_is_honest(tmp_path):
     assert "/monitor/mode" not in page.text        # 没有可点的控件（不发无意义的请求）
 
 
-def test_mode_switch_grants_ai_then_human_write_preempts(tmp_path, control_token):
-    """人类侧开闸：口令 + 切到 AI 授予写权；随后 Web 写自动取回 human（human 优先）。"""
+def test_ai_mode_denies_human_write_then_open_allows_both(tmp_path, control_token):
+    """⭐ **行为变更的正身**（旧判据 `…_human_write_preempts` 按新事实重写）：
+
+    旧事实：Web 写会自动把模式从 AI 抢回 HUMAN（"人优先"）。
+    新事实（2026-09-26 用户裁决「不卡写权」+ 框架 `Mode.OPEN`）：
+      * **人写不再抢占**——一个随时会被自己改掉的模式不是模式；
+      * `AI` 独占时**人类写被拒**（这是模式的字面意思），**拒绝消息要指出出路**（在同一页可切回放开）；
+      * 切回 `open` 后**两侧都能写**，且**谁也不改谁的模式**。
+
+    ⚠ 这是**行为变更**，不是把判据改松：旧断言在这里**必然红**（模式不再变），
+    我们**换成新事实**并保留同样的严格度（拒绝要有、出路要有、放开后两侧都要能写）。
+    """
     client, _container, stack = _gated(tmp_path)
     resp = client.post("/monitor/mode",
                        data={"target": "ai", "token": control_token}, follow_redirects=False)
     assert resp.status_code == 303
     assert stack["authority"].mode is Mode.AI
-    # Web 写自动取回 human（单写权：人类在 Web 上动手即取闸）
-    client.post("/papers/2608.01101/star", follow_redirects=False)
-    assert stack["authority"].mode is Mode.HUMAN
+    # AI 独占：人类写**被拒**，且模式**不被改写**（不抢占）
+    denied = client.post("/papers/2608.01101/star", follow_redirects=True)
+    assert "被拒" in denied.text or "拒" in denied.text, denied.text[:400]
+    assert stack["authority"].mode is Mode.AI, "人写不该再把模式抢回去（抢占已删）"
+    # 人类侧在同一页就能切回放开（拒绝 ≠ 卡死）
+    assert client.post("/monitor/mode", data={"target": "open", "token": control_token},
+                       follow_redirects=False).status_code == 303
+    assert stack["authority"].mode is Mode.OPEN
+    assert client.post("/papers/2608.01101/star",
+                       follow_redirects=False).status_code == 303      # 人又能写了
+    assert stack["authority"].mode is Mode.OPEN, "放开之后人写也不该改模式"
+
+
+def test_open_mode_both_sides_can_write(tmp_path):
+    """⭐ **两向**（缺一不可）：OPEN 下 AI 与人类**都能写**，且互不挤掉对方、模式不变。
+
+    AI 侧走**工具面**（`add_note` 经命令面）、人类侧走 **Web**（POST star）——两条路都在同一个栈里。
+    """
+    from .test_mecha_adapter import _call
+
+    client, container, stack = _gated(tmp_path)          # _gated 已以 OPEN 起步
+    assert stack["authority"].mode is Mode.OPEN
+    ai_out = _call(stack["tools"], "add_note", arxiv_id="2608.01101", content="AI 的笔记")
+    assert ai_out["ok"] is True, ai_out                  # AI 能写
+    assert client.post("/papers/2608.01101/star",
+                       follow_redirects=False).status_code == 303    # 人类能写
+    assert stack["authority"].mode is Mode.OPEN          # 谁也不抢谁
+    ai_again = _call(stack["tools"], "mark_read", arxiv_id="2608.01101", read=True)
+    assert ai_again["ok"] is True, "人被允许写之后，AI 不该被挤掉"    # AI 还能写
+
+
+def test_locked_stops_both_sides(tmp_path, control_token):
+    """**对偶**：锁定（急停）之后**两侧都被拒**，且域零改动。
+
+    人的 `<button>锁定</button>` 必须仍然好使——放开写权不等于把急停拆了。
+    """
+    from .test_mecha_adapter import _call
+
+    client, container, stack = _gated(tmp_path)
+    assert client.post("/monitor/mode", data={"target": "locked", "token": control_token},
+                       follow_redirects=False).status_code == 303
+    assert stack["authority"].mode is Mode.LOCKED
+    ai_out = _call(stack["tools"], "add_note", arxiv_id="2608.01101", content="锁定后的 AI 写")
+    assert ai_out["ok"] is False and ai_out["error"]["kind"] == "authority_locked"
+    human_out = client.post("/papers/2608.01101/star", follow_redirects=True)
+    assert stack["authority"].mode is Mode.LOCKED
+    assert container.repo.events_since(since_seq=0, op="star_paper")["count"] == 0
+    assert container.repo.events_since(since_seq=0, op="add_note")["count"] == 0
+    assert "拒" in human_out.text
+
+
+def test_open_mode_keeps_attribution(tmp_path):
+    """**归因不模糊**：OPEN 放开的只是**写权**，不是**归因**——
+    人类写仍记 `actor=human`、AI 写仍记 `actor=ai`（域 journal 与框架审计两侧都查）。
+    """
+    from .test_mecha_adapter import _call
+
+    client, container, stack = _gated(tmp_path)
+    assert client.post("/papers/2608.01101/star",
+                       follow_redirects=False).status_code == 303
+    assert _call(stack["tools"], "add_note", arxiv_id="2608.01101",
+                 content="AI 写的")["ok"] is True
+    # 域 journal：两条各自的 actor
+    assert container.repo.events_since(since_seq=0, actor="human", op="star_paper")["count"] >= 1
+    assert container.repo.events_since(since_seq=0, actor="ai", op="add_note")["count"] >= 1
+    # 框架 History：命令审计的 actor 也各归各的
+    audits = [(e.key, e.actor) for e in stack["history"].events()
+              if e.key in ("command.star_paper", "command.add_note")]
+    assert ("command.star_paper", "human") in audits
+    assert ("command.add_note", "ai") in audits
 
 
 def test_mode_switch_rejects_bad_target(tmp_path, control_token):
@@ -189,14 +271,14 @@ def test_old_monitor_view_is_gone(tmp_path):
 
 # ---------------------------------------------------------------- cockpit JSON 路由（dsh 面板取数）
 def test_cockpit_history_route_is_cockpit_json_with_cors(tmp_path):
-    """dsh 面板取 `/history`：Web 写自动取 human、事件里看得到 command 审计、带 CORS。"""
+    """dsh 面板取 `/history`：模式随栈当前态（本批：起步 OPEN）、事件里看得到 command 审计、带 CORS。"""
     client, _container, _stack = _gated(tmp_path)
     client.post("/papers/2608.01101/star", follow_redirects=False)
     r = client.get("/history?since_seq=0")
     assert r.status_code == 200
     assert r.headers.get("access-control-allow-origin") == "*"   # dsh :3081 跨源必需
     body = r.json()
-    assert body["ok"] is True and body["mode"] == "human"
+    assert body["ok"] is True and body["mode"] == "open"          # 人写不再改模式（抢占已删）
     assert "command.star_paper" in {e["target"] for e in body["events"]}
     # 9 键契约（含 before/after/reason）——与 mecha cockpit history_records 对齐
     assert {"seq", "kind", "actor", "target", "before", "after", "reason"} <= set(body["events"][0])
