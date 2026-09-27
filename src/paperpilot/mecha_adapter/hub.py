@@ -91,7 +91,7 @@ def build_stack(container, data_root: str | Path | None = None,
                   mode=mode, project="paperpilot")
     engine.attach_gate(sw.gate)             # 让 Engine.run 叠加 gate 配置
     ai = sw.channels["ai"]
-    command_names = build_commands(container, sw, ai)
+    command_names = build_commands(container, sw)
     _seed_config(sw.gate, container)
     tools = build_tool_registry(container, sw, ai)
     return {
@@ -170,8 +170,11 @@ def human_write(stack: dict, cmd_name: str, **args) -> dict:
     if authority.mode is not Mode.HUMAN:
         authority.switch_mode(Mode.HUMAN, side="human")   # 人类侧取写权（side=human 可切）
     args.setdefault("reason", "")
+    # `approval=sw.approval`：把审批通道接上（框架对 `approval_required` 的命令 fail-closed；
+    # 本项目暂无命令声明它 ⇒ 今天不触发，但接线先做对——将来写上声明即生效）。
     return invoke_command(stack["commands"], stack["gate"],
-                          stack["channels"]["human"], cmd_name, args)
+                          stack["channels"]["human"], cmd_name, args,
+                          approval=stack["software"].approval)
 
 
 def main(argv=None) -> int:

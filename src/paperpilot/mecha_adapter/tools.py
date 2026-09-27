@@ -227,7 +227,8 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
         cap_params = _cap_params(container, decl.cap_name)
         parameters = _derive_parameters(cap_params, decl)
         if decl.kind == "write":
-            execute = _make_command_bridge(sw.commands, sw.gate, channel, decl.mecha_name)
+            execute = _make_command_bridge(sw.commands, sw.gate, channel, decl.mecha_name,
+                                           approval=sw.approval)
         else:
             execute = _make_capability_bridge(container, decl.cap_name)
         reg.register(define_tool(
@@ -254,12 +255,14 @@ def _make_capability_bridge(container, cap_name: str):
     return _exec
 
 
-def _make_command_bridge(commands, gate, channel: Channel, cmd_name: str):
+def _make_command_bridge(commands, gate, channel: Channel, cmd_name: str, *, approval=None):
     """写入能力的 execute 桥：经命令面 invoke（authority 写权闸 + Gate 审计）。
 
     ``call_id`` 从请求作用域读并随 args 传入——命令面把它抽给 Gate 审计事件，
     把这次工具调用与宿主行为史钉在一起（总纲 §5.2② 互引）。经 ``invoke_command``
-    统一入口把 ai 通道传给 handler（写权闸/归因用正确 side/actor）。
+    统一入口调用（写权检查前置在框架侧；handler 的 channel 由 ``wants_channel`` 声明注入）。
+    ``approval`` = 宿主的审批通道（``sw.approval``）：声明了 ``approval_required`` 的命令
+    由框架 fail-closed 拦，本项目当前无此声明 ⇒ 不触发，但接口先接对。
     """
     from .commands import invoke_command  # 延迟导入：commands 依赖 tools，避免模块级循环
 
@@ -269,7 +272,7 @@ def _make_command_bridge(commands, gate, channel: Channel, cmd_name: str):
         # reason 在命令面是必填（才会透传给 handler、写进域 journal）；对模型仍可选，
         # 故省略时桥接填默认空串（不影响命令 required 契约）。
         args.setdefault("reason", "")
-        res = invoke_command(commands, gate, channel, cmd_name, args)
+        res = invoke_command(commands, gate, channel, cmd_name, args, approval=approval)
         if res["is_error"]:
             failure = res["error"]
             info = failure.get("info", {})
@@ -401,7 +404,10 @@ def _register_job_tools(reg: ToolRegistry, sw, channel, container,
         return {"ok": False, "error": {"kind": kind, "message": message, "hint": hint}}
 
     def _submit(reason: str = "") -> dict:
-        # 先查写权：别提交一个注定被门拒的 job（N5 同源纪律）。
+        # ⚠ 这不是"治理闸"（治理检查已由框架在调 handler 之前做）；这里是**提交前的 UX 预检**：
+        # 让 AI **同步**拿到拒绝（而不是提交一个注定被拒的 job、再去轮询失败）。它**之前**
+        # 没有任何副作用（sem.acquire 在它之后）⇒ 不构成"改动落地才报审计失败"那类风险。
+        # （保留与否的取舍已报主代理；若判定"多余守卫"，删掉它只影响拒绝的**时序**，不影响安全。）
         try:
             authority.gate(channel.side)
         except MechaError as e:
@@ -413,7 +419,8 @@ def _register_job_tools(reg: ToolRegistry, sw, channel, container,
         def _work(ctx):
             try:
                 return invoke_command(commands, gate, channel, "run_pipeline",
-                                      {"reason": reason or "后台流水线"}, context=ctx)
+                                      {"reason": reason or "后台流水线"}, context=ctx,
+                                      approval=sw.approval)
             finally:
                 sem.release()
 

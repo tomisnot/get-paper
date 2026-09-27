@@ -296,17 +296,61 @@ def test_mcp_projection_endtoend(tmp_path):
 # 验收（交接文档 §7 Phase 2）：构造「AI 绕过门直写/直跑」被拒且可归因；
 # 开闸后写经命令面审计落 mecha History，且 result_ref 与域实体互引。
 def test_locked_denies_write_and_no_domain_change(tmp_path):
-    """洞1：LOCKED 态 AI 直写被拒，且**域写根本没发生**（不是先写后拒）。"""
+    """洞1：LOCKED 态 AI 直写被拒，且**域写根本没发生**（不是先写后拒）。
+
+    ⚠ **这条现在验的是框架的行为**（2026-09-26 起）：框架在调 handler **之前**就
+    `gate.check(channel)`（原先检查滞后于副作用，本项目只能手写前置闸自救——n=3 发现 7）。
+    项目侧那份手写闸**已删**，本判据**仍绿** ⇒ 正是"拒绝发生在域写之前"由框架保证的实测证据。
+    """
     container, stack = _stack(tmp_path, open_ai=False)
     tools = stack["tools"]
     out = _call(tools, "add_note", arxiv_id="2608.01101", content="绕门写")
     assert out["ok"] is False
     assert out["error"]["kind"] == "authority_locked"    # 可归因
-    # 域库无这条笔记（写权闸在 handler 内、域写之前）
+    # 域库无这条笔记（框架的前置检查在 handler 之前 ⇒ 域写根本没进）
     detail = _call(tools, "read_paper", arxiv_id="2608.01101")
     assert detail["notes"] == []
     # mecha History 也没有审计事件（未产生副作用）
     assert not [e for e in stack["history"].events() if e.key == "command.add_note"]
+
+
+def test_write_commands_declare_what_governance_needs(tmp_path):
+    """⭐ **实测**三条声明（不是读代码猜）——框架两处行为变更对本项目的杀伤半径 = 0。
+
+    框架 `2026-09-26` 那批（ADR「命令面治理闸前置与声明式 opt-in」）有两处**语义变更**，
+    主代理判定"GP 不受影响"；本项目**用这条判据自证**，而不是"信它"：
+
+    1. `parameters.required` **缺失/空 = 无必填**（原来"缺失 ⇒ 全 properties 必填"）
+       ⇒ 若某条命令的 `required` 变空，模型就**可以漏参数**了。这里逐条钉"非空 + 含 reason"。
+    2. `approval_required=True` **真的拦**（调用方不注入 `approval=` 即拒）
+       ⇒ 本项目**没有**需要审批的命令：一旦有人加上这个声明而没接线，**所有调用会全被拒**。
+       这里钉住"一条都没声明"，将来真需要审批时这条会红，逼接线（`invoke_command(approval=…)`
+       + `sw.approval` 已就位）。
+
+    另钉第三条（本次新机制**真的挂上了**）：`wants_channel=True` —— 丢了它 handler 收不到
+    通道，actor 归因就崩（发现 9 复发）。三条都是"静默变化 ⇒ AI 侧行为变坏"的东西。
+    """
+    _container, stack = _stack(tmp_path)
+    # ③ 的接线也要真：`invoke_command(approval=…)` 传的是 `sw.approval`；
+    #    若它是 None，将来某条命令一写 `approval_required=True` 就会**全被拒**（fail closed）。
+    assert stack["software"].approval is not None, (
+        "sw.approval 为 None ⇒ 审批通道没接上；将来声明 approval_required 会 fail-closed 全拒")
+    specs = {spec.name: spec for spec in stack["commands"].specs()}
+    assert specs, "一条写命令都没注册 ⇒ 上面的断言会空转（R8）"
+    assert set(specs) == set(stack["command_names"]), "specs() 与注册清单不一致"
+    for name, spec in sorted(specs.items()):
+        assert spec.wants_channel is True, (
+            f"{name} 没声明 wants_channel ⇒ handler 收不到本次通道，"
+            "归因会退回「装配期默认」（发现 9 复发）")
+        params = dict(spec.parameters)
+        assert "required" in params, f"{name} 的 parameters 里没有 required 键"
+        assert params["required"], (
+            f"{name} 的 required 为空 ⇒ 参数全都不必填了（发现 6 语义翻转后「空」= 无必填）")
+        assert "reason" in params["required"], (
+            f"{name} 没把 reason 列进 required ⇒ 域 journal 会丢掉「为什么」（发现 8）")
+        assert spec.approval_required is False, (
+            f"{name} 声明了 approval_required，但没人注入 approval= ⇒ 框架会 fail-closed 全拒；"
+            "要么接审批通道、要么去掉这个声明")
 
 
 def test_locked_denies_run(tmp_path):
