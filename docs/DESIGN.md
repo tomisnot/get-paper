@@ -583,7 +583,7 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 ### Phase 2 落地（写治理 gate/commands/authority，已验证）
 
 - `commands.py::build_commands`：13 个写能力 → `define_command(side_effect=True, scope=…)`。handler 调 `capabilities.invoke`（域写/undo 仍留 `repo.events`），命令面把 `command.<name>` + 不透明 `result_ref`（arxiv_id/note_id/date/run_id）审计进 mecha History——两份 journal 互引。
-- ⭐ **authority 写权闸必须前置**（n=3 发现 7）：`CommandRegistry.invoke` 在**跑完 handler 之后**才做 gate 审计，而 PaperPilot 域写直写 SQLite 不经 gate。故 handler 第一行手写 `authority.gate(channel.side)`：LOCKED/模式不符 → `GateDenied`、**域写根本不发生**（否则“最该被拦的写反而先落地”）。
+- ⭐ **authority 写权闸前置——已由框架承担**（n=3 发现 7，框架 2026-09-26 落地）：`Gate.check` 与 `Gate.set` 共用同一份判定，`invoke` 在调 handler **之前**对 `side_effect` 命令先查 ⇒ 域写（本项目直写 SQLite）**根本不会发生**。⚠ **本项目原先那份手写前置闸已删**（留着就是同一事实两个守卫）；判据 `test_locked_denies_write_and_no_domain_change` 未改松、仍绿（现在验的是框架行为）。归因改用**声明式 opt-in**：命令声明 `wants_channel=True` ⇒ handler 收本次 `channel=`（不再用 contextvar 偷渡，见发现 9 的落地）。
 - 标量配置迁 Gate：`build_stack` 装配期 `gate.seed` 从 settings 种 6 个标量（`lookback_days`/`scoring.*`）；新增 `set_config`（经 `gate.set`，authority+validate 双闸）/`read_config` 两个工具；`Engine.run` 把 gate 快照作为**线程局部每调用覆盖**（`pipeline_config_override` + `ScoringCfg.model_copy`）作用于本次运行（故 gate 配置对流水线**权威**、非装饰，且**不改共享 settings**、并发安全）。工具面 22→24。
 - authority 接线：出厂 `LOCKED`，人类侧 `switch_mode(Mode.AI,'human')` 开闸；AI 侧不能自解锁。Web=human / dsh·AI=ai（Web 写路径 **Phase 5 已改走命令面**，见下）。
 - 验收：`test_mecha_adapter.py` 添治理判据——LOCKED 直写/直跑被拒**且域写不发生**、AI 不能自解锁、开闸后审计落史 + `result_ref` 互引、set_config 受门 + gate 配置对 run 权威（`max_papers=1`→selected 真降）。
@@ -606,7 +606,7 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 - **旧 `mcp_server.py` 退役**：删除 `mcp_server.py` + `test_mcp_server.py` + `test_mcp_live.py`；`test_journal.py` 的 3 个 MCP 测试迁至 `test_mecha_adapter.py`；CLI `mcp`/`ai` 重指 mecha hub。全仓搜无残留导入（R14）。dsh 插件无需改（动态发现工具 + 服务名 `paperpilot` + `.mcp-port` 发现）。
 - **统一启动入口**：`paperpilot`（无参）/ `paperpilot serve` = Web + mecha MCP + cockpit + 调度，**共享一个 mecha 栈**（`cli._boot_stack`；同进程、一个 data_dir 一个写租约）；`paperpilot ai` = 同后台 + 前台 dsh。
 - **Web=human 侧写权接线**：`create_app(container, stack)` 给栈时，论文库写（read/star/skip/note/download）+ 跑批经 `human_write`（human 通道命令面，自动取 HUMAN 写权），写同时落 repo.events（actor=human）+ mecha 审计。写权模式卡在 `/settings`（含控制口令），控制端点 `POST /monitor/mode` 供人类侧开闸——`/monitor` **视图页已退役**（AI 监控改走 dsh 原生 tab，见 `docs/MECHA-N3.md` §6）。
-- ⭐ **新 n=3 发现 9**（Web 接线时抓到）：`CommandRegistry.invoke` **不把调用方 channel 传给 handler**——多操作者共享一个命令表时，handler 闭包捕获的装配期通道会让**人类写误归因为 ai**、且写权闸看错 side。已修：`contextvars` 经统一入口 `invoke_command` 把实际通道传进 handler（详 `docs/MECHA-N3.md` 发现 9）。
+- ⭐ **新 n=3 发现 9**（Web 接线时抓到）：`CommandRegistry.invoke` **不把调用方 channel 传给 handler**——多操作者共享一个命令表时，handler 闭包捕获的装配期通道会让**人类写误归因为 ai**、且写权闸看错 side。**框架已修（2026-09-26）**：`CommandSpec.wants_channel`（显式声明；不做签名自省）⇒ 本项目**删掉自造的 `contextvars` 渡口**，13 条写命令改为声明 `wants_channel=True`，handler 直收 `channel=`（详 `docs/MECHA-N3.md` 发现 9 的落地段 + ADR）。
 - 验收：`test_web_mecha.py`（Web 门控写双 journal 都记 actor=human、**`/settings` 写权卡**、无栈如实报未接、写权切换）。退役后 `pytest 121 绿`（删 18 旧 mcp 测、迁入/新增后净减）、`ruff` 净。
 - ⭐ **“dsh 侧栅没有按钮 / 面板打不开”的真根因（已修）**：`cli.py` 的 `PROJECT_ROOT` 少一层（写 `parents[2]`，该文件在 `src/paperpilot/app/` ⇒ 应为 `parents[3]`）⇒ `DSH_DIR` 指向不存在的 `<项目>/src/dsh` ⇒ 两个 `--patch` 被**静默过滤丢弃** ⇒ **插件根本没加载**（与面板代码无关）。已修路径、把静默过滤改为**响亮失败**、并补判据（`tests/test_cli_startup.py`）——单一陈述处见 `docs/MECHA-N3.md` §6。
 
