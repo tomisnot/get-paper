@@ -15,6 +15,32 @@ from ..capabilities import registry_for
 from ..config import TopicCfg, save_settings
 from .container import Container, run_in_background
 
+#: 域事件 ↔ 框架账 的**互引键**：框架事件的 `value` 里带这些实体标识，域事件的 `target` 是同一个标识。
+#: ⚠ 域事件**没有** `call_id`（`repo._event` 的字段里就没有它）⇒ 互引只能**按实体标识**尽力而为：
+#: 匹配不上是**正常**的（读操作 / 被门拒 / 启动痕 / YAML 键都没有命令审计）。
+_AUDIT_REF_KEYS = ("arxiv_id", "note_id", "topic", "added", "date", "run_id",
+                   "briefing_id", "path", "undone_seq", "seq")
+
+
+def link_audit_to_targets(audit: list[dict]) -> dict[str, list[str]]:
+    """框架账 → ``{域 target: [命令键, …]}``：把两册**对上号**（对不上的就不出现在结果里）。
+
+    为什么单独一个纯函数：页面渲染难断言，而"**能对上号**"是这次给用户的核心价值
+    ⇒ 把它做成可直测的映射（判据 `test_activity_links_domain_events_to_framework_audit`）。
+    """
+    linked: dict[str, list[str]] = {}
+    for rec in audit:
+        value = rec.get("value")
+        if not isinstance(value, dict):
+            continue
+        for ref in _AUDIT_REF_KEYS:
+            got = value.get(ref)
+            if isinstance(got, (str, int)) and str(got):
+                linked.setdefault(str(got), []).append(str(rec.get("target") or ""))
+                break
+    return linked
+
+
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 
@@ -211,9 +237,17 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
 
     @app.post("/notes/{note_id}/delete")
     def delete_note(note_id: int, arxiv_id: str = Form(...)):
-        # 无对应命令（删笔记是人类独有的管理操作、不与 AI 争写）：保持直调。
-        container.retrieval.delete_note(note_id)
-        return RedirectResponse(_back(arxiv_id), status_code=303)
+        """删笔记：**人类独有的管理动作**（不与 AI 争写）⇒ 命令面有它、**AI 工具面没有它**。
+
+        从前的病与 `reset_profile` 同款：**没有任何入口走门**（Web 直调 retrieval）⇒ 域里有
+        `delete_note` 事件、框架账里没有任何操作审计。现在有栈时走命令面（写权 + `command.delete_note`）；
+        **无栈**（单测/独立部署）才回退直调——与 `/settings/briefings/delete` 同款。
+        """
+        if stack is None:
+            container.retrieval.delete_note(note_id)
+            return RedirectResponse(_back(arxiv_id), status_code=303)
+        msg = _gated("delete_note", note_id=int(note_id), reason="Web 面板删笔记")
+        return RedirectResponse(_back(arxiv_id, msg), status_code=303)
 
     # ------------------------------------ 出站跳转（M0：本地 PDF 退役，下载=浏览器直下；跳转顺手记信号）
     # 漏斗三层可测：view（详情页）→ outbound（经我方跳 arXiv abs）→ download（经我方直下 PDF）。
@@ -412,10 +446,21 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
 
     @app.get("/activity", response_class=HTMLResponse)
     def activity_page(request: Request, actor: str = "", op: str = "", since_seq: int = 0):
-        """记录仪（域数据面 = repo.events 的 before→after delta + undo；L5 监控面）。"""
+        """记录仪：**两区**（账本角色退休后）。
+
+        * 上区「**数据变更**」= 域账（`repo.events`：before→after + 撤销）——**只加不减**：
+          撤销靠它的 `before`/`reversible`，**这张表不能退休**；
+        * 下区「**操作审计**」= 框架账（`command.<name>` + actor + reason）——"谁做了什么"的家。
+        两区按**实体标识**互引（域事件没有 call_id ⇒ 尽力而为，对不上是正常的）。
+        """
         events = container.repo.events_since(
             since_seq=since_seq, actor=actor, op=op, limit=100
         )
+        audit: list[dict] = []
+        if stack is not None:
+            from mecha.cockpit import history_records
+
+            audit = list(history_records(_cockpit_source(), 0))[-60:][::-1]
         return render(
             request,
             "activity.html",
@@ -427,6 +472,8 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
             # ⚠ 无栈（单测/独立部署）时**不渲染撤销按钮**：不给做不到的承诺
             # （这页原先的病：文案说"可在 /activity 页 undo"，而页面上根本没有那个控件）。
             can_undo=stack is not None,
+            audit=audit,
+            linked=link_audit_to_targets(audit),
         )
 
     @app.post("/activity/undo")

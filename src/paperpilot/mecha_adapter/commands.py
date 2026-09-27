@@ -203,6 +203,33 @@ def _make_profile_handler(container):
     return handler
 
 
+#: `delete_note` 的参数契约（手写）。人类专属（不进 `TOOL_DECLS`）。
+_NOTE_DELETE_PARAMS: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "note_id": {"type": "integer", "description": "要删除的笔记 id"},
+        "reason": {"type": "string", "description": "一句话中文说明本次删除目的"},
+    },
+    "required": ["note_id", "reason"],
+}
+
+
+def _make_note_delete_handler(container):
+    """`delete_note` 的命令体：复用 domain 服务（`container.retrieval.delete_note`）。
+
+    ⚠ **人类专属**：本命令**不进 `TOOL_DECLS`** ⇒ AI 工具面里没有它（原设计意图：
+    "删笔记是人类独有的管理操作、不与 AI 争写"）。命令面的价值是让**人**的删除也走门 + 留审计。
+    """
+    def handler(context=None, channel=None, **args):
+        note_id = int(args["note_id"])
+        container.retrieval.delete_note(
+            note_id, actor=channel.actor,
+            reason=str(args.get("reason") or "Web 面板删笔记"))
+        return CommandResult(ok=True, values={"ok": True, "note_id": note_id})
+
+    return handler
+
+
 #: `set_config_batch` 的参数契约（手写）。`items` = {键: 值}；`reason` 必须进 required。
 _CONFIG_BATCH_PARAMS: dict[str, object] = {
     "type": "object",
@@ -375,4 +402,19 @@ def build_commands(container, sw) -> list[str]:
         wants_channel=True,
     ), _make_config_batch_handler(sw.gate))
     names.append("set_config_batch")
+
+    # ⚠ **`delete_note` 同款：人类专属**（原注释："删笔记是人类独有的管理操作、不与 AI 争写"）
+    # ⇒ 命令做了、**不进 `TOOL_DECLS`** ⇒ AI 侧仍然没有它；补的是"人的删除也走门 + 留审计"。
+    commands.register(define_command(
+        name="delete_note",
+        description="删除一条笔记（人类专属：管理动作，不与 AI 争写）。",
+        parameters=dict(_NOTE_DELETE_PARAMS),
+        output_schema={"type": "object", "required": ["ok"]},
+        side_effect=True,
+        scope=("library",),
+        estimate_sec=0.5,
+        cancel_supported=False,
+        wants_channel=True,
+    ), _make_note_delete_handler(container))
+    names.append("delete_note")
     return names

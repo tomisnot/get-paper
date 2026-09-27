@@ -28,7 +28,7 @@
 </form>
 
 <table>
-  <tr><th style="width:60px;">seq</th><th style="width:90px;">actor</th><th style="width:130px;">op</th><th style="width:110px;">target</th><th>before → after</th><th style="width:130px;">时间</th>{% if can_undo %}<th style="width:90px;">操作</th>{% endif %}</tr>
+  <tr><th style="width:60px;">seq</th><th style="width:90px;">actor</th><th style="width:130px;">op</th><th style="width:110px;">target</th><th>before → after</th><th style="width:130px;">时间</th><th style="width:120px;">框架账</th>{% if can_undo %}<th style="width:90px;">操作</th>{% endif %}</tr>
   {% for e in events %}
   <tr>
     <td>{{ e.seq }}</td>
@@ -46,6 +46,12 @@
       {% endif %}
     </td>
     <td class="muted">{{ e.ts[:19] if e.ts else "" }}</td>
+    {# 互引：这条域变更对应框架账里的哪条命令（按实体标识匹配；对不上是正常的） #}
+    <td class="muted" style="font-size:12px;">
+      {% set cmds = linked.get(e.target) %}
+      {% if cmds %}{% for c in cmds %}<span class="chip">{{ c }}</span>{% endfor %}
+      {% else %}<span title="读操作 / 被门拒 / 启动痕 / YAML 键都可能有域痕而没有命令审计">—</span>{% endif %}
+    </td>
     {% if can_undo %}
     <td>
       {# 只对**可逆**事件给按钮：不可逆的（入库/定稿）由命令面明确拒绝，别让按钮骗人 #}
@@ -60,8 +66,32 @@
     {% endif %}
   </tr>
   {% else %}
-  <tr><td colspan="{{ 7 if can_undo else 6 }}" class="muted" style="text-align:center; padding:30px;">没有匹配的事件</td></tr>
+  <tr><td colspan="{{ 8 if can_undo else 7 }}" class="muted" style="text-align:center; padding:30px;">没有匹配的事件</td></tr>
   {% endfor %}
 </table>
 <p class="muted">最多显示最近 100 条；AI 侧可用 <code>get_activity</code> 工具按 since_seq 增量读。</p>
+
+{# ── 下区：框架账（"谁做了什么"的家）。两区**只加不减**：域账那条表不能退休（撤销靠它）。 ── #}
+<h2>操作审计（框架账：<code>command.&lt;name&gt;</code>）</h2>
+<p class="muted">来自 mecha History：**每一次经门的操作**（含"动过宿主但回执失败"的）。⚠ 与上区的域账
+  <b>按实体标识互引</b>（域事件没有 call_id ⇒ 尽力而为；对不上是正常的：读操作 / 被门拒 / 启动痕 / YAML 键都没有命令审计）。</p>
+{% if audit %}
+<table>
+  <tr><th style="width:60px;">seq</th><th style="width:90px;">actor</th><th style="width:200px;">命令</th><th>为什么 / 结果</th><th style="width:150px;">call_id</th></tr>
+  {% for a in audit %}
+  <tr>
+    <td>{{ a.seq }}</td>
+    <td><span class="chip">{{ a.actor }}</span></td>
+    <td><code>{{ a.target }}</code></td>
+    <td class="muted" style="font-size:12px;">
+      {% if a.reason %}<div>{{ a.reason }}</div>{% endif %}
+      <details class="json-d"><summary>回执结果</summary><pre class="json">{{ a.value | prettyjson }}</pre></details>
+    </td>
+    <td class="muted" style="font-size:12px;"><code>{{ a.call_id or "—" }}</code></td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="muted">{% if can_undo %}还没有命令审计（经门的操作会出现在这里）。{% else %}未接监控面（本 Web 未经统一启动入口装配 mecha 栈）⇒ 看不到框架账。{% endif %}</p>
+{% endif %}
 {% endblock %}

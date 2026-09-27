@@ -406,3 +406,54 @@ def test_settings_general_yaml_keys_are_traced_and_declared(tmp_path):
     assert container.repo.events_since(since_seq=0, op="set_settings")["count"] >= 1
     page = client.get("/settings").text
     assert "归 YAML" in page and "不在 Gate 内" in page, "UI 必须明说这 3 键不归门管"
+
+
+# ------------------------------------------- 账本角色退休：/activity 两区 + 互引（用户可见面变更）
+def test_activity_links_domain_events_to_framework_audit(tmp_path):
+    """⭐ 两册**能对上号**：`/activity` 上区=域账（数据变更 + 撤销）、下区=框架账（`command.<name>`），
+    并用**实体标识**把两边连起来（域事件**没有** call_id ⇒ 按 arxiv_id/note_id/… 匹配，尽力而为）。
+
+    ⚠ 域表**只加不减**：撤销靠它的 `before`/`reversible`（"退休"退的是它兼任审计面这个**角色**）。
+    """
+    from paperpilot.app.web import link_audit_to_targets
+
+    linked = link_audit_to_targets([
+        {"target": "command.star_paper", "value": {"ok": True, "arxiv_id": "2608.01101"}},
+        {"target": "command.run_pipeline", "value": {"ok": True}},        # 无实体标识 ⇒ 不上号
+    ])
+    assert linked == {"2608.01101": ["command.star_paper"]}
+
+    client, _container, _stack = _gated(tmp_path)
+    client.post("/papers/2608.01101/star", follow_redirects=False)
+    page = client.get("/activity").text
+    assert "操作审计（框架账" in page and "command.star_paper" in page, "两区都该在页面上"
+    assert "撤销" in page, "域账那区（含撤销）不能因为加区而消失"
+
+
+def test_activity_audit_section_honest_without_stack(tmp_path):
+    """**对偶**：无栈时不假装有框架账——如实说"未接监控面"。"""
+    client = TestClient(create_app(build_container(make_settings(tmp_path / "data"))))
+    page = client.get("/activity").text
+    assert "操作审计（框架账" in page and "未接监控面" in page
+
+
+def test_delete_note_human_entry_but_still_not_for_ai(tmp_path):
+    """⭐ `delete_note` 补命令（**人类专属**）：人经 Web 删 ⇒ 走门 + `command.delete_note` 审计；
+    **对偶**：AI 工具清单里**仍然没有**它（原注释"删笔记是人类独有的管理操作、不与 AI 争写"）。"""
+    import re
+
+    client, container, stack = _gated(tmp_path)
+    client.post("/papers/2608.01101/note", data={"content": "待删笔记"}, follow_redirects=False)
+    detail = client.get("/papers/2608.01101").text
+    # 表单形状：`<form method="post" action="/notes/{id}/delete">`（note_id 在 URL 上，不在 hidden 里）
+    m = re.search(r'action="/notes/(\d+)/delete"', detail)
+    assert m, "详情页没找到删笔记表单（形状变了 ⇒ 本判据要跟着改）"
+    note_id = m.group(1)
+    resp = client.post(f"/notes/{note_id}/delete", data={"arxiv_id": "2608.01101"},
+                       follow_redirects=False)
+    assert resp.status_code == 303
+    assert container.repo.events_since(since_seq=0, op="delete_note")["count"] >= 1
+    assert any(e.key == "command.delete_note" for e in stack["history"].events()), (
+        "删笔记没走命令面 ⇒ 框架账上没有这条操作审计")
+    assert "delete_note" not in {s["name"] for s in stack["tools"].schemas()}, (
+        "delete_note 不该出现在 AI 工具面（人类专属的管理动作）")

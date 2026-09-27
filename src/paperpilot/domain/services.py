@@ -80,5 +80,8 @@ class RetrievalService:
         self.repo.add_note(paper, content.strip(), actor="human", reason="Web 面板加笔记")
         return True
 
-    def delete_note(self, note_id: int) -> None:
-        self.repo.delete_note(note_id, actor="human", reason="Web 面板删笔记")
+    def delete_note(self, note_id: int, *, actor: str = "human",
+                    reason: str = "Web 面板删笔记") -> None:
+        """删笔记。⚠ 这是**人类独有的管理动作**（不与 AI 争写）⇒ 命令面有它、**AI 工具面没有它**；
+        但归因/理由要能由调用方给（命令面把**通道的 actor** 传进来，别再写死）。"""
+        self.repo.delete_note(note_id, actor=actor, reason=reason)
