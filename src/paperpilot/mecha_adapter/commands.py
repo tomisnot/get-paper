@@ -75,12 +75,15 @@ def invoke_command(commands, gate, channel, cmd_name: str, args: dict,
                         approval=approval))
 
 
-#: 命令 scope（声明字段；进审计记录供 cockpit/归因，未绑 ScopePolicy 则不做过滤——
-#: 与 EL 单宿主同款。scope 是「能写但有作用域边界」的维度，留待需要细粒度时绑定）。
+#: 命令 scope（声明字段）。⚠ **过滤靠它 + 装配期绑定的 `ScopePolicy`**（见 `.scopes` 模块）：
+#: 只声明不绑 = 声明是装饰（框架 `commands.py:432` 那段只在注入后才生效）。
+#: ⚠ **没写进本表的命令会回落到 `("library",)`**（`_scope_for` 的默认）——
+#: `update_topic` 从前就吃这个默认 ⇒ 与同族的 `add_topic`/`set_topic_enabled`（`topics`）
+#: **口径不一致**；2026-09-26 显式补上。新增命令时**别依赖默认**。
 _SCOPES: dict[str, tuple[str, ...]] = {
     "mark_read": ("library",),
     "star_paper": ("library",), "skip_paper": ("library",), "add_note": ("library",),
-    "add_topic": ("topics",), "set_topic_enabled": ("topics",),
+    "add_topic": ("topics",), "set_topic_enabled": ("topics",), "update_topic": ("topics",),
     "prepare_review": ("review",), "submit_review": ("review",),
     "finalize_briefing": ("review",),
     "run_pipeline": ("pipeline",), "fetch_papers": ("pipeline",),

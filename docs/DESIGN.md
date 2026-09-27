@@ -607,6 +607,22 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 - **统一启动入口**：`paperpilot`（无参）/ `paperpilot serve` = Web + mecha MCP + cockpit + 调度，**共享一个 mecha 栈**（`cli._boot_stack`；同进程、一个 data_dir 一个写租约）；`paperpilot ai` = 同后台 + 前台 dsh。
 - **Web=human 侧写权接线**：`create_app(container, stack)` 给栈时，论文库写（read/star/skip/note/download）+ 跑批经 `human_write`（human 通道命令面），写同时落 repo.events（actor=human）+ mecha 审计。⚠ **2026-09-26 起写权不卡**：起步 `Mode.OPEN`（两侧都能写，`--mode` 可改；`--open-gate` 已删），`human_write` 的"人写抢占"**已删**——AI 独占/锁定时人写**被拒**（拒绝消息给出路），模式不会被谁偷偷改掉。写权模式卡在 `/settings`（含控制口令），控制端点 `POST /monitor/mode` 供人类侧切换（含急停 `locked`）——`/monitor` **视图页已退役**（AI 监控改走 dsh 原生 tab，见 `docs/MECHA-N3.md` §6）。
 - ⭐ **新 n=3 发现 9**（Web 接线时抓到）：`CommandRegistry.invoke` **不把调用方 channel 传给 handler**——多操作者共享一个命令表时，handler 闭包捕获的装配期通道会让**人类写误归因为 ai**、且写权闸看错 side。**框架已修（2026-09-26）**：`CommandSpec.wants_channel`（显式声明；不做签名自省）⇒ 本项目**删掉自造的 `contextvars` 渡口**，13 条写命令改为声明 `wants_channel=True`，handler 直收 `channel=`（详 `docs/MECHA-N3.md` 发现 9 的落地段 + ADR）。
+- ⭐ **作用域策略（`scope`）2026-09-26 起真的生效**：22 条命令**全都声明了 `scope`**，但
+  `CommandRegistry.bind_scope_policy(...)` **从来没人调过** ⇒ 框架那段过滤（`mecha/commands.py:432`
+  `if self._scope_policy is not None and spec.scope:`）**整段跳过** ⇒ **声明在、消费者在、插头没插**
+  （实测：`add_topic` 经 **AI 工具面**静默成功）——框架那行代码**完全合法**，所以**框架守卫红不了**，
+  只能由项目侧判据抓（`tests/test_scope_policy.py`）。
+  绑定点：`mecha_adapter/scopes.py::build_scope_policy()`（允许表 + 理由写在代码里），
+  在 `hub.build_stack` 的 `build_commands(...)` 之后 `bind_scope_policy(...)`（两条入口自动绑上）。
+  允许表：`library`/`topics`/`review`/`pipeline`/`config`/`undo` **两侧都放行**；
+  ⭐ **`profile` 只给人**（`reset_profile` 是"改自己的标尺"那类动作，声明原文就是"人类专属、不投影给 AI"）
+  ——**把那个意图落成规则**，而不只是注释。顺带修口径：`update_topic` 原先吃 `_scope_for` 的默认
+  `library`（与同族 `add_topic`/`set_topic_enabled` 的 `topics` 不一致）⇒ 显式改成 `topics`。
+  ⚠ **性质（别读成"补了个大洞"）**：**本次绑定在效果上近乎空操作（除 `profile`）**，
+  六块两侧都放行。价值在三处：**① 让那 22 条声明从"装饰"变成"规则"；② 给判据提供那个
+  【必须被拒的反例】；③ 以后要收紧时改的是允许表、不用改代码。** ⇒ **这是把插头插上，不是换了台机器。**
+  ⚠ **边界**：判据 ①/④/⑥ 只证"**绑了**、**表覆盖了所有被声明的 scope**、**表与意图一致**"，
+  **证不了"意图本身合理"**。（框架侧若要 ADR，需框架会话落笔——本项目仓只读框架。）
 - 验收：`test_web_mecha.py`（Web 门控写双 journal 都记 actor=human、**`/settings` 写权卡**、无栈如实报未接、写权切换）。退役后 `pytest 121 绿`（删 18 旧 mcp 测、迁入/新增后净减）、`ruff` 净。
 - ⭐ **“dsh 侧栅没有按钮 / 面板打不开”的真根因（已修）**：`cli.py` 的 `PROJECT_ROOT` 少一层（写 `parents[2]`，该文件在 `src/paperpilot/app/` ⇒ 应为 `parents[3]`）⇒ `DSH_DIR` 指向不存在的 `<项目>/src/dsh` ⇒ 两个 `--patch` 被**静默过滤丢弃** ⇒ **插件根本没加载**（与面板代码无关）。已修路径、把静默过滤改为**响亮失败**、并补判据（`tests/test_cli_startup.py`）——单一陈述处见 `docs/MECHA-N3.md` §6。
 

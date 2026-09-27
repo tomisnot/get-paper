@@ -30,6 +30,7 @@ from mecha.providers.mcp import build_mcp_server as _framework_build_mcp_server
 from .commands import build_commands, invoke_command
 from .engine import CONFIG_SCHEMA, PaperPilotEngine, make_validator
 from .monitor import paperpilot_summarizer, start_cockpit
+from .scopes import build_scope_policy
 from .tools import build_required_source, build_tool_registry
 
 #: MCP 服务名 → 宿主侧工具名形如 ``mcp__paperpilot__read_paper``。
@@ -92,6 +93,12 @@ def build_stack(container, data_root: str | Path | None = None,
     engine.attach_gate(sw.gate)             # 让 Engine.run 叠加 gate 配置
     ai = sw.channels["ai"]
     command_names = build_commands(container, sw)
+    # ⭐ **把 scope 声明的"插头"插上**（2026-09-26）：框架那段作用域过滤只在注入了
+    # `ScopePolicy` 时才生效（`mecha/commands.py:432`）⇒ 不绑 = **声明在、消费者在、插头没插**
+    # （实测：`add_topic` 经 AI 工具面静默成功）⇒ 框架守卫红不了，只能项目侧判据抓。
+    # ⚠ 本批绑定**在效果上近乎空操作（除 `profile`）**：价值在"声明变规则 + 给判据反例 +
+    #    留收紧开关"——**别读成"补了个大洞"**（详见 `.scopes` 模块 docstring）。
+    sw.commands.bind_scope_policy(build_scope_policy())
     _seed_config(sw.gate, container)
     tools = build_tool_registry(container, sw, ai)
     return {
