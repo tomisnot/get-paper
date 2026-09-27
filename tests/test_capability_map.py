@@ -19,21 +19,21 @@ from .test_mecha_adapter import (
 
 
 def test_declaration_equals_projection(tmp_path):
-    """30 能力声明（含人类专属 reset_profile 不投影）+ 6 非能力面 = 35 投影。两侧逐字对齐。
+    """31 能力声明（含人类专属 reset_profile 不投影）+ 6 非能力面 = 36 投影。两侧逐字对齐。
 
     R2 补 list_briefings/delete_briefing，实用工单补 fetch_paper_by_id/update_topic，
     M0 删 download_paper，M1/M2 画像+feed 批补 get_profile/record_signal/reset_profile/
-    feed_generate，feed 期票批补 publish_feed（reset 末者**人类专属、故意不投影**——
-    守卫显式扣除，不是漏投影）；list_briefings 因命名律改名 query_briefings。
+    feed_generate，feed 期票批补 publish_feed/write_summary（reset 末者**人类专属、
+    故意不投影**——守卫显式扣除，不是漏投影）；list_briefings 因命名律改名 query_briefings。
     """
     _c, stack = _stack(tmp_path)
     projected = {s["name"] for s in stack["tools"].schemas()}
     caps = set(registry_for(stack["container"]).names())
 
-    assert caps == set(TOOL_TO_CAPABILITY.values()) | {"reset_profile"}   # 能力侧恰 30（人类专属已显式扣除）
-    assert len(caps) == 30
+    assert caps == set(TOOL_TO_CAPABILITY.values()) | {"reset_profile"}   # 能力侧恰 31（人类专属已显式扣除）
+    assert len(caps) == 31
     assert projected == set(TOOL_TO_CAPABILITY) | NON_CAPABILITY_TOOLS   # 投影 = mecha 名 + 非能力面
-    assert projected == EXPECTED_TOOLS and len(projected) == 35
+    assert projected == EXPECTED_TOOLS and len(projected) == 36
     for mecha_name, cap in TOOL_TO_CAPABILITY.items():     # 每个 mecha 名 → 存在的能力
         assert cap in caps, f"{mecha_name} 映射到不存在的能力 {cap}"
         assert mecha_name in projected, f"{mecha_name} 未出现在投影面"

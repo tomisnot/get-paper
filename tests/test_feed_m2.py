@@ -228,3 +228,46 @@ def test_publish_feed_issue_model(tmp_path):
     u = reg.invoke("undo", seq=0)
     assert u["ok"] and u["op"] == "save_feed"
     assert _c.repo.latest_feed_issue().id == rows[0].id      # 撤掉第二期，回到第一期
+
+
+def test_write_summary_single_paper_card(tmp_path):
+    """能红（日报同款单篇补卡）：write_summary 写的卡被 read_paper/feed 面板自动复用；
+    半张卡/乱 label 响亮拒；undo 撤整张。"""
+    _c, reg = _reg(tmp_path)
+    from fastapi.testclient import TestClient
+
+    from paperpilot.app.web import create_app
+    from paperpilot.infra.arxiv import parse_atom
+
+    from .conftest import SAMPLE_XML
+    papers = parse_atom(SAMPLE_XML.read_text(encoding="utf-8"))
+    _c.repo.upsert_papers(papers, actor="human", reason="seed")
+    p0 = papers[0]
+
+    # 不误报：拒半张卡、拒野 label、拒空卡、拒不在库
+    assert reg.invoke("write_summary", arxiv_id="9999.00001", tldr="x")["error"]["kind"] == "not_found"
+    assert reg.invoke("write_summary", arxiv_id=p0.arxiv_id, score=0.8)["error"]["kind"] == "bad_params"
+    assert reg.invoke("write_summary", arxiv_id=p0.arxiv_id,
+                      score=0.8, label="maybe")["error"]["kind"] == "bad_params"
+    assert reg.invoke("write_summary", arxiv_id=p0.arxiv_id)["error"]["kind"] == "no_fields"
+
+    ok = reg.invoke("write_summary", arxiv_id=p0.arxiv_id, tldr="一句话总括",
+                    novelty="贡献点", keywords="rydberg, thermalization",
+                    score=0.86, label="must_read", reason="方向核心", actor="ai")
+    assert ok["ok"] and ok["wrote_score"] and ok["run_id"].startswith("card-")
+    d = reg.invoke("get_paper", arxiv_id=p0.arxiv_id)
+    assert d["summary"]["tldr"] == "一句话总括"
+    assert d["summary"]["keywords"] == ["rydberg", "thermalization"]
+    assert any(sc["label"] == "must_read" and sc["score"] == 0.86 for sc in d["scores"])
+
+    # feed 面板复用（预览通道即同一 join 路径）：卡面出现 TL;DR
+    client = TestClient(create_app(_c, None))
+    body = client.get("/feed?preview=1&days=120&limit=25&seen_days=0").text
+    assert "一句话总括" in body
+
+    # 撤整张：总结行+评分行同 run_id 成对删
+    u = reg.invoke("undo", seq=0)
+    assert u["ok"] and u["op"] == "write_summary"
+    d2 = reg.invoke("get_paper", arxiv_id=p0.arxiv_id)
+    assert d2["summary"] is None
+    assert all(sc["score"] != 0.86 for sc in d2["scores"])

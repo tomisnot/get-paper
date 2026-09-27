@@ -99,6 +99,10 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
              "用户说'20条60天/换一页/野一点'都再调一次本工具，参数全显式；"
              "换页 offset 续用上次回执 meta.next_offset（零重叠零空洞）。",
              omit=("actor",)),
+    ToolDecl("write_summary", "write_summary", "write",
+             "单篇补卡：对已入库论文直接写日报级卡（总结五段+可选 score/label 成对），"
+             "feed 卡与详情页自动复用；写错可撤销。",
+             omit=("actor",)),
     # ------------------------------------------------------------ 写入 / 运行面（14）
     ToolDecl("undo_change", "undo", "write",
              "撤销一条可逆的写入（seq=0=最近一条可逆操作）。入库与定稿不可逆，会明确说明。",

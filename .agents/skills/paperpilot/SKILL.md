@@ -99,8 +99,9 @@ description: >-
 - 对话里的口头声明同样算数：用户说“下了/看了/不感兴趣”
   ⇒ `record_signal(download|view|uninterested)`，与实测同表同权；需论文已入库
   （没入库先 `fetch_paper_by_id`）。
-- 想给用户一份中文摘要：`fetch_paper_by_id` → 单篇评审（prepare 点名 + submit +
-  finalize 小 max_items）或直接 write_note；feed 卡会自动复用这条总结。
+- 想给用户一份中文摘要：`write_summary(arxiv_id, tldr/problem/method/results/novelty/keywords,
+  score+label 成对可选, reason)` 单篇补卡，/feed 卡与详情页即刻复用；不劳评审三段。
+  旧说法“用 write_note 当摘要”作废——笔记是笔记，卡是卡。
 
 ## 排障速查
 

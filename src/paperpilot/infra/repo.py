@@ -248,6 +248,18 @@ class PaperRepository:
                 s.delete(row)
             return {"removed_feed_issue": iid}
 
+        if op == "write_summary":
+            # 撤销补卡：删掉那一轮的总结行与评分行（同 run_id 成对）
+            from .orm import PaperScore, PaperSummaryRow
+            rid = (event.after or {}).get("run_id") or ""
+            removed = 0
+            if rid:
+                for model in (PaperSummaryRow, PaperScore):
+                    for row in s.scalars(select(model).where(model.run_id == rid)).all():
+                        s.delete(row)
+                        removed += 1
+            return {"removed_card_rows": removed}
+
         raise AIError(
             f"操作 {op} 不支持撤销",
             kind="unsupported_undo",
@@ -636,6 +648,42 @@ class PaperRepository:
         return {r for r in rows if r}
 
     # ---------------------------------------------------------------- feed 期票（AI 发布，面板只读期）
+    def write_summary(self, arxiv_id: str, *, summary: dict, score: dict | None,
+                      actor: str = "ai", reason: str = "") -> dict | None:
+        """AI 单篇补卡：写最新总结行（+可选评分行），返回 {run_id}；不在库回 None。
+
+        run_id 用独立的 "card-<hex8>"，不挂任何流水线 run——补卡与日报是两类动作、
+        审计分开；卡片只此一份真相，/feed 卡、详情页、read_paper 经 latest_summary 自动复用。
+        reversible=1：undo 删掉这一轮的两行。
+        """
+        import uuid
+
+        from .orm import PaperScore, PaperSummaryRow
+        run_id = "card-" + uuid.uuid4().hex[:8]
+        with self.sf() as s:
+            paper = s.scalar(select(Paper).where(Paper.arxiv_id == arxiv_id))
+            if paper is None:
+                return None
+            s.add(PaperSummaryRow(
+                run_id=run_id, paper_id=paper.id,
+                tldr=summary.get("tldr", ""), problem=summary.get("problem", ""),
+                method=summary.get("method", ""), results=summary.get("results", ""),
+                novelty=summary.get("novelty", ""),
+                keywords=list(summary.get("keywords") or []),
+                model=summary.get("model", "dsh-card")))
+            if score is not None:
+                s.add(PaperScore(run_id=run_id, paper_id=paper.id, topic_id=None,
+                                 score=float(score["score"]), label=score["label"],
+                                 reason=score.get("reason", ""), tags=[],
+                                 model=score.get("model", "dsh-card")))
+            self._event(s, op="write_summary", actor=actor,
+                        reason=reason or f"AI 补卡：{arxiv_id}", target=arxiv_id,
+                        after={"run_id": run_id, "has_score": score is not None,
+                               "label": (score or {}).get("label", "")},
+                        reversible=1)
+            s.commit()
+            return {"run_id": run_id}
+
     def save_feed_issue(self, *, params: dict, items: list, actor: str = "ai",
                         reason: str = "") -> int:
         """存一期 feed 快照 + 事件（op=save_feed，可撤销：删回这期）。"""

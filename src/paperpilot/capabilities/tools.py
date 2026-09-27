@@ -64,6 +64,13 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
                      "mix": "auto|strict|explorer", "offset": "换页游标：续用上次回执 meta.next_offset",
                      "quotas": "显式四道配比 csv（可选）", "seen_days": "信号排重窗口（默认 7）",
                      "reason": "一句话中文说明这期为何而发"},
+    "write_summary": {"arxiv_id": "论文 arXiv 编号（需已入库）",
+                      "tldr": "一句话总括（中文，卡面高亮位）", "problem": "问题",
+                      "method": "方法", "results": "结论", "novelty": "贡献",
+                      "keywords": "关键词，逗号分隔",
+                      "score": "0-1，与 label 成对；省略/-1=不评分",
+                      "label": "must_read|worth|skip，与 score 成对",
+                      "reason": "推荐理由（也进审计）"},
     "get_profile": {"top": "每维返回条数（1-50，默认 12）",
                     "half_life_days": "衰减半衰期（天，默认 30）：旧兴趣按指数淡出"},
     "reset_profile": {"kind": "只清某一维 category|term|author；空=全部",
@@ -303,6 +310,40 @@ def build_registry(container) -> Registry:
                   new=result.get("new"), updated=result.get("updated"), cached=cached,
                   hint="已在库（幂等）" if cached
                   else "已入库，可 read_paper/add_note/站内直下 PDF")
+
+    @reg.tool(name="write_summary", kind="write", reversible=True,
+              description="单篇补卡：对任意已入库论文直接产一张日报级卡（总结五段 + 可选评分/档位），"
+                          "/feed 卡与详情页、read_paper 立即自动复用。对话里'给这篇补张卡'就用它；"
+                          "score 与 label 成对出现（不猜半张卡）。")
+    def write_summary(arxiv_id: str, tldr: str = "", problem: str = "",
+                      method: str = "", results: str = "", novelty: str = "",
+                      keywords: str = "", score: float = -1.0, label: str = "",
+                      reason: str = "", actor: str = ACTOR_DEFAULT) -> dict:
+        if repo.get_paper(arxiv_id) is None:
+            return err("not_found", f"库里没有 {arxiv_id}",
+                       hint="先 fetch_paper_by_id 拉进入库")
+        summary = {"tldr": tldr, "problem": problem, "method": method,
+                   "results": results, "novelty": novelty, "keywords": _split(keywords)}
+        sc = None
+        if score >= 0 or label:
+            if not (0.0 <= score <= 1.0) or label not in ("must_read", "worth", "skip"):
+                return err("bad_params",
+                           f"score/label 须成对合规：score∈[0,1]（收到 {score}）、"
+                           "label∈must_read|worth|skip（收到 {label!r}）",
+                           hint="只写总结不打分完全合法——但别送半张卡")
+            sc = {"score": float(score), "label": label,
+                  "reason": reason or "AI 补卡",
+                  "model": "dsh-review" if actor == "ai" else "human-card"}
+        if not any(summary.values()) and sc is None:
+            return err("no_fields", "总结五段与评分全空——这张卡没内容可写",
+                       hint="至少一项：tldr/problem/method/results/novelty/keywords 或 score+label")
+        out = repo.write_summary(arxiv_id, summary=summary, score=sc, actor=actor,
+                                 reason=reason)
+        if out is None:
+            return err("not_found", f"库里没有 {arxiv_id}（竞态：刚才还在）")
+        return ok(arxiv_id=arxiv_id, run_id=out["run_id"],
+                  wrote_summary=True, wrote_score=sc is not None,
+                  hint="/feed 卡与详情页的摘要块即刻复用本卡；写错了 undo_change 可撤整张")
 
     @reg.tool(name="prepare_review", kind="write",
               description="阶段1：取过规则后的候选清单（含主题画像+摘要截断+基线分），等外部评审。"
