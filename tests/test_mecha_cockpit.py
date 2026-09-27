@@ -65,13 +65,18 @@ def test_cockpit_four_routes(tmp_path):
         assert set(h0) == {"seq", "kind", "actor", "target", "value",
                            "before", "after", "reason", "call_id"}
 
-        # /config：schema 树（6 配置键）；命令审计键不在 schema → 落 orphans
+        # /config：schema 树（6 个**域**配置键）。
+        # ⚠ 框架 2026-09-26 起：**审计键不再进域快照**（`Gate.record` 只记史、不改快照）⇒
+        # `command.*` 既不在 groups（没 schema）**也不在 orphans**（压根不在快照里）。
+        # 原先"命令审计键不在 schema → 落 orphans"的期望因此**作废**（框架改好了、期望过时），
+        # 换成下面两句**新事实**：框架若回退（审计键又掺进快照）⇒ 立刻红。
         st, cfg = _get(base + "/config")
         assert st == 200 and cfg["ok"] is True and cfg["has_schema"] is True
-        assert cfg["n_keys"] == 6
+        assert cfg["n_keys"] == 6                    # 域键数不变（审计键不掺进来）
         assert "scoring" in cfg["groups"] and "fetch" in cfg["groups"]
         orphan_names = {o["name"] for o in cfg["orphans"]}
-        assert "command.add_note" in orphan_names
+        assert not [n for n in orphan_names if n.startswith("command.")], (
+            f"审计键不该出现在域快照的 orphans 里：{sorted(orphan_names)}")
 
         # /summary：Claim 对账通过（不存疑）；概括复述原始配置值
         st, summ = _get(base + "/summary")

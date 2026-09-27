@@ -188,6 +188,12 @@ def envelope_to_error(res: Mapping[str, object]) -> MechaError:
     ⚠ 非标准信封兜底（N2）：能力返 `ok:false` 却**不带 `error`** 时，绝不吞成
     一口“调用失败”——用 `bad_envelope` + 截断透传原始 JSON，让模型看得见到底返了
     什么。根子（“允许裸 ok:false”）已回馈框架（见 MECHA-N3）。
+
+    ⚠ **与框架那条 `bad_envelope` 的关系：纵深，不是重复**（2026-09-26 框架第 3 批）。
+    框架在**投影层**也做了同款（`mecha/providers/mcp.py`），它覆盖的是
+    "**宿主自己没转换**"的通用情形；本仓在**适配层先转换**（这里就能看到原文，并把它透传给模型）
+    ⇒ 框架那条对我们是**够不到的 backstop**（我们交出去的已是标准错误）。**故意保留**：
+    删掉它，非标信封会退化成框架"回执 ok=False 却没给 error"那种**看不到原文**的失败，对模型更差。
     """
     e = res.get("error")
     if not isinstance(e, Mapping) or not e:
@@ -444,21 +450,25 @@ def _register_job_tools(reg: ToolRegistry, sw, channel, container,
         return out
 
     def _cancel(job_id: str) -> dict:
-        # 微痒：对已终态任务回“取消已登记”会误导——先探终态，如实说“无需取消”。
+        # 框架 `JobRegistry.cancel` 现在**回真话**（2026-09-26 第 3 批）：
+        # `{job_id, state_before, terminal, cancel_requested}` ⇒ 本项目原先"先探 `job.state`
+        # 再自己编文案"的兜底**已删**（框架 docstring 的判词：**一个什么都不告诉你的接口，
+        # 就是在邀请调用方自己编**——而"对已跑完的 job 说取消已登记"就是编出来的谎话）。
+        # 字段直接用框架的名字（同一事实一个名字）；终态/协作式的**语义由框架说**，不再由我们猜。
         try:
-            job = jobs.get(job_id)
+            res = jobs.cancel(job_id)
         except MechaError as e:
-            return _err(e.kind, e.message, e.hint)
-        state_now = job.state.value
-        if state_now in ("done", "failed", "cancelled"):
-            return {"ok": True, "job_id": job_id, "state": state_now,
-                    "note": f"任务已是终态（{state_now}），无需取消"}
-        try:
-            jobs.cancel(job_id)
-        except MechaError as e:
-            return _err(e.kind, e.message, e.hint)
-        return {"ok": True, "job_id": job_id, "state": jobs.get(job_id).state.value,
-                "note": "取消已登记；协作式取消——已在写的会跑完，未开工的直接不写"}
+            return _err(e.kind, e.message, e.hint)      # 含未知 id / cancel_supported=False
+        terminal = bool(res["terminal"])
+        return {
+            "ok": True,
+            "job_id": res["job_id"],
+            "state_before": res["state_before"],
+            "terminal": terminal,
+            "cancel_requested": res["cancel_requested"],
+            "note": (f"任务已是终态（{res['state_before']}），无需取消" if terminal
+                     else "取消已登记；协作式取消——已在写的会跑完，未开工的直接不写"),
+        }
 
     reg.register(define_tool(
         name="submit_job",

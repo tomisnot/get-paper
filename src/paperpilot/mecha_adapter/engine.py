@@ -147,17 +147,17 @@ class PaperPilotEngine(Engine):
 def make_validator(engine: PaperPilotEngine):
     """Gate 的 validate：标量配置键的类型/值域校验，报错即教学（L4）。
 
-    Phase 1 只在装配期挂上（尚未 seed/set）；Phase 2 把 settings.yaml 的标量
-    迁入 Gate 时即用它守门。命令审计键（``command.`` 前缀）留到 Phase 2 接线。
+    Phase 1 只在装配期挂上（尚未 seed/set）；Phase 2 把 settings.yaml 的标量迁入 Gate 时即用它守门。
+    ⚠ **不再需要给 `command.` 前缀开白名单**（2026-09-26 起）：框架改成 `Gate.record`
+    **只记史、不改快照** ⇒ 命令审计键**永远不会经 `Gate.set` 走到这里**。原先那句
+    `if key.startswith("command."): return` 因此成了**不可达分支**（R17）⇒ **已删**。
+    兜住它的判据：`tests/test_mecha_cockpit.py` 断言"域快照里没有 `command.*`、`n_keys == 6`"
+    ——框架若回退（审计键又掺进快照）⇒ 那条立刻红（那时才需要把白名单加回来）。
     """
     schema = dict(engine.schema()["config"])  # type: ignore[arg-type]
     settable = set(schema)
 
     def validate(key: str, value: object) -> None:
-        # 命令审计键（command.<name>）由框架写进 History（commands._audit）：
-        # 值是审计记录不是配置标量，validator 必须放行该前缀（否则 command_audit_denied）。
-        if key.startswith("command."):
-            return
         if key not in settable:
             raise UnknownKey.typo(
                 key, settable,

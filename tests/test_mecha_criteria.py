@@ -31,8 +31,15 @@ def test_tool_names_obey_mecha_naming_law(tmp_path):
 
 
 def test_naming_guard_can_redden(tmp_path):
-    """能红证据：get_/list_ 前缀与单段名（undo）确被守卫拒——改名不是多此一举。"""
-    for bad in ("get_paper", "list_topics", "get_digest", "undo"):
+    """能红证据：get_/list_ 前缀与项目前缀确被守卫拒——改名不是多此一举。
+
+    ⚠ **语料里不再有"单段名"**（原先是 `undo`）：框架**第 4 批有意放宽**命名律，允许
+    **单段天然动词**（`undo` / `reset` / `sync`）⇒ 再把 `undo` 当违例就是**过时期望**
+    （**不是判据变松**：它现在合法是设计如此）。本条的**能红性由另外三条保住**：
+    `get_*` ×2 / `list_*` ×1 + 项目前缀那条。
+    ⚠ 名字是**模型可见面**——放宽 ≠ 要改名，本仓工具名（含 `undo_change`）一律不动。
+    """
+    for bad in ("get_paper", "list_topics", "get_digest"):
         with pytest.raises(MechaError) as ei:
             check_tool_name(bad)
         assert ei.value.kind == "bad_tool_name"
