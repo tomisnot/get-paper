@@ -203,6 +203,22 @@ class ProfileWeight(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class FeedIssue(Base):
+    """feed 一期快照（由 AI 经命令面 publish_feed 发布）：/feed 面板只读最新期，
+
+    **不现场重算**——换页/改口味的唯一入口是对话里使唤 AI。快照只钉“哪些篇、
+    什么序、为什么”；中文摘要等富化字段渲染时现 join（摘要更新跟着最新走）。
+    """
+    __tablename__ = "feed_issues"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    params: Mapped[dict] = mapped_column(JSON, default=dict)   # limit/days/mix/offset/quotas/seen_days
+    items: Mapped[list] = mapped_column(JSON, default=list)    # 装配原序条目
+    actor: Mapped[str] = mapped_column(String(32), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+
+
 class Event(Base):
     """append-only 事件（L2 记录仪，docs/GAPS.md §3）。
 

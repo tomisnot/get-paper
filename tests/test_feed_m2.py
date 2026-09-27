@@ -146,7 +146,7 @@ def test_feed_page_reuses_digest_card(tmp_path):
         s.commit()
 
     client = TestClient(create_app(_c, None))
-    r = client.get("/feed?days=120&limit=10&seen_days=0")   # 本跳刚下载过也算要看（不排）
+    r = client.get("/feed?preview=1&days=120&limit=10&seen_days=0")   # 预览通道（不落库）
     assert r.status_code == 200
     body = r.text
     assert "🌊 推荐流" in body and "为什么推荐给你" in body
@@ -183,3 +183,48 @@ def test_feed_refresh_cursor_is_ai_owned(tmp_path):
     ev = reg.invoke("get_activity", op="feed_generate")
     assert ev["events_count"] >= 3                          # 每次刷都进记录仪（谁在刷可查）
     assert ev["events"][-1]["after"]["lanes"]                  # 留痕带得够诊断的料
+
+
+def test_publish_feed_issue_model(tmp_path):
+    """能红（期票模型，用户规格）：publish_feed 写一期，/feed 默认只读最新期不重算；
+    换页=offset 续 next_offset 零重叠；preview 临时预览不落库；save_feed 进总线且可撤销回上期。"""
+    _c, reg = _reg(tmp_path)
+    from fastapi.testclient import TestClient
+
+    from paperpilot.app.web import create_app
+    from paperpilot.infra.arxiv import parse_atom
+
+    from .conftest import SAMPLE_XML
+    papers = parse_atom(SAMPLE_XML.read_text(encoding="utf-8"))
+    _c.repo.upsert_papers(papers, actor="human", reason="seed")
+    reg.invoke("record_signal", arxiv_id=papers[0].arxiv_id, signal="download")
+
+    p1 = reg.invoke("publish_feed", limit=3, days=120, seen_days=0, reason="第一期")
+    assert p1["ok"] and p1["count"] == 3 and p1["issue_id"], p1
+    p2 = reg.invoke("publish_feed", limit=3, days=120, seen_days=0,
+                    offset=p1["meta"]["next_offset"], reason="第二页")
+    assert p2["ok"] and p2["issue_id"] > p1["issue_id"]
+    # publish 回执不重送 feed 体（快照已入库），从库里取两期对账：
+    from sqlalchemy import select
+
+    from paperpilot.infra.orm import FeedIssue
+    with _c.repo.sf() as s:
+        rows = s.scalars(select(FeedIssue).order_by(FeedIssue.id)).all()
+    i1 = [x["arxiv_id"] for x in rows[0].items]
+    i2 = [x["arxiv_id"] for x in rows[1].items]
+    assert set(i1).isdisjoint(i2)                            # 换页零重叠
+
+    client = TestClient(create_app(_c, None))
+    body = client.get("/feed").text                          # 默认：只读最新期
+    assert "第 2 期" in body and "第二页" in body            # 参数/缘由各归其期，面板不自行重算
+    assert "limit=3" in body and "days=120" in body
+
+    n_before = _c.repo.feed_issue_count()
+    client.get("/feed?preview=1&limit=5&days=120&seen_days=0")
+    assert _c.repo.feed_issue_count() == n_before            # 预览不落库不覆盖期
+
+    ev = reg.invoke("get_activity", op="save_feed")
+    assert ev["events_count"] == 2
+    u = reg.invoke("undo", seq=0)
+    assert u["ok"] and u["op"] == "save_feed"
+    assert _c.repo.latest_feed_issue().id == rows[0].id      # 撤掉第二期，回到第一期

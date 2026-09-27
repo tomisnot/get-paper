@@ -3,13 +3,21 @@
 {% block content %}
 <h1>🌊 推荐流</h1>
 <div class="muted" style="margin-bottom:14px;">
-  共 {{ count }} 条 · mix={{ meta.mix }} · 探索占比 {{ meta.explore_share_pct }}% ·
-  分类熵 {{ meta.category_entropy }} · 近 {{ meta.days }} 天
-  {% if meta.pool %}· 候选池 {{ meta.pool }} 篇{% endif %}
-  {% for n in meta.notes %} · <b>{{ n }}</b>{% endfor %}
+  {% if issue_info %}
+    第 {{ issue_info.id }} 期 · {{ count }} 条 ·
+    limit={{ issue_info.params.get('limit', 25) }} ·
+    days={{ issue_info.params.get('days', 14) }} ·
+    mix={{ issue_info.params.get('mix', 'auto') }} ·
+    offset={{ issue_info.params.get('offset', 0) }}
+    {% if issue_info.params.get('quotas') %}· quotas={{ issue_info.params.quotas }}{% endif %}
+    · 由 <b>{{ issue_info.actor }}</b> 发布于 {{ issue_info.ts }}
+    {% if issue_info.reason %}· “{{ issue_info.reason }}”{% endif %}
+  {% else %}
+    {{ '预览' if preview else '暂无一期' }} · {{ count }} 条
+  {% endif %}
 </div>
 {% if not entries %}
-  <div class="flash">这一屏没端出论文——多半是库里窗口内无新文，让 AI 跑一次 fetch_papers 再刷。</div>
+  <div class="flash">{{ '这一屏没端出论文——在 dsh 让 AI 换参数再发一期（或 fetch_papers 补货）。' if not preview and not issue_info else '本期无条目。' }}</div>
 {% endif %}
 {% for it in entries %}
   <div class="card">
@@ -48,5 +56,5 @@
     </div>
   </div>
 {% endfor %}
-<p class="muted">刷新再来一屏：Feed 是纯程序确定性产物（同画像同窗口同结果）；想要别的口味，去 dsh 跟 AI 说「今天想看点野的」（mix=explorer）。</p>
+<p class="muted">面板只读最新一期（快照，无刷新按钮）；想要别的口味/换一页/“20 条 60 天”，去 dsh 跟 AI 说——它 publish_feed 一期，这里就翻篇。</p>
 {% endblock %}

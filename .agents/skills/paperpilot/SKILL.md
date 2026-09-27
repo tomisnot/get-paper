@@ -114,8 +114,8 @@ description: >-
 
 ## 推荐流（feed）：四道召回与刷新自由
 
-- 刷流：`feed_generate(limit=25~40, mix=auto|strict|explorer, days=14)`。用户说“今天想看点野的”⇒ `mix=explorer`；想看多点⇒抬 `limit`。四道=主兴趣/邻接桥/热点作者/探索，**探索 10% 硬地板压不穿**（可顶高）；平时无聊可 `quotas="40,25,10,25"` 这种显式配比微调。
+- 刷流：`feed_generate(limit=25~40, mix=auto|strict|explorer, days=14)` 只读预览；**上面板要 `publish_feed`**（写一期，/feed 即显示，面板不自行重算、无刷新按钮）。四道=主兴趣/邻接桥/热点作者/探索，**探索 10% 硬地板压不穿**（可顶高）；可 `quotas="40,25,10,25"` 显式配比。
 - 每条带 lane 与 why；**播报前 6 条逐条念 why**，探索条说清“这是扩边界位”；why 为空是 bug，举报。
-- **刷新决定权全在你**（Web 故意不设刷新按钮）：接着往下端 `offset=`上次回执的 `meta.next_offset`（序列前缀稳定，换屏零重叠零空洞）；换口味改 mix/quotas，排重用 seen_days；`meta.pool_left`小/notes 提“池底”⇒ 先 `fetch_papers` 补货再刷。用户只说话，手段组合你判。
+- **面板驱动权全在你**：用户说“20 条 60 天/换一页/野一点”⇒ 再调一次 `publish_feed`（参数全显式）；换页 offset 续用上次回执 `meta.next_offset`（序列前缀稳定，零重叠零空洞）；排重用 seen_days；池子浅/notes 提“池底”⇒ 先 `fetch_papers` 补货再发。发错期可 `undo`（save_feed 可逆，删回到上期）。用户只说话，手段组合你判。
 - 画像纪律：`get_profile`（工具名 query_profile）看分类熵与 top 权重；熵<1.0 系统自动加倍探索道（代码保底）；主题只是种子，行为信号才是主画像——想让某人/某类多进快 `record_signal`，想冷却某方向用 `uninterested`（降权不是封杀）。
 - 确定性：同参数同画像必同结果——调试时放心重跑；你的痕迹（每次刷流的道组成）在 /activity。

@@ -240,6 +240,14 @@ class PaperRepository:
                                     hits=int(item.get("hits", 0))))
             return {"restored_profile_rows": len(snap)}
 
+        if op == "save_feed":
+            from .orm import FeedIssue
+            iid = int((event.after or {}).get("id") or 0)
+            row = s.get(FeedIssue, iid) if iid else None
+            if row is not None:
+                s.delete(row)
+            return {"removed_feed_issue": iid}
+
         raise AIError(
             f"操作 {op} 不支持撤销",
             kind="unsupported_undo",
@@ -626,6 +634,35 @@ class PaperRepository:
             rows = s.scalars(select(Event.target).where(
                 Event.op.like("signal:%"), Event.ts >= cutoff)).all()
         return {r for r in rows if r}
+
+    # ---------------------------------------------------------------- feed 期票（AI 发布，面板只读期）
+    def save_feed_issue(self, *, params: dict, items: list, actor: str = "ai",
+                        reason: str = "") -> int:
+        """存一期 feed 快照 + 事件（op=save_feed，可撤销：删回这期）。"""
+        from .orm import FeedIssue
+        with self.sf() as s:
+            row = FeedIssue(params=params, items=items, actor=actor, reason=reason)
+            s.add(row)
+            s.flush()
+            self._event(s, op="save_feed", actor=actor,
+                        reason=reason or "发布 feed 一期",
+                        target=str(row.id),
+                        after={"id": row.id, "count": len(items), "params": params},
+                        reversible=1)
+            s.commit()
+            return int(row.id)
+
+    def latest_feed_issue(self):
+        """最新一期（无期回 None）；/feed 面板默认只读它。"""
+        from .orm import FeedIssue
+        with self.sf() as s:
+            return s.scalars(select(FeedIssue)
+                             .order_by(FeedIssue.id.desc()).limit(1)).first()
+
+    def feed_issue_count(self) -> int:
+        from .orm import FeedIssue
+        with self.sf() as s:
+            return len(s.scalars(select(FeedIssue.id)).all())
 
     def reset_statuses(
         self,

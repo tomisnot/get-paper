@@ -60,6 +60,10 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
                       "quotas": "显式四道配比 csv，如 '40,25,10,25'（覆盖 mix；探索地板 10% 压不穿）",
                       "seen_days": "近 N 天有过信号的篇目不重喂（默认 7，0=不排）",
                       "offset": "换一屏的游标：跳过装配结果的前 N 篇（默认 0）。用户说'刷新/换一屏'⇒ offset=已端过的篇数；池子见底时回执 notes 会说"},
+    "publish_feed": {"limit": "本篇数（同 feed_generate）", "days": "候选窗口天数",
+                     "mix": "auto|strict|explorer", "offset": "换页游标：续用上次回执 meta.next_offset",
+                     "quotas": "显式四道配比 csv（可选）", "seen_days": "信号排重窗口（默认 7）",
+                     "reason": "一句话中文说明这期为何而发"},
     "get_profile": {"top": "每维返回条数（1-50，默认 12）",
                     "half_life_days": "衰减半衰期（天，默认 30）：旧兴趣按指数淡出"},
     "reset_profile": {"kind": "只清某一维 category|term|author；空=全部",
@@ -428,6 +432,30 @@ def build_registry(container) -> Registry:
                                         for lane in ("primary", "adjacent", "hot", "explore")},
                               "ids": [x["arxiv_id"] for x in screen[:12]]})
         return ok(feed=screen, count=len(screen), meta=meta)
+
+    @reg.tool(name="publish_feed", kind="write", reversible=True,
+              description="把显式参数装配的一期发布为 feed 最新期（写库+审计）：/feed 面板即显示这期，"
+                          "**不现场重算**。用户说“20 条 60 天/换一页/野一点”都是再调一次本工具；"
+                          "换页 offset 直接续用上次回执 meta.next_offset（零重叠零空洞）。")
+    def publish_feed(limit: int = 25, days: int = 14, mix: str = "auto",
+                     offset: int = 0, quotas: str = "", seen_days: int = 7,
+                     actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        gen = feed_generate(limit=limit, days=days, mix=mix, quotas=quotas,
+                            seen_days=seen_days, offset=offset, actor=actor)
+        if not gen.get("ok"):
+            return gen
+        params = {"limit": int(limit), "days": int(days), "mix": (mix or "auto"),
+                  "offset": int(offset), "quotas": (quotas or ""),
+                  "seen_days": int(seen_days)}
+        items = [{k: e[k] for k in ("arxiv_id", "title", "primary_category", "categories",
+                                    "authors", "published", "score", "why", "lane")}
+                 for e in gen["feed"]]
+        issue_id = repo.save_feed_issue(params=params, items=items, actor=actor,
+                                        reason=reason or "dsh 发布 feed 一期")
+        return ok(issue_id=issue_id, count=len(items), params=params,
+                  meta=gen["meta"],
+                  hint=f"第 {issue_id} 期已上 /feed 面板；换页就接着调 "
+                       f"publish_feed(offset={gen['meta']['next_offset']}, …)，参数全部显式、面板不自行重算。")
 
     @reg.tool(name="reset_profile", kind="write", reversible=True,
               description="清空/重置兴趣画像（**人类专属**：不投影给 AI，防自改锚点）。"

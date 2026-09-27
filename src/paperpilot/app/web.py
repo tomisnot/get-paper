@@ -111,36 +111,55 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
             logging.getLogger("paperpilot.web").exception("view 信号记账失败（页面照常）")
         return render(request, "paper_detail.html", detail=detail, arxiv_id=arxiv_id)
 
-    # ---------------------------------------------------------------- 推荐流（M2：只读面，无写权闸）
+    # ---------------------------------------------------------------- 推荐流面板（期票模型：只读最新期，不现场重算）
     _LANE_LABEL = {"primary": "主兴趣", "adjacent": "邻接", "hot": "热点", "explore": "探索"}
 
-    @app.get("/feed", response_class=HTMLResponse)
-    def feed_page(request: Request, limit: int = 25, mix: str = "auto", days: int = 14,
-                  seen_days: int = 7):
-        res = registry_for(container).invoke("feed_generate",
-                                             limit=limit, mix=mix, days=days,
-                                             seen_days=seen_days)
-        if not res.get("ok"):
-            return render(request, "feed.html", entries=[], count=0,
-                          meta={"mix": mix, "explore_share_pct": 0, "notes": [],
-                                "category_entropy": 0,
-                                "days": days},
-                          msg=res.get("error", {}).get("message", "生成失败"))
-        # 卡片富化：复用简报那条卡的料——已有中文摘要（评审/总结产物）直接展示，
-        # 有 AI 评审理由优先当“为什么推荐给你”（比道属更具体）。
-        entries = []
-        for e in res.get("feed", []):
+    def _enrich_feed_items(items: list[dict]) -> list[dict]:
+        """期快照只钉“哪些篇/序/为什么”；中文摘要与评审理由渲染时现 join（跟最新走）。"""
+        out = []
+        for e in items:
             d = container.retrieval.detail(e["arxiv_id"])
             s = d["summary"] if d else None
             sc = max(d["scores"], key=lambda x: x.id, default=None) if d else None
-            entries.append({**e,
+            out.append({**e,
                 "lane_label": _LANE_LABEL.get(e["lane"], e["lane"]),
                 "summary": ({"tldr": s.tldr, "problem": s.problem, "method": s.method,
                              "results": s.results, "novelty": s.novelty} if s else None),
                 "ai_summary": bool(s and s.model and s.model != "heuristic"),
                 "review_reason": (sc.reason if sc and sc.reason else "")})
-        return render(request, "feed.html", entries=entries,
-                      count=res.get("count", 0), meta=res.get("meta", {}))
+        return out
+
+    @app.get("/feed", response_class=HTMLResponse)
+    def feed_page(request: Request, preview: int = 0, limit: int = 25,
+                  mix: str = "auto", days: int = 14, offset: int = 0,
+                  seen_days: int = 7):
+        """默认只读最新一期（AI 经 publish_feed 发布）；`preview=1` 才现场重算且**不落库不覆盖期**。
+        面板无刷新/换页按钮——驱动权全在 dsh 对话里的 AI。"""
+        if preview:
+            res = registry_for(container).invoke("feed_generate", limit=limit, mix=mix,
+                                                 days=days, offset=offset,
+                                                 seen_days=seen_days)
+            if not res.get("ok"):
+                return render(request, "feed.html", entries=[], count=0, preview=True,
+                              issue_info=None,
+                              msg=res.get("error", {}).get("message", "预览生成失败"))
+            return render(request, "feed.html",
+                          entries=_enrich_feed_items(res.get("feed", [])),
+                          count=res.get("count", 0), preview=True, issue_info=None,
+                          msg="临时预览（现场重算，不落库；面板刷新后仍回到最新一期）")
+        issue = container.repo.latest_feed_issue()
+        if issue is None:
+            return render(request, "feed.html", entries=[], count=0, preview=False,
+                          issue_info=None,
+                          msg="还没有 feed 期：在 dsh 说一句「刷 20 条推荐」让 AI publish_feed")
+        p = issue.params or {}
+        return render(request, "feed.html",
+                      entries=_enrich_feed_items(list(issue.items or [])),
+                      count=len(issue.items or []), preview=False,
+                      issue_info={"id": issue.id, "ts": str(issue.ts)[:16],
+                                  "actor": issue.actor, "reason": issue.reason,
+                                  "params": p},
+                      msg="")
 
     @app.post("/papers/{arxiv_id}/uninterested")
     def uninterested(arxiv_id: str, next_url: str = Form("")):
