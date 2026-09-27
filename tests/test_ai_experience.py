@@ -1,6 +1,6 @@
 """AI 调用体验打磨 EXP-1（止血）判据 —— 每条配「能红 + 不许误报」。
 
-对应 docs/AI-EXPERIENCE-PLAN-2026-09-26.md 的 N1–N6、N9：
+对应 AI-EXPERIENCE-PLAN 的 N1–N6、N9（该计划未随仓发布）：
 E1.1 单字段不击穿整批 · E1.2 review_status 标准信封 + 桥接 bad_envelope 兜底 ·
 E1.3 信封纪律守卫（无裸 ok:false） · E1.4 read_authority 自省 · E1.5 三段 date 对称 ·
 E1.6 label 归一化+enum · E1.7 评审输入豁免体积截断。

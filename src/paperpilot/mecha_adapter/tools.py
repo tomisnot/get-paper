@@ -204,7 +204,7 @@ def envelope_to_error(res: Mapping[str, object]) -> MechaError:
 
     ⚠ 非标准信封兜底（N2）：能力返 `ok:false` 却**不带 `error`** 时，绝不吞成
     一口“调用失败”——用 `bad_envelope` + 截断透传原始 JSON，让模型看得见到底返了
-    什么。根子（“允许裸 ok:false”）已回馈框架（见 MECHA-N3）。
+    什么。根子（“允许裸 ok:false”）已回馈框架（见内部 n=3 报告，未随仓发布）。
 
     ⚠ **与框架那条 `bad_envelope` 的关系：纵深，不是重复**（2026-09-26 框架第 3 批）。
     框架在**投影层**也做了同款（`mecha/providers/mcp.py`），它覆盖的是

@@ -587,26 +587,26 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 - 标量配置迁 Gate：`build_stack` 装配期 `gate.seed` 从 settings 种 6 个标量（`lookback_days`/`scoring.*`）；新增 `set_config`（经 `gate.set`，authority+validate 双闸）/`read_config` 两个工具；`Engine.run` 把 gate 快照作为**线程局部每调用覆盖**（`pipeline_config_override` + `ScoringCfg.model_copy`）作用于本次运行（故 gate 配置对流水线**权威**、非装饰，且**不改共享 settings**、并发安全）。工具面 22→24。
 - authority 接线：出厂 `LOCKED`，人类侧 `switch_mode(Mode.AI,'human')` 开闸；AI 侧不能自解锁。Web=human / dsh·AI=ai（Web 写路径 **Phase 5 已改走命令面**，见下）。
 - 验收：`test_mecha_adapter.py` 添治理判据——LOCKED 直写/直跑被拒**且域写不发生**、AI 不能自解锁、开闸后审计落史 + `result_ref` 互引、set_config 受门 + gate 配置对 run 权威（`max_papers=1`→selected 真降）。
-- ⭐ **设计师复审修复（3 项，均已修 + 回归判据，详 `docs/MECHA-N3.md` §3.5）**：① `reason` 声明进命令 `required` 才能透传给 handler（否则被 mecha `RESERVED_ARGS` 剥掉）→ 域 journal `repo.events.reason` 不再为空；② gate 配置叠加由 mutate-restore 共享 settings 改为**线程局部覆盖**（消除并发误读竞争）；③ `_REF_KEYS` 的 `undid_seq`→`undone_seq`（修 undo 的 result_ref 互引）。`pytest 129 绿`。
+- ⭐ **设计师复审修复（3 项，均已修 + 回归判据，详内部 n=3 报告 §3.5（**未随仓发布**，存档在仓外））**：① `reason` 声明进命令 `required` 才能透传给 handler（否则被 mecha `RESERVED_ARGS` 剥掉）→ 域 journal `repo.events.reason` 不再为空；② gate 配置叠加由 mutate-restore 共享 settings 改为**线程局部覆盖**（消除并发误读竞争）；③ `_REF_KEYS` 的 `undid_seq`→`undone_seq`（修 undo 的 result_ref 互引）。`pytest 129 绿`。
 
 ### Phase 3 落地（cockpit 监控端点，已验证）
 
 - `monitor.py`：`paperpilot_summarizer`（人话概括 + `Claim(value,target=原始键)` 对账）、`config_schema_rows`（喂 cockpit `/config` 树）、`start_cockpit`（框架 `MonitorEndpoint` 只读端点，四路由 + 附加 `/summary`，端口发现 `.cockpit-port`）。`hub.py` main 加 `--cockpit`。
 - 与 Web `/activity` 分工（Scheme E互补）：cockpit=操作者审计面（mecha History 的 `command.*` + 配置 KV）；Web `/activity`=域数据面（repo.events 的 before→after delta + undo）。
 - 验收：`test_mecha_cockpit.py`——四路由逐字段（事件 6/9 键、orphans 含审计键）、概括能被原始**证伪**（撒谎 Claim→`disputed`、原始赢）、只读红线（POST 恒 404）、空史如实空表（不假装、mode 仍真）。走真 HTTP（urllib）。`pytest 119 绿`。
-- **dsh 侧边栏挂 cockpit**：Phase 3 时未做（当时判断需实时 dsh 实例验证 + 框架/交接文档明警的 Windows 进程树孤儿/端口风险）；**Phase 5 已交付**——实现与遗留的单一陈述处 = 下方「Phase 5 落地」与 `docs/MECHA-N3.md` §6，本文不重复（D1）。
+- **dsh 侧边栏挂 cockpit**：Phase 3 时未做（当时判断需实时 dsh 实例验证 + 框架/交接文档明警的 Windows 进程树孤儿/端口风险）；**Phase 5 已交付**——实现与遗留的单一陈述处 = 下方「Phase 5 落地」与内部 n=3 报告 §6（未随仓发布），本文不重复（D1）。
 
 ### Phase 4 落地（自写判据 + n=3 报告，已完成）
 
 - `test_mecha_criteria.py`：六条接入不变式的「能红 + 不许误报」对偶（命名守卫、capabilities↔tools 单一来源、工具可达性非「列得出调不动」、必填投影不塌）。`pytest 126 绿`、`ruff` 净。
-- **n=3 证伪报告 → `docs/MECHA-N3.md`**（交付物）：回答接入指南 §5 四问 + 印证计划 §9 五条挂起项 + **3 条新跨项目缺陷类**（发现 6：命令面无法同时声明可选 properties 与零必填；发现 7：side_effect 命令的 authority 闸在域写之后；发现 8：reason 被命令面抽走、域写拿不到）。
+- **n=3 证伪报告（`MECHA-N3`，未随仓发布、存档在仓外）**（交付物）：回答接入指南 §5 四问 + 印证计划 §9 五条挂起项 + **3 条新跨项目缺陷类**（发现 6：命令面无法同时声明可选 properties 与零必填；发现 7：side_effect 命令的 authority 闸在域写之后；发现 8：reason 被命令面抽走、域写拿不到）。
 
 ### Phase 5 落地（退役旧通道 + 统一入口 + Web 接线 + dsh 侧栏，已完成）
 
 - **旧 `mcp_server.py` 退役**：删除 `mcp_server.py` + `test_mcp_server.py` + `test_mcp_live.py`；`test_journal.py` 的 3 个 MCP 测试迁至 `test_mecha_adapter.py`；CLI `mcp`/`ai` 重指 mecha hub。全仓搜无残留导入（R14）。dsh 插件无需改（动态发现工具 + 服务名 `paperpilot` + `.mcp-port` 发现）。
 - **统一启动入口**：`paperpilot`（无参）/ `paperpilot serve` = Web + mecha MCP + cockpit + 调度，**共享一个 mecha 栈**（`cli._boot_stack`；同进程、一个 data_dir 一个写租约）；`paperpilot ai` = 同后台 + 前台 dsh。
-- **Web=human 侧写权接线**：`create_app(container, stack)` 给栈时，论文库写（read/star/skip/note/download）+ 跑批经 `human_write`（human 通道命令面），写同时落 repo.events（actor=human）+ mecha 审计。⚠ **2026-09-26 起写权不卡**：起步 `Mode.OPEN`（两侧都能写，`--mode` 可改；`--open-gate` 已删），`human_write` 的"人写抢占"**已删**——AI 独占/锁定时人写**被拒**（拒绝消息给出路），模式不会被谁偷偷改掉。写权模式卡在 `/settings`（含控制口令），控制端点 `POST /monitor/mode` 供人类侧切换（含急停 `locked`）——`/monitor` **视图页已退役**（AI 监控改走 dsh 原生 tab，见 `docs/MECHA-N3.md` §6）。
-- ⭐ **新 n=3 发现 9**（Web 接线时抓到）：`CommandRegistry.invoke` **不把调用方 channel 传给 handler**——多操作者共享一个命令表时，handler 闭包捕获的装配期通道会让**人类写误归因为 ai**、且写权闸看错 side。**框架已修（2026-09-26）**：`CommandSpec.wants_channel`（显式声明；不做签名自省）⇒ 本项目**删掉自造的 `contextvars` 渡口**，13 条写命令改为声明 `wants_channel=True`，handler 直收 `channel=`（详 `docs/MECHA-N3.md` 发现 9 的落地段 + ADR）。
+- **Web=human 侧写权接线**：`create_app(container, stack)` 给栈时，论文库写（read/star/skip/note/download）+ 跑批经 `human_write`（human 通道命令面），写同时落 repo.events（actor=human）+ mecha 审计。⚠ **2026-09-26 起写权不卡**：起步 `Mode.OPEN`（两侧都能写，`--mode` 可改；`--open-gate` 已删），`human_write` 的"人写抢占"**已删**——AI 独占/锁定时人写**被拒**（拒绝消息给出路），模式不会被谁偷偷改掉。写权模式卡在 `/settings`（含控制口令），控制端点 `POST /monitor/mode` 供人类侧切换（含急停 `locked`）——`/monitor` **视图页已退役**（AI 监控改走 dsh 原生 tab，见内部 n=3 报告 §6，未随仓发布）。
+- ⭐ **新 n=3 发现 9**（Web 接线时抓到）：`CommandRegistry.invoke` **不把调用方 channel 传给 handler**——多操作者共享一个命令表时，handler 闭包捕获的装配期通道会让**人类写误归因为 ai**、且写权闸看错 side。**框架已修（2026-09-26）**：`CommandSpec.wants_channel`（显式声明；不做签名自省）⇒ 本项目**删掉自造的 `contextvars` 渡口**，13 条写命令改为声明 `wants_channel=True`，handler 直收 `channel=`（详内部 n=3 报告「发现 9」落地段 + 框架 ADR）。
 - ⭐ **作用域策略（`scope`）2026-09-26 起真的生效**：22 条命令**全都声明了 `scope`**，但
   `CommandRegistry.bind_scope_policy(...)` **从来没人调过** ⇒ 框架那段过滤（`mecha/commands.py:432`
   `if self._scope_policy is not None and spec.scope:`）**整段跳过** ⇒ **声明在、消费者在、插头没插**
@@ -624,14 +624,14 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
   ⚠ **边界**：判据 ①/④/⑥ 只证"**绑了**、**表覆盖了所有被声明的 scope**、**表与意图一致**"，
   **证不了"意图本身合理"**。（框架侧若要 ADR，需框架会话落笔——本项目仓只读框架。）
 - 验收：`test_web_mecha.py`（Web 门控写双 journal 都记 actor=human、**`/settings` 写权卡**、无栈如实报未接、写权切换）。退役后 `pytest 121 绿`（删 18 旧 mcp 测、迁入/新增后净减）、`ruff` 净。
-- ⭐ **“dsh 侧栅没有按钮 / 面板打不开”的真根因（已修）**：`cli.py` 的 `PROJECT_ROOT` 少一层（写 `parents[2]`，该文件在 `src/paperpilot/app/` ⇒ 应为 `parents[3]`）⇒ `DSH_DIR` 指向不存在的 `<项目>/src/dsh` ⇒ 两个 `--patch` 被**静默过滤丢弃** ⇒ **插件根本没加载**（与面板代码无关）。已修路径、把静默过滤改为**响亮失败**、并补判据（`tests/test_cli_startup.py`）——单一陈述处见 `docs/MECHA-N3.md` §6。
+- ⭐ **“dsh 侧栅没有按钮 / 面板打不开”的真根因（已修）**：`cli.py` 的 `PROJECT_ROOT` 少一层（写 `parents[2]`，该文件在 `src/paperpilot/app/` ⇒ 应为 `parents[3]`）⇒ `DSH_DIR` 指向不存在的 `<项目>/src/dsh` ⇒ 两个 `--patch` 被**静默过滤丢弃** ⇒ **插件根本没加载**（与面板代码无关）。已修路径、把静默过滤改为**响亮失败**、并补判据（`tests/test_cli_startup.py`）——单一陈述处见内部 n=3 报告 §6（未随仓发布）。
 
 ### AI 调用体验打磨（EXP-1~4，2026-09-26，已完成）
 
-硅基用户实测（`docs/AI-EXPERIENCE-2026-09-26.md`）提出 N1~N10；按 `docs/AI-EXPERIENCE-PLAN-2026-09-26.md` 分四批修。**差的不是功能，是“出错能诊断 + 边界能自省”**：
+硅基用户实测（`AI-EXPERIENCE` 记录，**未随仓发布**）提出 N1~N10；按 `AI-EXPERIENCE-PLAN`（未随仓发布）分四批修。**差的不是功能，是“出错能诊断 + 边界能自省”**：
 
 - **EXP-1 止血（P0）**：N1 `submit_review` 改 **per-item fail**（坏 item 进 `rejected`、捕 `KeyError`，不再一根手滑整批蒸发）；N2 `review_status` 走**标准信封** + 桥接 `bad_envelope` 兜底透传（读写两路一致）；N5 新增只读工具 **`read_authority`**（写前自省写权，被拒 hint 指回它）；N6 三段 `date` 对称（`submit_review` 默认今天）；N9 label 归一化+enum（尾空格仍直连、非法值进 rejected）；N3 `prepare_review` 评审输入**豁免体积闸**（40 篇全达、不再静默砍半）。判据：`tests/test_ai_experience.py`。
 - **EXP-2 长活不阻塞**：`run_pipeline` **job 化**（`submit_job`/`read_job`/`cancel_job`）——走 run_pipeline 命令面（同写权门+审计+engine 取消点），项目侧 `BoundedSemaphore` 兜并发上限（框架 local JobRegistry 不排队）；命令 `estimate_sec` 改**非零/callable**（AI 能据此判断要不要 job 化）。判据含“取消后副作用不继续”（引擎级确定性）与并发上限。
 - **EXP-3 视野/自描述**：N4 `search_papers` 加 `offset`/`next_offset`（retrieval/repo 透传，翻页零交集）；N8 参数描述**下沉为单一事实源**（住 `ToolSpec.params[..]["description"]`，mecha 层透传，不再两份手抄；`attach_param_descriptions` 漂移即响亮报错）。
 - **EXP-4 AI 面守卫**（钉住“改对后的面”）：`test_ai_surface.py`（命名 snake_case 动词_宾语、禁 get_/list_、描述无实现词）、`test_capability_map.py`（声明==投影：22 能力 + 6 非能力面 = 28 工具，两侧都数）。工具面从 24 → **28**。
-- 框架回馈见 `docs/MECHA-N3.md` §9；验收：`ruff` 净、`pytest` 全绿（EXP 判据均配“能红 + 不误报”对偶）。
+- 框架回馈见内部 n=3 报告 §9（未随仓发布）；验收：`ruff` 净、`pytest` 全绿（EXP 判据均配“能红 + 不误报”对偶）。
