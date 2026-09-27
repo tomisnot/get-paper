@@ -223,13 +223,19 @@ class DailyPipelineService:
         # ⭐ W4 评审 floor：低于 review_floor 的基线不进候选包（降评审 input；库里仍在，
         # 调低 floor/requeue 可再议）。n_after_rules 仍报全量，floor 单独回执。
         floor = float(getattr(self._eff_scoring(), "review_floor", 0.0) or 0.0)
-        above = [x for x in unique_ranked if x[2].score >= floor]
-        floor_applied = {"floor": floor, "kept": len(above), "total": len(unique_ranked)}
+        # ⭐ 显式意图 > 启发式预筛（N12/N14）：arxiv_ids 点名 ⇒ 不套 floor（点名要的
+        # 被挡回就是静默丢）；brief 粗筛段也不套——载荷本就小，低分救援权留给评审者。
+        # floor 只在「stage=full 直接全量评」时生效（那才是它的省 token 场景）。
+        brief = stage == "brief"
+        wanted = {x.strip() for x in arxiv_ids if x.strip()}
+        skip_floor = brief or bool(wanted)
+        above = (unique_ranked if skip_floor
+                 else [x for x in unique_ranked if x[2].score >= floor])
+        floor_applied = {"floor": floor, "applied": not skip_floor,
+                         "kept": len(above), "total": len(unique_ranked)}
         # W5 两阶段：brief ⇒ 只给标题+短摘（粗筛）；full+arxiv_ids ⇒ 回执只装 shortlist
         # 的全文摘要（**review 文件仍存全量**，submit 按全量校验、finalize 行为不变）。
-        brief = stage == "brief"
         cut = _BRIEF_ABSTRACT_CHARS if brief else _REVIEW_ABSTRACT_CHARS
-        wanted = {x.strip() for x in arxiv_ids if x.strip()}
         candidates = [
             {
                 "arxiv_id": paper.arxiv_id,

@@ -48,7 +48,8 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
                        "stage": "full（默认，全文摘要直接评）| brief（W5 粗筛：标题+300字短摘，"
                                 "选完 shortlist 再用 stage=full+arxiv_ids 拉全文）",
                        "arxiv_ids": "逗号分隔的 shortlist（配合 stage=full 使用：回执只装这些篇目的全文摘要；"
-                                    "省略=全量回执）",
+                                    "省略=全量回执）。**显式点名的篇目不受评审下限过滤**（N12："
+                                    "显式意图优先于启发式预筛）",
                        "reason": "一句话中文说明目的"},
     "submit_review": {"reviews": "评审列表 [{arxiv_id,score,label,reason,…}]",
                       "date": "评审对应日期 ISO 格式（省略=今天）",
@@ -119,13 +120,14 @@ def build_registry(container) -> Registry:
 
     # ============================================================== 只读面
     @reg.tool(name="list_topics", kind="read",
-              description="列出研究主题（名称/关键词/分类白名单/配额/阈值/启用态）。")
+              description="列出研究主题（名称/关键词/分类白名单/关注作者/配额/阈值/启用态）。")
     def list_topics() -> dict:
         return ok(topics=[
             {
                 "name": t.name, "description": t.description,
                 "keywords": list(t.keywords or []), "categories": list(t.categories or []),
                 "exclude_keywords": list(t.exclude_keywords or []),
+                "authors": list(t.authors or []),
                 "quota": t.quota, "threshold": t.threshold, "enabled": t.enabled,
             }
             for t in settings.topics

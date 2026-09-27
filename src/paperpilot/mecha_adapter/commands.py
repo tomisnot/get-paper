@@ -24,6 +24,8 @@ from mecha.errors import MechaError
 from mecha.surface import ExecutionContext
 
 from .. import capabilities
+from ..domain.pipeline import pipeline_config_override
+from .engine import gate_scoring_override
 from .tools import TOOL_DECLS, _cap_params, envelope_to_error
 
 #: 当前调用的操作者通道（contextvar，按请求/线程隔离）。
@@ -127,11 +129,13 @@ def _estimate(cap_name: str, container):
     return 1.0                            # 本地写（评审/笔记/主题…）：小而非零
 
 
-def _make_handler(container, decl, authority, default_channel, surface):
-    """命令体：① authority 写权前置闸 → ② 调能力/Engine.run → ③ 归一化回执。
+def _make_handler(container, decl, authority, default_channel, surface, gate):
+    """命令体：① authority 写权前置闸 → ② gate 配置覆盖下调能力/Engine.run → ③ 归一化回执。
 
     通道取自 ``_CURRENT_CHANNEL``（实际调用方：ai 工具桥 / human Web），缺失时回落
     ``default_channel``——确保写权闸看**正确的 side**、归因用**正确的 actor**。
+    ⭐ N15：配置态在**这道边界**注入线程局部覆盖（set_config 写 gate 快照）——
+    不只 run_pipeline，prepare/submit/finalize 各段同样吃到，杜绝静默 no-op。
     """
     cap_name = decl.cap_name
     via_surface = decl.via_surface
@@ -151,11 +155,15 @@ def _make_handler(container, decl, authority, default_channel, surface):
         args = dict(args)
         args.pop("actor", None)                 # actor 由通道钉死，绝不接受请求传入
         args["actor"] = channel.actor
-        if via_surface:
-            ctx = context if isinstance(context, ExecutionContext) else ExecutionContext()
-            res = surface.run(args, context=ctx)
-        else:
-            res = capabilities.invoke(container, cap_name, **args)
+        # ⭐ N15：gate 快照作为本次调用的线程局部配置覆盖（与 Engine.run 同源函数，
+        # 嵌套无害：context manager 保存/恢复上一层）。
+        scoring, lookback = gate_scoring_override(container, gate)
+        with pipeline_config_override(scoring=scoring, lookback_days=lookback):
+            if via_surface:
+                ctx = context if isinstance(context, ExecutionContext) else ExecutionContext()
+                res = surface.run(args, context=ctx)
+            else:
+                res = capabilities.invoke(container, cap_name, **args)
         if not res.get("ok"):
             # 失败经共享的 envelope_to_error（含 N2 的 bad_envelope 兜底，读写两路一致）。
             return CommandResult(ok=False, values={"ok": False}, error=envelope_to_error(res))
@@ -188,6 +196,6 @@ def build_commands(container, sw, channel=None) -> list[str]:
             approval_required=False,
         )
         commands.register(spec, _make_handler(
-            container, decl, sw.authority, channel, sw.surface))
+            container, decl, sw.authority, channel, sw.surface, sw.gate))
         names.append(decl.mecha_name)
     return names

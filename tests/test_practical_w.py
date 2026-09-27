@@ -320,5 +320,36 @@ def test_same_day_two_finalizations_read_as_one_briefing(tmp_path):
     assert len(back) == 1 and back[0].markdown == "# v2"   # 回滚的是当时那份
 
 
+# ------------------------------ N12/N14：显式意图 > 启发式预筛；N13：authors 上自描述面
+def test_n12_n14_explicit_intent_beats_floor(tmp_path):
+    """能红：floor 高到滤光全池时——默认 full 仍被拦（诊断）；但 brief 段（N14）与
+    显式 arxiv_ids 点名（N12）都绕过 floor，点名要的篇目**绝不静默丢**。"""
+    _c, reg = _reg(tmp_path)
+    _c.settings.scoring.review_floor = 0.99
+    blocked = reg.invoke("prepare_review")                # 默认：full 无点名→floor 生效
+    assert blocked["ok"] is False and blocked["error"]["kind"] == "empty_pool"
+    br = reg.invoke("prepare_review", stage="brief")      # N14：粗筛段不滤、按分数排序全量给
+    assert br["ok"] and br["candidates"], br
+    assert br["floor_applied"]["applied"] is False
+    scores = [c["baseline"]["score"] for c in br["candidates"]]
+    assert scores == sorted(scores, reverse=True)          # 排序不过滤
+    low = min(br["candidates"], key=lambda c: c["baseline"]["score"])["arxiv_id"]
+    named = reg.invoke("prepare_review", arxiv_ids=low)   # N12：点名即胜
+    assert named["ok"] and [c["arxiv_id"] for c in named["candidates"]] == [low]
+    assert named["floor_applied"]["applied"] is False
+
+
+def test_n13_list_topics_returns_authors(tmp_path):
+    """能红：update_topic 设 authors 后 list_topics 直接可见（不再靠翻 YAML 自证）；
+    未设过的主题给空列表而非缺键（不误报）。"""
+    _c, reg = _reg(tmp_path)
+    name = _c.settings.topics[0].name
+    out = reg.invoke("update_topic", name=name, authors="陈丞, Lukin")
+    assert out["ok"]
+    topics = {t["name"]: t for t in reg.invoke("list_topics")["topics"]}
+    assert topics[name]["authors"] == ["陈丞", "Lukin"]
+    assert topics[_c.settings.topics[1].name]["authors"] == []   # 键必在
+
+
 if __name__ == "__main__":        # 方便单跑
     raise SystemExit(pytest.main([__file__, "-q"]))

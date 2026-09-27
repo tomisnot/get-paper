@@ -36,6 +36,31 @@ CONFIG_SCHEMA: dict[str, dict] = {
 }
 
 
+def gate_scoring_override(container, gate):
+    """从 gate 快照造本次调用的配置覆盖（ScoringCfg 副本 + lookback）；无 gate 则 (None, None)。
+
+    ⭐ N15：这是**命令面全路径**的配置权威接缝——不只 Engine.run（run_pipeline），
+    prepare/submit/finalize 这些不走 Engine.run 的段同样要吃到 set_config 的值，
+    否则 set_config 对 finalize 成静默 no-op（silent no-op 比响亮拒绝更坏）。
+    **不改共享 settings**：返回副本，交 ``pipeline_config_override`` 做线程局部覆盖。
+    """
+    if gate is None:
+        return None, None
+    snap = gate.snapshot
+    settings = container.settings
+    lookback = snap.get("lookback_days")
+    updates: dict[str, object] = {}
+    for key, attr in (("scoring.threshold", "threshold"),
+                      ("scoring.quota_per_topic", "quota_per_topic"),
+                      ("scoring.max_papers", "max_papers"),
+                      ("scoring.max_per_author", "max_per_author"),
+                      ("scoring.must_read_cap", "must_read_cap")):
+        if key in snap and snap[key] is not None:
+            updates[attr] = snap[key]
+    scoring = settings.scoring.model_copy(update=updates) if updates else None
+    return scoring, lookback
+
+
 class PaperPilotEngine(Engine):
     """4 必实现：每日流水线的运行面（领域实现仍住 capabilities/pipeline）。"""
 
@@ -94,26 +119,8 @@ class PaperPilotEngine(Engine):
     # ---- 配置叠加（run 的内部助手）----
 
     def _gate_config_override(self):
-        """从 gate 快照造本次运行的配置覆盖（scoring 副本 + lookback）；无 gate 则 (None, None)。
-
-        **不改共享 settings**：返回 ``ScoringCfg`` 的副本，交
-        ``pipeline_config_override`` 做线程局部覆盖（并发安全）。
-        """
-        if self._gate is None:
-            return None, None
-        snap = self._gate.snapshot
-        settings = self._container.settings
-        lookback = snap.get("lookback_days")
-        updates: dict[str, object] = {}
-        for key, attr in (("scoring.threshold", "threshold"),
-                          ("scoring.quota_per_topic", "quota_per_topic"),
-                          ("scoring.max_papers", "max_papers"),
-                          ("scoring.max_per_author", "max_per_author"),
-                          ("scoring.must_read_cap", "must_read_cap")):
-            if key in snap and snap[key] is not None:
-                updates[attr] = snap[key]
-        scoring = settings.scoring.model_copy(update=updates) if updates else None
-        return scoring, lookback
+        """引擎侧薄包装：委托共享的 ``gate_scoring_override``（命令面 handler 同源同语义）。"""
+        return gate_scoring_override(self._container, self._gate)
 
     # ---- 必实现 ③：summary ----
 
