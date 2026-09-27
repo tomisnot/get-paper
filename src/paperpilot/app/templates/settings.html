@@ -64,6 +64,28 @@
   {% endif %}
 </div>
 
+<h2>兴趣画像</h2>
+{# 人类专属：`reset_profile` **不投影给 AI**（"改自己的标尺"那类动作）⇒ 这里给人一个入口。
+   走命令面（写权 + `command.reset_profile` 审计），不是直调。 #}
+<div class="card">
+  <div class="muted">清掉"行为学出来的锚点"（view/收藏/下载等信号的累积），回到出厂先验。
+    ⚠ 这是**人类专属**动作——AI 侧没有这个工具（不让它改自己的标尺）。走同一道门、留审计。</div>
+  {% if mode %}
+    <form method="post" action="/settings/profile/reset" class="actions">
+      <select name="kind" style="min-width:12em">
+        <option value="">全部</option>
+        <option value="category">只清分类锚点</option>
+        <option value="term">只清词锚点</option>
+        <option value="author">只清作者锚点</option>
+      </select>
+      <button class="ghost" type="submit"
+              onclick="return confirm('重置兴趣画像？这会清掉行为学出来的锚点（可再攒回来）。')">重置兴趣画像</button>
+    </form>
+  {% else %}
+    <div class="muted">未接监控面（本 Web 未经统一启动入口装配 mecha 栈）⇒ 没有可点的控件。</div>
+  {% endif %}
+</div>
+
 <h2>全局参数</h2>
 <div class="card">
   <form method="post" action="/settings/general">

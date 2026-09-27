@@ -303,3 +303,52 @@ def test_cockpit_routes_honest_without_stack(tmp_path):
         r = client.get(path)
         assert r.status_code == 503 and r.json()["ok"] is False
         assert r.headers.get("access-control-allow-origin") == "*"
+
+
+# ------------------------------------------------ 记录仪一键撤销（本批补的控件，原先只有文案）
+def test_activity_undo_button_and_gated_undo(tmp_path):
+    """⭐ 记录仪**真能撤销**（本批补的控件）：页面有按钮；POST 走**命令面** ⇒ 有审计。
+
+    原先的病：`settings.html` 两处文案承诺"可在 /activity 页 undo"，而**那页没有控件**
+    ⇒ 文案承诺做不到的事。本批补上（且**只有可逆事件**才给按钮）。
+    """
+    client, container, stack = _gated(tmp_path)
+    client.post("/papers/2608.01101/star", follow_redirects=False)   # 造一条**可逆**事件
+    assert container.repo.events_since(since_seq=0, op="star_paper")["count"] >= 1
+    page = client.get("/activity")
+    assert page.status_code == 200
+    assert 'action="/activity/undo"' in page.text and "撤销" in page.text
+    resp = client.post("/activity/undo", data={"seq": 0}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert container.repo.events_since(since_seq=0, op="undo")["count"] >= 1
+    assert any(e.key == "command.undo_change" for e in stack["history"].events())
+
+
+def test_activity_undo_hidden_without_stack(tmp_path):
+    """**对偶**：无栈（独立 Web/单测）时**不渲染**撤销按钮，POST 也如实报"未接监控面"——
+    否则又会回到"按钮点了没用"那类假承诺。"""
+    client = TestClient(create_app(build_container(make_settings(tmp_path / "data"))))
+    page = client.get("/activity")
+    assert page.status_code == 200 and 'action="/activity/undo"' not in page.text
+    resp = client.post("/activity/undo", data={"seq": 0}, follow_redirects=False)
+    assert resp.status_code == 303
+    # ⚠ 重定向 Location 里的中文是百分号编码的 ⇒ 先解码再断言（第一版直接 in 判断，假红）
+    from urllib.parse import unquote
+
+    assert "未接监控面" in unquote(resp.headers["location"])
+
+
+# ------------------------------------------------ reset_profile：人类专属（本批补人入口）
+def test_reset_profile_human_entry_but_still_not_for_ai(tmp_path):
+    """⭐ `reset_profile` 是**人类专属**：本批给人补了入口（走命令面 + 审计），
+    **而 AI 工具面里仍然没有它**——"给人入口"没有顺手变成"给 AI 入口"（原设计意图保住）。
+    """
+    client, _container, stack = _gated(tmp_path)
+    page = client.get("/settings")
+    assert 'action="/settings/profile/reset"' in page.text
+    assert client.post("/settings/profile/reset", data={"kind": ""},
+                       follow_redirects=False).status_code == 303
+    assert any(e.key == "command.reset_profile" for e in stack["history"].events())
+    tool_names = {s["name"] for s in stack["tools"].schemas()}
+    assert "reset_profile" not in tool_names, (
+        "reset_profile 不该出现在 AI 工具面（它改的是 AI 自己的标尺）")

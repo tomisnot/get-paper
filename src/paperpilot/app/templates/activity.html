@@ -28,7 +28,7 @@
 </form>
 
 <table>
-  <tr><th style="width:60px;">seq</th><th style="width:90px;">actor</th><th style="width:130px;">op</th><th style="width:110px;">target</th><th>before → after</th><th style="width:130px;">时间</th></tr>
+  <tr><th style="width:60px;">seq</th><th style="width:90px;">actor</th><th style="width:130px;">op</th><th style="width:110px;">target</th><th>before → after</th><th style="width:130px;">时间</th>{% if can_undo %}<th style="width:90px;">操作</th>{% endif %}</tr>
   {% for e in events %}
   <tr>
     <td>{{ e.seq }}</td>
@@ -46,9 +46,21 @@
       {% endif %}
     </td>
     <td class="muted">{{ e.ts[:19] if e.ts else "" }}</td>
+    {% if can_undo %}
+    <td>
+      {# 只对**可逆**事件给按钮：不可逆的（入库/定稿）由命令面明确拒绝，别让按钮骗人 #}
+      {% if e.reversible %}
+      <form method="post" action="/activity/undo" style="display:inline;">
+        <input type="hidden" name="seq" value="{{ e.seq }}">
+        <button class="ghost" type="submit"
+                onclick="return confirm('撤销 seq={{ e.seq }}（{{ e.op }}）？走同一道门、留审计。')">撤销</button>
+      </form>
+      {% else %}<span class="muted" style="font-size:12px;">不可逆</span>{% endif %}
+    </td>
+    {% endif %}
   </tr>
   {% else %}
-  <tr><td colspan="6" class="muted" style="text-align:center; padding:30px;">没有匹配的事件</td></tr>
+  <tr><td colspan="{{ 7 if can_undo else 6 }}" class="muted" style="text-align:center; padding:30px;">没有匹配的事件</td></tr>
   {% endfor %}
 </table>
 <p class="muted">最多显示最近 100 条；AI 侧可用 <code>get_activity</code> 工具按 since_seq 增量读。</p>

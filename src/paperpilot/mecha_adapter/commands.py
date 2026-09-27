@@ -169,6 +169,40 @@ def _make_config_handler(gate):
     return handler
 
 
+#: `reset_profile` 命令的参数契约（手写）。`kind` 可省（=重置全部）；`reason` 必须进 required。
+_PROFILE_PARAMS: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "kind": {"type": "string",
+                 "description": "重置范围：category | term | author；省略或空 = 全部"},
+        "reason": {"type": "string", "description": "一句话中文说明本次重置目的"},
+    },
+    "required": ["reason"],
+}
+
+
+def _make_profile_handler(container):
+    """`reset_profile` 的命令体：**复用能力层**（`capabilities.invoke`），不复制第二份逻辑。
+
+    ⚠ 这条命令**只给人**：它**不在 `TOOL_DECLS` 里** ⇒ AI 工具面没有它
+    （`reset_profile` 是"改自己的标尺"那类动作，原设计刻意不给 AI）。
+    命令面的价值在于：人类入口也走**同一道门**（写权 + `command.reset_profile` 审计）。
+    """
+    from .. import capabilities
+
+    def handler(context=None, channel=None, **args):
+        res = capabilities.invoke(container, "reset_profile",
+                                  kind=str(args.get("kind") or ""),
+                                  actor=channel.actor,
+                                  reason=str(args.get("reason") or ""))
+        if not res.get("ok"):
+            return CommandResult(ok=False, values={"ok": False},
+                                 error=envelope_to_error(res))
+        return CommandResult(ok=True, values=dict(res))
+
+    return handler
+
+
 def _result_ref(res: dict) -> dict | None:
     ref = {k: res[k] for k in _REF_KEYS if k in res and res[k] is not None}
     return ref or None
@@ -274,4 +308,21 @@ def build_commands(container, sw) -> list[str]:
         wants_channel=True,            # handler 要 channel：`gate.set` 的写权看 side
     ), _make_config_handler(sw.gate))
     names.append("set_config")
+
+    # ⚠ **`reset_profile` 是"人类专属"，这条命令只为给人一个入口**（2026-09-26）：
+    # 它是"重置兴趣画像锚点"——让 AI 自助改锚点等于让它改自己的标尺 ⇒ 本仓**刻意不把它
+    # 登记进 `TOOL_DECLS`**（AI 工具面里没有它，见 `tools.py` 的原注释）。但从前**人也没有入口**
+    # ⇒ 这里补一条命令，让 Web 的按钮能走**同一道门**（写权 + `command.reset_profile` 审计）。
+    commands.register(define_command(
+        name="reset_profile",
+        description="重置兴趣画像（人类专属：清掉行为学出来的锚点，回到出厂先验）。",
+        parameters=dict(_PROFILE_PARAMS),
+        output_schema={"type": "object", "required": ["ok"]},
+        side_effect=True,
+        scope=("profile",),
+        estimate_sec=0.5,
+        cancel_supported=False,
+        wants_channel=True,
+    ), _make_profile_handler(container))
+    names.append("reset_profile")
     return names

@@ -239,3 +239,66 @@ def test_web_port_file_name_matches_dsh_panel_config():
     assert route, "panel-config.ts 里找不到 ROUTE_PATH 的字符串值"
     assert route.group(1).startswith("/") and len(route.group(1)) > 1, (
         f"ROUTE_PATH 必须是非空绝对路径：{route.group(1)!r}")
+
+
+# ---------------------------------------------------------------- 本批两件 CLI 欠账
+def _tmp_config(tmp_path):
+    """写一份指向 tmp 的 settings.yaml，返回路径（CLI 命令用它，不碰真库/真家目录）。"""
+    from paperpilot.config import dump_settings
+
+    from .conftest import make_settings
+
+    s = make_settings(tmp_path / "data")
+    path = tmp_path / "settings.yaml"
+    path.write_text(dump_settings(s), encoding="utf-8")
+    return path
+
+
+def test_cli_call_actor_is_cli_and_warns_loudly_on_write(tmp_path, capsys):
+    """⭐ CLI `call`（欠账 1+7）：归因默认 **`cli`**（不借 human 身份）；**写能力响亮警告**
+    （说清"绕过写权门 + 没有框架操作审计"）；**读能力不警告**（对偶，防噪声）。
+    """
+    import inspect
+
+    from paperpilot.app import cli as cli_mod
+
+    default = inspect.signature(cli_mod.call_cmd).parameters["actor"].default
+    assert getattr(default, "default", default) == "cli", "默认归因必须是 cli（不冒充 human）"
+
+    cfg = _tmp_config(tmp_path)
+    cli_mod.call_cmd(tool="list_topics", param=[], actor="cli", config=cfg)      # 读能力
+    assert "绕过写权门" not in capsys.readouterr().err, "读能力不该打警告（防噪声）"
+    # 写能力：**警告必须在**（能力本身可能因参数/数据失败 ⇒ 失败退出是另一回事，这里只要警告）
+    with pytest.raises(typer.Exit):
+        cli_mod.call_cmd(tool="record_signal",
+                         param=["arxiv_id=2608.01101", "signal=view"],
+                         actor="cli", config=cfg)
+    err = capsys.readouterr().err
+    assert "绕过写权门" in err and "没有框架操作审计" in err
+    assert "已审计" not in err, "不许在警告里用'已审计'字样（那是谎话）"
+
+
+def test_cli_fetch_goes_through_the_same_capability(tmp_path, monkeypatch, capsys):
+    """⭐ CLI `fetch`（欠账 3）：走**同一个能力** `fetch_papers`（消重），参数与归因都传对。
+
+    从前的病：它自建 `ArxivClient` + 直写 repo ⇒ **命令行与 AI 是两套口径**（去噪/回落/留痕不一致）。
+    """
+    from paperpilot.app import cli as cli_mod
+
+    seen: dict = {}
+
+    class _FakeRegistry:
+        def invoke(self, name, **kw):
+            seen["name"], seen["kw"] = name, kw
+            return {"ok": True, "fetched": 7, "new": 3, "updated": 4}
+
+    # ⚠ `fetch` 里是**函数内** `from .. import capabilities` ⇒ 补丁要打在**那个模块**上
+    #   （打在 `cli_mod` 上没有这个属性——我第一版就这么错了，判据当场红）。
+    from paperpilot import capabilities as caps_mod
+
+    monkeypatch.setattr(caps_mod, "registry_for", lambda _c: _FakeRegistry())
+    cli_mod.fetch(days=5, config=_tmp_config(tmp_path))
+    assert seen["name"] == "fetch_papers", "必须调同一个能力（不许自己实现一套）"
+    assert seen["kw"]["days"] == 5 and seen["kw"]["actor"] == "cli", seen["kw"]
+    out = capsys.readouterr().out
+    assert "新增 3" in out and "更新 4" in out

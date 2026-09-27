@@ -360,6 +360,20 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         msg = "已开始跑批，请稍后刷新查看简报" if started else "已有跑批任务在进行中"
         return RedirectResponse(f"/settings?msg={msg}", status_code=303)
 
+    @app.post("/settings/profile/reset")
+    def reset_profile_row(kind: str = Form("")):
+        """重置兴趣画像（**人类专属**）：走命令面（写权门 + `command.reset_profile` 审计）。
+
+        ⚠ AI 侧**没有**这个工具（`reset_profile` 刻意**不投影**给 AI——"改自己的标尺"那类动作），
+        这里补的是**给人的入口**：从前"人类专属"却无人能用（人没有按钮，AI 也没工具 = 谁都用不了）。
+        """
+        from urllib.parse import quote
+
+        msg = _gated("reset_profile", kind=kind,
+                     reason=f"Web 设置页重置兴趣画像（{kind or '全部'}）")
+        done = f"兴趣画像已重置（{kind or '全部'}）"
+        return RedirectResponse(f"/settings?msg={quote(msg or done)}", status_code=303)
+
     @app.get("/activity", response_class=HTMLResponse)
     def activity_page(request: Request, actor: str = "", op: str = "", since_seq: int = 0):
         """记录仪（域数据面 = repo.events 的 before→after delta + undo；L5 监控面）。"""
@@ -374,7 +388,27 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
             actor=actor,
             op=op,
             since_seq=since_seq,
+            # ⚠ 无栈（单测/独立部署）时**不渲染撤销按钮**：不给做不到的承诺
+            # （这页原先的病：文案说"可在 /activity 页 undo"，而页面上根本没有那个控件）。
+            can_undo=stack is not None,
         )
+
+    @app.post("/activity/undo")
+    def undo_from_activity(seq: int = Form(0)):
+        """记录仪一键撤销（人类面）：经**与论文写同一道门**（human 通道命令面 + 写权 + 审计）。
+
+        `seq=0` = 最近一条可逆事件（命令面 `undo_change` 的语义）；不可逆的（入库/定稿）
+        由命令面明确拒绝，消息原样回给页面。
+        """
+        from urllib.parse import quote
+
+        if stack is None:
+            return RedirectResponse(
+                "/activity?msg=未接监控面：本 Web 未经统一启动入口装配 mecha 栈，无法撤销",
+                status_code=303)
+        msg = _gated("undo_change", seq=int(seq), reason="Web 记录仪一键撤销")
+        return RedirectResponse(f"/activity?msg={quote(msg or f'已撤销 seq={int(seq)}')}",
+                                status_code=303)
 
     # ------------------------------------------------- 写权控制端点（人类侧，口令 + side=human）
     # ⚠ `GET /monitor` 那个**服务端渲染的审计视图已退役**（2026-09-26）：

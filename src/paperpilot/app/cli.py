@@ -21,12 +21,12 @@ import shutil
 import subprocess
 import time
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import typer
 
-from ..infra.arxiv import ArxivClient, parse_atom
+from ..infra.arxiv import parse_atom
 from ..mecha_adapter.hub import BOOT_MODE_DEFAULT
 
 #: `--mode` 的帮助文案（四个值逐一说清；尤其 `ai` = **只有 AI 能写**，别让名字猜）。
@@ -347,28 +347,25 @@ def fetch(
     days: int = typer.Option(3, "--days", "-d", help="抓取最近 N 天提交的论文"),
     config: Path = typer.Option(None, "--config", "-c"),
 ) -> None:
-    """抓取 arXiv 新论文入库（遵守 3s 限速）。"""
+    """抓取 arXiv 新论文入库（遵守 3s 限速）。
+
+    ⚠ **与 AI 同源**（2026-09-26 消重）：本命令走**同一个能力** `fetch_papers`，
+    不再自己建 `ArxivClient` + 直写 repo——否则命令行与 AI 抓的**口径/计数会不一样**
+    （去噪、`global_fallback`、域留痕都在能力里）。归因记 `cli`（不借 human 身份）。
+    """
+    from .. import capabilities
     from ..config import load_settings
-    from ..infra.db import init_db, make_engine, make_session_factory
-    from ..infra.fts import PaperIndex
-    from ..infra.repo import PaperRepository
+    from .container import build_container
 
     settings = load_settings(config)
-    engine = make_engine(settings.db_path)
-    init_db(engine)
-    repo = PaperRepository(make_session_factory(engine), index=PaperIndex(engine))
-
-    client = ArxivClient(cache_dir=settings.cache_dir / "arxiv")
-    since = datetime.utcnow() - timedelta(days=days)
-    papers = client.fetch_candidates(
-        topics=settings.topics,
-        categories=settings.arxiv_categories,
-        since=since,
-    )
-    result = repo.upsert_papers(
-        papers, actor="human", reason=f"CLI 抓取最近 {days} 天论文"
-    )
-    typer.echo(f"抓取 {len(papers)} 篇：新增 {result['new']}，更新 {result['updated']}")
+    out = capabilities.registry_for(build_container(settings)).invoke(
+        "fetch_papers", days=int(days), actor="cli",
+        reason=f"CLI 抓取最近 {days} 天论文")
+    if not out.get("ok"):
+        typer.echo(json.dumps(out, ensure_ascii=False, default=str))
+        raise typer.Exit(code=1)
+    typer.echo(f"抓取 {out.get('fetched', 0)} 篇：新增 {out.get('new', 0)}，"
+               f"更新 {out.get('updated', 0)}")
 
 
 @app.command()
@@ -684,16 +681,31 @@ def call_cmd(
     param: list[str] = typer.Option(
         None, "--param", "-p", help="key=value，可多次；value 先按 JSON 解析，失败则当字符串"
     ),
-    actor: str = typer.Option("human", "--actor", help="归因：谁在调用（human/ai/...）"),
+    actor: str = typer.Option("cli", "--actor",
+                              help="归因：谁在调用。默认 `cli`＝命令行自己（**别借 human 身份**）"),
     config: Path = typer.Option(None, "--config", "-c"),
 ) -> None:
-    """调用一个能力，打印统一信封 JSON（供任意外部程序/AI 经 subprocess 消费）。"""
+    """调用一个能力，打印统一信封 JSON（供任意外部程序/AI 经 subprocess 消费）。
+
+    ⚠ **这是一条"开着"的通道**：它**直调能力注册表** ⇒ **不起 mecha 栈、不走写权门、
+    也没有框架操作审计**。所以两条纪律：
+    ① 归因默认记 `cli`（**不冒充 human**——本仓"别借身份"的纪律）；
+    ② 目标是**写能力**时**响亮警告**（说清绕过了什么），**不静默**。
+    受治理的正式入口：dsh 对话里的 MCP 工具面、或 Web（`/settings` 与论文库按钮）。
+    """
     from ..capabilities import build_registry
     from ..config import load_settings
     from .container import build_container
 
     registry = build_registry(build_container(load_settings(config)))
     spec = registry.get(tool)
+    if spec is not None and getattr(spec, "kind", "read") == "write":
+        typer.echo(
+            f"⚠ 绕过写权门：`{tool}` 是**写能力**，本命令直调能力注册表 ⇒ "
+            "不走写权门、且**没有框架操作审计**"
+            f"（域 journal 仍会记 actor={actor!r}）。"
+            "受治理的入口：dsh 对话里的同名工具、或 Web 界面。",
+            err=True)
     params = _coerce_params(spec, param or [])
     if spec is not None and "actor" in spec.params:
         params.setdefault("actor", actor)

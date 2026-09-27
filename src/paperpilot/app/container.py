@@ -58,7 +58,19 @@ def build_container(settings: Settings | None = None) -> Container:
     init_db(engine)
     index = PaperIndex(engine)
     repo = PaperRepository(make_session_factory(engine), index=index)
+    # ⭐ **启动期两次写也留痕**（2026-09-26）：从前它们只在框架外悄悄发生——
+    # 建表/迁移与"把 YAML 主题真相源对齐进 DB"都是**域状态改动**，却没有任何地方能事后看出
+    # "这次启动干了什么"。两条都记**域 journal**（`record_op`：只读面的使用日志，`reversible=0`、
+    # **不进 mecha History**——History 只记状态变更），归因 `actor="system"`（不是 human/ai）。
+    # ⚠ `init_db` 是**幂等**的（`create_all` + `IF NOT EXISTS`，库内**无版本表**）⇒ 每次启动都会记
+    # 一条"启动建表/迁移"，这是**事实陈述**不是噪声；要"只在真变化时记"得先有 schema 版本概念（另批）。
+    repo.record_op("migrate", target="schema",
+                   after={"ddl": "create_all+fts5+append_only_trigger"},
+                   actor="system", reason="启动建表/迁移（幂等）")
     repo.sync_topics(settings.topics)
+    repo.record_op("sync_topics_boot", target="topics",
+                   after={"count": len(settings.topics)},
+                   actor="system", reason="启动把 YAML 主题真相源对齐进 DB")
 
     ranker = summarizer = None
     notes: list[str] = []

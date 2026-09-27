@@ -552,3 +552,21 @@ def test_read_capability_catch_all_has_hint(tmp_path, monkeypatch):
     out = _call(stack["tools"], "read_paper", arxiv_id="2608.01101")
     assert out["ok"] is False and out["error"]["kind"] == "ValueError"
     assert out["error"]["hint"], "兜底错误必须带 hint"
+
+
+def test_boot_writes_leave_domain_traces(tmp_path):
+    """⭐ 启动期两次写也**留痕**（本批补）：建表/迁移、把 YAML 主题真相源对齐进 DB。
+
+    它们都是**域状态改动**，从前在框架外悄悄发生、事后无从查起。两条都记**域 journal**
+    （`record_op`：`reversible=0`），归因 `actor="system"`（启动不是人、也不是 AI）。
+
+    **对偶**：这两条**不进 mecha History**——History 只记状态变更（`/config`/`/history` 看的是它），
+    而"启动做了一次建表/对齐"属于**只读面的使用日志**，只该在 `/activity` 看到。
+    """
+    container, stack = _stack(tmp_path)
+    repo = container.repo
+    assert repo.events_since(since_seq=0, actor="system", op="migrate")["count"] >= 1
+    assert repo.events_since(since_seq=0, actor="system", op="sync_topics_boot")["count"] >= 1
+    hist_keys = {e.key for e in stack["history"].events()}
+    assert "migrate" not in hist_keys and "sync_topics_boot" not in hist_keys, (
+        "启动留痕属于域 journal（/activity），不该混进 mecha History")
