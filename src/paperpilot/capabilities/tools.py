@@ -54,6 +54,13 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
                       "date": "评审对应日期 ISO 格式（省略=今天）",
                       "reason": "一句话中文说明目的"},
     "list_briefings": {"limit": "最多返回条数（1-60，默认 14）"},
+    "get_profile": {"top": "每维返回条数（1-50，默认 12）",
+                    "half_life_days": "衰减半衰期（天，默认 30）：旧兴趣按指数淡出"},
+    "reset_profile": {"kind": "只清某一维 category|term|author；空=全部",
+                      "reason": "一句话中文说明重置原因"},
+    "record_signal": {"arxiv_id": "论文 arXiv 编号（需已入库）",
+                      "signal": "view|outbound|download|star|read|skip|uninterested",
+                      "reason": "一句话中文说明信号来源"},
     "delete_briefing": {"date": "简报日期 ISO 格式（必填；先 list_briefings 确认）",
                         "reason": "一句话中文说明删除原因"},
     "finalize_briefing": {"date": "日期 ISO 格式（省略=今天）", "force": "已定稿时是否强制重跑",
@@ -310,6 +317,42 @@ def build_registry(container) -> Registry:
                        hint=str(diag.get("hint") or ""),
                        suggest=list(diag.get("suggests") or []))
         return ok(**payload)
+
+    @reg.tool(name="get_profile", kind="read",
+              description="读兴趣画像：arXiv 分类/词/作者三维权重 top + 分类熵（防茧房哨兵）。"
+                          "行为信号驱动，YAML 主题只是先验种子。")
+    def get_profile(top: int = 12, half_life_days: float = 30.0) -> dict:
+        repo.profile_seed_if_empty(settings.topics)
+        view = repo.profile_view(top=max(1, min(int(top), 50)),
+                                 half_life_days=max(0.001, float(half_life_days)))
+        return ok(**view, note="画像由行为信号驱动；熵过低=兴趣收窄，feed 会自动加倍探索道；"
+                                "重置仅人类侧（reset_profile）")
+
+    @reg.tool(name="reset_profile", kind="write", reversible=True,
+              description="清空/重置兴趣画像（**人类专属**：不投影给 AI，防自改锚点）。"
+                          "快照留痕，undo_change 可还原。")
+    def reset_profile(kind: str = "", actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        if kind and kind not in ("category", "term", "author"):
+            return err("bad_params", f"kind 只能是 category|term|author|空(全部)，收到 {kind!r}")
+        return repo.profile_reset(kind=kind, actor=actor, reason=reason)
+
+    @reg.tool(name="record_signal", kind="write",
+              description="记一个兴趣信号：对话里用户说'我下了/看了/不感兴趣'就用它声明，"
+                          "与站内实测信号（跳转路由自动记）**同表同权**；需论文已入库。")
+    def record_signal(arxiv_id: str, signal: str, actor: str = ACTOR_DEFAULT,
+                      reason: str = "") -> dict:
+        allowed = [k for k in repo.SIGNAL_WEIGHTS if k != "seed"]
+        if signal not in repo.SIGNAL_WEIGHTS or signal == "seed":
+            return err("bad_params", f"未知信号 {signal!r}",
+                       hint=f"可选：{'/'.join(allowed)}", suggest=allowed)
+        if repo.get_paper(arxiv_id) is None:
+            return err("not_found", f"库里没有 {arxiv_id}，先 fetch_paper_by_id 拉入再记信号",
+                       hint="信号的特征来自论文自分类/标题/作者，需先入库")
+        repo.profile_seed_if_empty(settings.topics)
+        repo.record_signal(arxiv_id, signal, source="declared", actor=actor,
+                           reason=reason or f"AI 声明信号 {signal}")
+        return ok(arxiv_id=arxiv_id, signal=signal, source="declared",
+                  hint="画像已增量更新；get_profile 可验证方向")
 
     @reg.tool(name="submit_review", kind="write",
               description="阶段2：提交对候选的评审。reviews=[{arxiv_id,score,label,reason,tags?,summary?}]；"

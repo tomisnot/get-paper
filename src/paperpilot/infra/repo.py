@@ -230,10 +230,20 @@ class PaperRepository:
             ))
             return {"restored_briefing_date": before.get("date")}
 
+        if op == "profile_reset":
+            # 还原被重置的画像行（快照含 w/hits，忠实重建）
+            from .orm import ProfileWeight
+            snap = (event.before or {}).get("rows") or []
+            for item in snap:
+                s.add(ProfileWeight(kind=item["kind"], key=item["key"],
+                                    w=float(item.get("w", 0.0)),
+                                    hits=int(item.get("hits", 0))))
+            return {"restored_profile_rows": len(snap)}
+
         raise AIError(
             f"操作 {op} 不支持撤销",
             kind="unsupported_undo",
-            hint="目前支持：阅读态/笔记/主题同步/状态重置/删简报的撤销",
+            hint="目前支持：阅读态/笔记/主题同步/状态重置/删简报/画像重置的撤销",
         )
 
     # ---------------------------------------------------------------- topics
@@ -437,10 +447,10 @@ class PaperRepository:
 
     def record_signal(self, arxiv_id: str, signal: str, *, source: str = "measured",
                       actor: str = "human", reason: str = "") -> None:
-        """M0 漏斗信号记账（view/outbound/download…）：append-only，reversible=0。
+        """M0/M1 漏斗信号：事件留痕 + 画像权重增量（同事务）。
 
-        信号是轻量人类操作，与 delete_note 同族（不与 AI 争写、无可回滚状态），
-        但**进事件总线留痕**；M1 画像层消费 `signal:*` 事件更新 profile 权重。
+        信号是轻量人类操作，与 delete_note 同族（不与 AI 争写、自身不可回滚）；
+        `signal:*` 进事件总线可审计，画像 bump 与事件同提交。
         """
         with self.sf() as s:
             self._event(
@@ -452,7 +462,132 @@ class PaperRepository:
                 after={"arxiv_id": arxiv_id, "signal": signal, "source": source},
                 reversible=0,
             )
+            paper = s.scalar(select(Paper).where(Paper.arxiv_id == arxiv_id))
+            if paper is not None:
+                self._bump_profile(s, paper, signal)
             s.commit()
+
+    # ---------------------------------------------------------------- M1 画像（信号→权重，衰减在读侧）
+    SIGNAL_WEIGHTS = {"view": 0.3, "outbound": 0.5, "download": 1.0,
+                      "star": 0.8, "read": 0.6, "skip": -1.0,
+                      "uninterested": -1.5, "seed": 0.5}
+    POS_CAP = 0.3        # 单事件单键正向限幅（防回音室失控；负向不放大）
+
+    def _bump_profile(self, s: Session, paper: Paper, signal: str) -> None:
+        """信号→三维权重增量（category 主1.0/副0.6 · term 0.5 · author 0.8）。"""
+        from ..domain.profile import paper_features
+        from .orm import ProfileWeight
+        coef = self.SIGNAL_WEIGHTS.get(signal)
+        if coef is None:
+            return
+        feat = paper_features(list(paper.categories or []), paper.primary_category,
+                              paper.title or "", paper.abstract or "",
+                              list(paper.authors or []))
+        increments: dict[tuple[str, str], float] = {}
+        for c in feat["categories"][:4]:
+            increments[("category", c)] = coef * (1.0 if c == feat["primary"] else 0.6)
+        for t in feat["terms"]:
+            increments[("term", t)] = coef * 0.5
+        for a in feat["authors"]:
+            increments[("author", a)] = coef * 0.8
+        for (kind, key), delta in increments.items():
+            row = s.scalar(select(ProfileWeight).where(
+                ProfileWeight.kind == kind, ProfileWeight.key == key))
+            if row is None:
+                row = ProfileWeight(kind=kind, key=key, w=0.0, hits=0)
+                s.add(row)
+            if delta > 0:
+                delta = min(delta, self.POS_CAP)
+            row.w += delta
+            row.hits += 1
+            row.updated_at = utcnow()
+
+    def profile_view(self, *, top: int = 12, half_life_days: float = 30.0,
+                     now: datetime | None = None) -> dict:
+        """画像读数：top 权重 + 分类熵（防茧房哨兵）；衰减读侧计算，不改写库。"""
+        import math
+
+        from .orm import ProfileWeight
+        now = now or utcnow()
+        hl = max(0.001, float(half_life_days))
+        agg: dict[str, list] = {"category": [], "term": [], "author": []}
+        total_hits = 0
+        with self.sf() as s:
+            for r in s.scalars(select(ProfileWeight)).all():
+                age = max(0.0, (now - r.updated_at).total_seconds() / 86400.0)
+                w = r.w * (2.0 ** (-age / hl))
+                agg.setdefault(r.kind, []).append([r.key, round(w, 4), r.hits])
+                total_hits += r.hits
+        top_lists = {k: sorted(v, key=lambda x: -x[1])[:top] for k, v in agg.items()}
+        pos = [w for _, w, _ in agg["category"] if w > 0]
+        tot = sum(pos)
+        ent = (-sum((p / tot) * math.log2(p / tot) for p in pos)
+               if tot > 0 else 0.0)
+        return {"top": top_lists, "category_entropy": round(ent, 4),
+                "total_hits": total_hits, "half_life_days": hl,
+                "distinct_categories": sum(1 for _, w, _ in agg["category"]
+                                            if abs(w) > 1e-9)}
+
+    def profile_weights_map(self, *, half_life_days: float = 30.0,
+                            now: datetime | None = None) -> dict:
+        """(kind,key)→衰减后权重，供 M2 打分器/测试消费。"""
+        from .orm import ProfileWeight
+        now = now or utcnow()
+        hl = max(0.001, float(half_life_days))
+        out: dict[tuple[str, str], float] = {}
+        with self.sf() as s:
+            for r in s.scalars(select(ProfileWeight)).all():
+                age = max(0.0, (now - r.updated_at).total_seconds() / 86400.0)
+                out[(r.kind, r.key)] = r.w * (2.0 ** (-age / hl))
+        return out
+
+    def profile_seed_if_empty(self, topics: Sequence, *, actor: str = "system") -> int:
+        """空画像 ⇒ 以 YAML 主题为先验播种（一次性；主题此后是种子不是门）。"""
+        from .orm import ProfileWeight
+        with self.sf() as s:
+            if s.scalar(select(ProfileWeight.id)) is not None:
+                return 0
+            seeded = 0
+            wanted: dict[tuple[str, str], float] = {}
+            for t in topics:
+                plan = [("category", list(getattr(t, "categories", []) or [])),
+                        ("term", [k.lower() for k in (getattr(t, "keywords", []) or [])]),
+                        ("author", list(getattr(t, "authors", []) or []))]
+                for kind, keys in plan:
+                    for key in keys:
+                        if key:
+                            # 多主题共享同一分类/词只能铸一行（(kind,key) 唯一约束）
+                            wanted.setdefault((kind, key), self.SIGNAL_WEIGHTS["seed"])
+            for (kind, key), w0 in wanted.items():
+                s.add(ProfileWeight(kind=kind, key=key, w=w0, hits=0))
+                seeded += 1
+            if seeded:
+                self._event(s, op="profile_seed", actor=actor,
+                            reason="空画像播种：以 YAML 主题为先验",
+                            target="profile", after={"seeded": seeded}, reversible=0)
+            s.commit()
+            return seeded
+
+    def profile_reset(self, *, kind: str = "", actor: str = "human",
+                      reason: str = "") -> dict:
+        """清空画像（整表或按 kind）。before 快照 ⇒ undo 可还原（中毒重来不丢历史）。"""
+        from .orm import ProfileWeight
+        with self.sf() as s:
+            stmt = select(ProfileWeight)
+            if kind:
+                stmt = stmt.where(ProfileWeight.kind == kind)
+            rows = list(s.scalars(stmt).all())
+            snap = [{"kind": r.kind, "key": r.key, "w": r.w, "hits": r.hits} for r in rows]
+            for r in rows:
+                s.delete(r)
+            if snap:
+                self._event(s, op="profile_reset", actor=actor,
+                            reason=reason or "画像重置（中毒/冷启动重来）",
+                            target=kind or "all",
+                            before={"rows": snap}, after={"removed": len(snap)},
+                            reversible=1)
+            s.commit()
+            return {"ok": True, "removed": len(snap), "kind": kind or "all"}
 
     def reset_statuses(
         self,

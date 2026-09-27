@@ -187,6 +187,22 @@ class ReadingState(Base):
     paper: Mapped[Paper] = relationship(back_populates="reading")
 
 
+class ProfileWeight(Base):
+    """M1 画像权重行（kind=category|term|author）：(kind,key) 唯一。
+
+    存**原始累计值**，衰减在读侧计算（免写放大、可审计）；单事件正向限幅在写侧。
+    """
+    __tablename__ = "profile_weights"
+    __table_args__ = (UniqueConstraint("kind", "key", name="uq_profile_kind_key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(16), index=True)
+    key: Mapped[str] = mapped_column(String(200), index=True)
+    w: Mapped[float] = mapped_column(Float, default=0.0)
+    hits: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class Event(Base):
     """append-only 事件（L2 记录仪，docs/GAPS.md §3）。
 

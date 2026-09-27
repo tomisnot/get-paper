@@ -83,6 +83,13 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
     ToolDecl("query_briefings", "list_briefings", "read",
              "列出已归档的简报（日期、run_id、入选篇数、是否 AI、状态），按日期倒序。"
              "与 read_digest 分工：本工具给管理面（有哪些简报可删）；read_digest 给阅读面。"),
+    ToolDecl("query_profile", "get_profile", "read",
+             "读兴趣画像：arXiv 分类/词/作者三维权重 top + 分类熵（防茧房哨兵）。"
+             "行为信号驱动，主题只是先验种子。"),
+    ToolDecl("record_signal", "record_signal", "write",
+             "记一个兴趣信号（view/outbound/download/star/read/skip/uninterested）；"
+             "用户口头说'我下了/看了/不感兴趣'时用它声明，与站内实测信号同权。",
+             omit=("actor",)),
     # ------------------------------------------------------------ 写入 / 运行面（14）
     ToolDecl("undo_change", "undo", "write",
              "撤销一条可逆的写入（seq=0=最近一条可逆操作）。入库与定稿不可逆，会明确说明。",
