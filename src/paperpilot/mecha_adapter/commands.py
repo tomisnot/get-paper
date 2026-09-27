@@ -134,6 +134,41 @@ def _command_params(cap_params: dict, omit: tuple[str, ...]) -> dict:
     return {"type": "object", "properties": props, "required": required}
 
 
+#: `set_config` 命令的参数契约（手写：它不对应任何能力自描述）。
+#: ⚠ **形状必须是 JSON-schema 形**（`{type, properties, required}`）——与 `_command_params`
+#: 的返回值同一形状；写成扁平的 `{name: {...}}` 会被框架判成"参数未声明"（我第一版就踩了）。
+#: ⚠ `reason` **必须列进 `required`**：框架把 `reason`/`call_id` 当 `RESERVED_ARGS`，
+#: **不声明就会在进 handler 之前被剥掉**（只进审计 meta）——与 18 条写命令同一纪律
+#: （工具面对模型仍可选，由桥接填默认串）。
+_CONFIG_PARAMS: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "key": {"type": "string", "description": "可写配置键（见 read_config 的清单）"},
+        "value": {"description": "新值，类型须匹配该键（见 read_config）"},
+        "reason": {"type": "string", "description": "一句话中文说明本次改动目的"},
+    },
+    "required": ["key", "value", "reason"],
+}
+
+
+def _make_config_handler(gate):
+    """`set_config` 的命令体：**复用** `tools._set_config`（不复制第二份收编/校验/回执）。
+
+    失败（`authority_locked` / `unknown_key` / `bad_value` …）**原样抛出** ⇒ 由框架转成
+    **同一 kind** 的 failure，与它直写 `gate.set` 时的档位一致
+    （判据 `test_set_config_gated` / `test_unknown_config_key_is_teachable` **未改仍绿**）。
+    """
+    from .tools import _set_config  # 延迟导入：commands ↔ tools 的既有依赖方向
+
+    def handler(context=None, channel=None, **args):
+        return CommandResult(
+            ok=True,
+            values=_set_config(gate, channel, args["key"], args["value"],
+                               str(args.get("reason") or "")))
+
+    return handler
+
+
 def _result_ref(res: dict) -> dict | None:
     ref = {k: res[k] for k in _REF_KEYS if k in res and res[k] is not None}
     return ref or None
@@ -221,4 +256,22 @@ def build_commands(container, sw) -> list[str]:
         commands.register(spec, _make_handler(
             container, decl, sw.surface, sw.gate))
         names.append(decl.mecha_name)
+
+    # ⭐ **配置写也进命令面**（2026-09-26）：`set_config` 曾是**唯一直写 `gate.set` 的写工具**
+    # （见 `tools.py::_register_config_tools`）⇒ 框架账上只有"某个配置键变了"这条**键事件**，
+    # **没有"谁执行了一次 set_config"这条操作记录**。这里补一条命令，把那一半补上。
+    # ⚠ handler **直接复用 `tools._set_config`**（收编 `_coerce_config` + 校验 `gate.set` +
+    # 回执 `ok/key/before/resolved/readback`，**一行都不复制**）；失败原样抛出 ⇒ 档位不变。
+    commands.register(define_command(
+        name="set_config",
+        description="写一个可写标量配置键（类型/值域由 Gate 校验）；改动会留操作审计。",
+        parameters=dict(_CONFIG_PARAMS),
+        output_schema={"type": "object", "required": ["ok"]},
+        side_effect=True,
+        scope=("config",),
+        estimate_sec=0.5,              # 本地单键写：小而非零（与写能力同一纪律）
+        cancel_supported=False,
+        wants_channel=True,            # handler 要 channel：`gate.set` 的写权看 side
+    ), _make_config_handler(sw.gate))
+    names.append("set_config")
     return names

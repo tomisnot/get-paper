@@ -262,7 +262,7 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
             execute=execute,
             banned_words=_BANNED_WORDS,
         ))
-    _register_config_tools(reg, sw.gate, channel)
+    _register_config_tools(reg, sw, channel)
     _register_authority_tool(reg, sw.authority)
     _register_job_tools(reg, sw, channel, container)
     return reg
@@ -309,13 +309,40 @@ def _make_command_bridge(commands, gate, channel: Channel, cmd_name: str, *, app
     return _exec
 
 
-def _register_config_tools(reg: ToolRegistry, gate, channel: Channel) -> None:
-    """配置态工具（Scheme E：标量走 Gate）：set_config 经 gate.set，read_config 读快照。
+def _register_config_tools(reg: ToolRegistry, sw, channel: Channel) -> None:
+    """配置态工具（Scheme E：标量走 Gate）：**set_config 走命令面**，read_config 直读快照。
 
-    set_config 是**命名 lambda**（签名可用）⇒ MCP 投影的 required 从签名派生即对，
-    不需 RequiredSource 注入。写经 ``gate.set`` ⇒ authority（写权模式）+ validate
-    （键/类型/值域）双闸；LOCKED 时 GateDenied，快照一字节不动。
+    ⭐ **写的那半走命令面**（2026-09-26）：`set_config` 原先是**唯一直写 `gate.set` 的写工具**
+    ⇒ 框架账上只有"某个配置键变了"这条**键事件**，没有"谁执行了一次 set_config"这条**操作审计**。
+    现在它经 `invoke_command`（与 19 条写能力同一条路）⇒ **键事件与 `command.set_config` 审计
+    同时落账**（判据 `test_set_config_via_tools_leaves_command_audit`）。
+    ⚠ **只读的那半（`read_config`）一行不动**：D-4 —— 只读不经门、也不产生操作审计
+    （对偶判据 `test_read_config_stays_ungated`）。
+    ⚠ **工具签名保持具名**（`key, value, reason="ai set_config"`，不用 `**kwargs`）：该工具的 MCP
+    投影历史上依赖"签名可用"（MCP 的 required 从签名派生）⇒ 换形状会改掉模型看到的参数面。
     """
+    from .commands import invoke_command  # 延迟导入：commands 依赖 tools，避免模块级循环
+
+    gate = sw.gate  # 只读那半仍直读快照（不经门）
+
+    def _set_config_via_command(key: str, value, reason: str = "ai set_config"):
+        """工具面 → 命令面。成功把命令体 values 原样返回（**回执形状不变**：
+        `ok/key/before/resolved/readback`）；失败按命令面桥的同一做法抛 `MechaError`
+        （kind/hint/suggest 取自 failure）⇒ 对模型的失败档位与从前一致。"""
+        res = invoke_command(sw.commands, sw.gate, channel, "set_config",
+                             {"key": key, "value": value, "reason": reason},
+                             approval=sw.approval)
+        if res["is_error"]:
+            failure = res["error"]
+            info = failure.get("info", {})
+            raise MechaError(
+                str(failure.get("message") or "配置写入失败"),
+                kind=str(info.get("kind") or "error"),
+                hint=str(info.get("hint") or ""),
+                suggest=str(info.get("suggest") or ""),
+            )
+        return res["value"]
+
     reg.register(define_tool(
         name="set_config",
         description=(
@@ -330,8 +357,7 @@ def _register_config_tools(reg: ToolRegistry, gate, channel: Channel) -> None:
                     "reason": {"type": "string", "default": "ai set_config",
                                "description": "一句话中文说明改动目的"}},
         output_schema={"type": "object", "required": ["ok", "key"]},
-        execute=lambda key, value, reason="ai set_config": _set_config(
-            gate, channel, key, value, reason),
+        execute=_set_config_via_command,
         banned_words=_BANNED_WORDS,
     ))
     reg.register(define_tool(

@@ -27,6 +27,8 @@ description: >-
 > 出厂默认**；系统被配置拦下时会响亮给路（notes/hint/suggest），静默空转不存在——
 遇到就截图报给用户，那是 bug。
 
+`set_config` 自身也走命令面 ⇒ 每次配置改动在框架账上都有 `command.set_config` 审计。
+
 ## 日常三段评审 SOP（省 token 姿势）
 
 1. `fetch_papers(days=N)`。注意：工具单 query 只回**最新 50 条**；

@@ -431,6 +431,38 @@ def test_unknown_config_key_is_teachable(tmp_path):
     assert out["ok"] is False and out["error"]["kind"] == "unknown_key"
 
 
+def test_set_config_via_tool_leaves_command_audit(tmp_path):
+    """⭐ 本批的全部意义：**工具面写一次配置 ⇒ 框架账上【同时】有域键事件与 `command.set_config` 审计**。
+
+    为什么需要这条：`set_config` 曾是**唯一直写 `gate.set`** 的写工具（不过命令面）⇒
+    框架账上只有"某个配置键变了"，**没有"AI 执行了一次 set_config"这条操作记录**。
+    接线到命令面之后，**这条判据是唯一能证明它真的接通了**的东西。
+
+    红证（实测留存）：**实现接通之前**跑本条 ⇒ `command.set_config` 那句**必红**。
+    """
+    _container, stack = _stack(tmp_path)
+    out = _call(stack["tools"], "set_config", key="scoring.max_papers", value=3,
+                reason="测试操作审计")
+    assert out["ok"] is True and out["readback"] == 3
+    keys = [e.key for e in stack["history"].events()]
+    assert "scoring.max_papers" in keys, "域键事件丢了（gate.set 那条路必须还在）"
+    assert "command.set_config" in keys, (
+        "框架账上没有 `command.set_config` ⇒ set_config 没走命令面（本批的全部意义）")
+
+
+def test_read_config_stays_ungated(tmp_path):
+    """对偶：**`read_config` 仍然不经门**（别顺手把只读那半也塞进命令面）。
+
+    LOCKED（出厂）下也能读快照，且 History 里**不出现** `command.read_config`——
+    D-4：只读路径不经门，也不产生操作审计。
+    """
+    _container, stack = _stack(tmp_path, open_ai=False)        # 出厂 LOCKED
+    out = _call(stack["tools"], "read_config")
+    assert out["ok"] is True and out["config"]["scoring.threshold"] == 0.5
+    keys = [e.key for e in stack["history"].events()]
+    assert "command.read_config" not in keys, "read_config 不该有命令审计（它不经门）"
+
+
 # ======================================================== 设计师复审回归（三项修复）
 def test_write_reason_reaches_domain_journal(tmp_path):
     """复审①：操作者的 reason 必须落进**域 journal**（repo.events），不只是 mecha 审计。
