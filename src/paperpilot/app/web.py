@@ -339,7 +339,36 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         notify_enabled: bool = Form(False),
         webhook_url: str = Form(""),
     ):
+        """保存全局参数——⚠ **分两块，两块的性质不一样**（第 5 件修"两个真相源"）：
+
+        * **6 个标量**（`lookback_days` + 5 个 `scoring.*`）**在 `CONFIG_SCHEMA` 里**
+          ⇒ 它们是 **Gate 状态**（seed 进快照、`gate_scoring_override` 让流水线以**快照**为准）
+          ⇒ 从前这里直写 YAML+内存 = **绕过了它们自己的权威**（面板 `/config` 看快照、
+          Web 改 YAML ⇒ 同一个键两个真相源）。现在走**批量命令** `set_config_batch`
+          （内部 `gate.set_batch`，**整批原子**：任一键非法 ⇒ 一个都不落地）+ `command.*` 审计；
+          随后写 YAML 只是**留启动种子**（`seed` 的语义），**运行时权威在 Gate 快照**。
+        * **3 个不在 schema 的键**（`review_floor` / `notify.*`）**归 YAML**（裁决 A2）：
+          今天没有任何 AI 路径需要写它们 ⇒ 不搬进 Gate（不为不存在的需求换真相源）；
+          但**改动记一条域事件**（`record_op("set_settings")`）⇒ **有痕、可查**。
+        """
+        from urllib.parse import quote
+
         s = container.settings
+        gate_items = {
+            "lookback_days": lookback_days,
+            "scoring.threshold": threshold,
+            "scoring.quota_per_topic": quota_per_topic,
+            "scoring.max_papers": max_papers,
+            "scoring.max_per_author": max_per_author,
+            "scoring.must_read_cap": must_read_cap,
+        }
+        if stack is not None:
+            denied = _gated("set_config_batch", items=gate_items,
+                            reason="Web 设置页保存全局参数（6 个 Gate 标量）")
+            if denied:
+                # ⚠ 整批被拒 ⇒ **一个键都没落地**（set_batch 原子）⇒ YAML 也不写（别留半拉子）
+                return RedirectResponse(f"/settings?msg={quote(denied)}", status_code=303)
+        # 内存 settings 与 YAML 都跟着更新：Gate 是**运行时权威**，YAML 是**启动种子**
         s.lookback_days = lookback_days
         s.scoring.threshold = threshold
         s.scoring.quota_per_topic = quota_per_topic
@@ -350,7 +379,14 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         s.notify.enabled = notify_enabled
         s.notify.webhook_url = webhook_url
         save_settings(s)
-        return RedirectResponse("/settings?msg=全局参数已保存（AI provider 重启后生效）", status_code=303)
+        # 3 个"YAML 管辖"的键：留一条域痕（它们不在门的管辖内，面板也看不见它们——但要可查）
+        container.repo.record_op(
+            "set_settings", target="yaml",
+            after={"review_floor": review_floor, "notify.enabled": notify_enabled,
+                   "notify.webhook_url": webhook_url},
+            actor="human", reason="Web 设置页保存全局参数（YAML 管辖的 3 键）")
+        return RedirectResponse("/settings?msg=全局参数已保存（Gate 标量走门+审计；"
+                                "review_floor/notify.* 归 YAML，改动已留痕）", status_code=303)
 
     @app.post("/settings/run")
     def trigger_run():

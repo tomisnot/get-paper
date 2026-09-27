@@ -203,6 +203,37 @@ def _make_profile_handler(container):
     return handler
 
 
+#: `set_config_batch` 的参数契约（手写）。`items` = {键: 值}；`reason` 必须进 required。
+_CONFIG_BATCH_PARAMS: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "items": {"type": "object", "description": "{可写配置键: 新值}（整批原子）"},
+        "reason": {"type": "string", "description": "一句话中文说明本次批量改动目的"},
+    },
+    "required": ["items", "reason"],
+}
+
+
+def _make_config_batch_handler(gate):
+    """`set_config_batch` 的命令体：整批一次 `gate.set_batch`（**原子**）。
+
+    ⚠ 值的收编（表单来的都是字符串 ⇒ 数值键要转回数值）**复用 `tools._coerce_config`**，
+    不复制第二份。失败（未知键 / 越界 / 写权）**原样抛出** ⇒ 框架转成同一档失败，
+    且因为 `set_batch` 是"先全校验再全落地"⇒ **一个键非法，整批一个都不落地**。
+    """
+    from .tools import CURRENT_CALL_ID, _coerce_config
+
+    def handler(context=None, channel=None, **args):
+        items = dict(args.get("items") or {})
+        coerced = {k: _coerce_config(k, v) for k, v in items.items()}
+        events = gate.set_batch(channel, coerced, str(args.get("reason") or ""),
+                                call_id=CURRENT_CALL_ID.get())
+        return CommandResult(ok=True, values={"ok": True, "count": len(events),
+                                              "keys": sorted(coerced)})
+
+    return handler
+
+
 def _result_ref(res: dict) -> dict | None:
     ref = {k: res[k] for k in _REF_KEYS if k in res and res[k] is not None}
     return ref or None
@@ -260,7 +291,7 @@ def _make_handler(container, decl, surface, gate):
 
 
 def build_commands(container, sw) -> list[str]:
-    """把 13 个写能力注册成命令（进 ``sw.commands``）。返回注册的命令名清单。
+    """把写能力注册成命令（进 ``sw.commands``）。返回注册的命令名清单。
 
     ⚠ **不再传通道**：命令声明 ``wants_channel=True``，由框架在每次调用时注入**本次**的
     通道（这才是正确归因——装配期捕获一个默认通道正是发现 9 的成因）。
@@ -325,4 +356,23 @@ def build_commands(container, sw) -> list[str]:
         wants_channel=True,
     ), _make_profile_handler(container))
     names.append("reset_profile")
+
+    # ⭐ **批量配置写（第 5 件：修"两个真相源"）**：`/settings/general` 的 6 个标量键
+    # **本来就是 Gate 状态**（`CONFIG_SCHEMA` ⇒ `gate.seed` 种进快照、`gate_scoring_override`
+    # 让流水线以**快照**为准），而 Web 从前**直写 YAML+内存** ⇒ **绕过了它们自己的权威**
+    # （面板 `/config`、`set_config`、流水线看快照；Web 改的是 YAML ⇒ 两个真相源）。
+    # 这里补一条**批量命令**（内部 `gate.set_batch`）⇒ 保住"整表单一次提交"的 UX，
+    # 且拿到 `set_batch` 的**原子语义**（任一键非法 ⇒ 一个都不落地）+ `command.set_config_batch` 审计。
+    commands.register(define_command(
+        name="set_config_batch",
+        description="批量写可写标量配置键（整批原子：任一键非法则一个都不落地）。",
+        parameters=dict(_CONFIG_BATCH_PARAMS),
+        output_schema={"type": "object", "required": ["ok"]},
+        side_effect=True,
+        scope=("config",),
+        estimate_sec=0.5,
+        cancel_supported=False,
+        wants_channel=True,
+    ), _make_config_batch_handler(sw.gate))
+    names.append("set_config_batch")
     return names

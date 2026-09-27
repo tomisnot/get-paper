@@ -97,10 +97,20 @@
       <div><label>同作者上限</label><input type="number" name="max_per_author" value="{{ settings.scoring.max_per_author }}" min="1"></div>
       <div><label>必读直通上限</label><input type="number" name="must_read_cap" value="{{ settings.scoring.must_read_cap }}" min="0"></div>
     </div>
+    <div class="muted" style="margin-top:8px; font-size:12px;">
+      上面 6 个标量（回溯天数 + 5 个评分键）**在 Gate 内**：保存时走**批量命令**（整批原子，
+      任一键非法 ⇒ 一个都不落地），并留 <code>command.set_config_batch</code> 操作审计；
+      YAML 只是它们的**启动种子**。
+    </div>
     <div class="row" style="margin-top:10px;">
       <div><label>评审下限 review_floor</label><input type="number" step="0.05" name="review_floor" value="{{ settings.scoring.review_floor }}" min="0" max="1"></div>
       <div><label>启用 Webhook 通知</label><input type="checkbox" name="notify_enabled" {{ "checked" if settings.notify.enabled }} style="width:auto;"></div>
       <div style="flex:2;"><label>Webhook 地址（飞书/钉钉/企微）</label><input type="text" name="webhook_url" value="{{ settings.notify.webhook_url }}" style="width:100%;"></div>
+    </div>
+    <div class="muted" style="font-size:12px;">
+      ⚠ 这 3 个键（<code>review_floor</code> / <code>notify.*</code>）**归 YAML 管**、**不在 Gate 内**
+      （没有任何 AI 路径会写它们 ⇒ 不为不存在的需求换真相源）⇒ 面板 <code>/config</code> 看不见它们，
+      也不产生命令审计；但每次改动会记一条**域事件**（<code>/activity</code> 可查）。
     </div>
     <div style="margin-top:12px;"><button type="submit">保存全局参数</button></div>
   </form>

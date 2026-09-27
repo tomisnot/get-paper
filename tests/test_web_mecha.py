@@ -352,3 +352,57 @@ def test_reset_profile_human_entry_but_still_not_for_ai(tmp_path):
     tool_names = {s["name"] for s in stack["tools"].schemas()}
     assert "reset_profile" not in tool_names, (
         "reset_profile 不该出现在 AI 工具面（它改的是 AI 自己的标尺）")
+
+
+# ------------------------------------------- 第 5 件：全局参数的"两个真相源"（schema 内 6 键 vs YAML 3 键）
+_GENERAL_FORM = {
+    "lookback_days": "4", "threshold": "0.5", "quota_per_topic": "3",
+    "max_papers": "9", "max_per_author": "2", "must_read_cap": "4",
+    "review_floor": "0.3", "webhook_url": "https://example.com/hook",
+}
+
+
+def test_settings_general_gate_keys_go_through_gate(tmp_path):
+    """⭐ 第 5 件：`CONFIG_SCHEMA` 内的 6 键经**批量命令**走门 ⇒
+    ① 框架账上有 `command.set_config_batch`；② **Gate 快照真的变了**。
+
+    **对偶（本条的严格之处）**：只 YAML 变了**不算过** ⇒ 所以断言的是**快照**，
+    不是 `settings.yaml`、也不是内存 `settings`（那两样从前就是被直写的地方）。
+    """
+    client, _container, stack = _gated(tmp_path)
+    resp = client.post("/settings/general", data=_GENERAL_FORM, follow_redirects=False)
+    assert resp.status_code == 303
+    assert any(e.key == "command.set_config_batch" for e in stack["history"].events()), (
+        "框架账上没有 command.set_config_batch ⇒ 这 6 个键没走门（又回到两个真相源）")
+    snap = stack["gate"].snapshot
+    assert snap["scoring.max_papers"] == 9 and snap["lookback_days"] == 4, (
+        "Gate 快照没变 ⇒ 权威没被改到；只 YAML 变了不算过")
+
+
+def test_settings_general_batch_is_atomic(tmp_path):
+    """⭐ **批量半成功**：一个键非法（阈值越界 5.0，schema 是 0..1）⇒ **一个都不落地**。
+
+    这正是 `gate.set_batch` 的原子语义（"先全校验、再全落地"）；也验本路由在整批被拒时
+    **不写 YAML**（别留半拉子）。
+    """
+    client, container, stack = _gated(tmp_path)
+    before = dict(stack["gate"].snapshot)
+    resp = client.post("/settings/general", data=dict(_GENERAL_FORM, threshold="5.0"),
+                       follow_redirects=True)
+    assert stack["gate"].snapshot == before, "整批应一个都不落地（快照一个字节不动）"
+    assert container.settings.scoring.max_papers != 9, (
+        "整批被拒时连内存/YAML 都不该被改（不留半拉子）")
+    assert "拒" in resp.text or "bad_value" in resp.text     # 失败要可读地回给页面
+
+
+def test_settings_general_yaml_keys_are_traced_and_declared(tmp_path):
+    """3 个**不在** schema 的键（`review_floor` / `notify.*`）⇒ 裁决 A2：
+    **归 YAML**（面板看不见它们是对的）+ **改动记一条域事件**（有痕可查）
+    + **UI 明说这件事**（别让人以为它们在门里）。
+    """
+    client, container, _stack = _gated(tmp_path)
+    client.post("/settings/general", data=dict(_GENERAL_FORM, webhook_url="https://x/y"),
+                follow_redirects=False)
+    assert container.repo.events_since(since_seq=0, op="set_settings")["count"] >= 1
+    page = client.get("/settings").text
+    assert "归 YAML" in page and "不在 Gate 内" in page, "UI 必须明说这 3 键不归门管"
