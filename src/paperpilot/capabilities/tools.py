@@ -58,7 +58,8 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
                       "days": "候选窗口：近 N 天入库论文（默认 14）",
                       "mix": "口味预设 auto|strict|explorer（explorer=想看点野的）",
                       "quotas": "显式四道配比 csv，如 '40,25,10,25'（覆盖 mix；探索地板 10% 压不穿）",
-                      "seen_days": "近 N 天有过信号的篇目不重喂（默认 7，0=不排）"},
+                      "seen_days": "近 N 天有过信号的篇目不重喂（默认 7，0=不排）",
+                      "offset": "换一屏的游标：跳过装配结果的前 N 篇（默认 0）。用户说'刷新/换一屏'⇒ offset=已端过的篇数；池子见底时回执 notes 会说"},
     "get_profile": {"top": "每维返回条数（1-50，默认 12）",
                     "half_life_days": "衰减半衰期（天，默认 30）：旧兴趣按指数淡出"},
     "reset_profile": {"kind": "只清某一维 category|term|author；空=全部",
@@ -338,13 +339,17 @@ def build_registry(container) -> Registry:
               description="生成兴趣推荐流（四道召回：主兴趣/邻接桥/热点作者/探索，带道属与 why，"
                           "确定性可复算、0 token）。limit/mix/quotas 由调用者按语境自由定——显式意图胜默认。")
     def feed_generate(limit: int = 25, days: int = 14, mix: str = "auto",
-                      quotas: str = "", seen_days: int = 7) -> dict:
+                      quotas: str = "", seen_days: int = 7, offset: int = 0,
+                      actor: str = ACTOR_DEFAULT) -> dict:
         from ..domain.feed import allocate, maybe_entropy_boost, resolve_quotas
         from ..domain.profile import paper_features, score_paper
         from ..infra import arxiv_taxonomy as tax
         if not 1 <= int(limit) <= 200:
             return err("bad_params", f"limit={limit} 越界（1-200）",
                        hint="一次 20~40 是合适的刷屏量；更大窗口建议分批")
+        if int(offset) < 0:
+            return err("bad_params", f"offset={offset} 不能为负",
+                       hint="换一屏用上次回执的 meta.next_offset（或直接改 days/mix/seen_days 重配口味）")
         repo.profile_seed_if_empty(settings.topics)
         view = repo.profile_view()
         weights = repo.profile_weights_map()
@@ -401,14 +406,28 @@ def build_registry(container) -> Registry:
         boost = ""
         if not (quotas or "").strip() and (mix or "auto") == "auto":
             q, boost = maybe_entropy_boost(q, view["category_entropy"])
-        picked = allocate(buckets, limit=int(limit), quotas=q)
-        n_exp = sum(1 for x in picked if x["lane"] == "explore")
+        picked = allocate(buckets, limit=int(limit) + int(offset), quotas=q)
+        screen = picked[int(offset):int(offset) + int(limit)]
+        n_exp = sum(1 for x in screen if x["lane"] == "explore")
         meta = {"mix": (mix or "auto"), "quotas": list(q),
-                "explore_share_pct": round(100.0 * n_exp / max(1, len(picked)), 1),
+                "explore_share_pct": round(100.0 * n_exp / max(1, len(screen)), 1),
                 "category_entropy": view["category_entropy"], "seen_excluded": len(seen),
                 "days": days, "pool": sum(len(v) for v in buckets.values()),
+                "offset": int(offset), "next_offset": int(offset) + len(screen),
+                "pool_left": max(0, sum(len(v) for v in buckets.values()) - int(offset) - len(screen)),
                 "notes": [x for x in (note_q, boost) if x]}
-        return ok(feed=picked, count=len(picked), meta=meta)
+        if int(offset) and not screen:
+            meta["notes"].append(
+                f"offset={offset} 已越过池底（pool={meta['pool']}）：回第一屏用 offset=0，"
+                "或 fetch_papers 补货/加大 days/清 seen_days")
+        repo.record_op("feed_generate", actor=actor,
+                       reason=f"刷流 offset={offset} limit={limit} mix={mix or 'auto'}",
+                       after={"count": len(screen), "offset": int(offset),
+                              "pool": meta["pool"], "mix": meta["mix"],
+                              "lanes": {lane: sum(1 for x in screen if x["lane"] == lane)
+                                        for lane in ("primary", "adjacent", "hot", "explore")},
+                              "ids": [x["arxiv_id"] for x in screen[:12]]})
+        return ok(feed=screen, count=len(screen), meta=meta)
 
     @reg.tool(name="reset_profile", kind="write", reversible=True,
               description="清空/重置兴趣画像（**人类专属**：不投影给 AI，防自改锚点）。"

@@ -57,53 +57,57 @@ def maybe_entropy_boost(quotas: tuple[int, int, int, int], entropy: float
 
 def allocate(buckets: dict[str, list[dict]], *, limit: int,
              quotas: tuple[int, int, int, int]) -> list[dict]:
-    """按道配额取数（同分类≤3、同作者≤1），再交织：非探索每 4 条插 1 条探索。"""
-    total_q = sum(quotas) or 100
-    counts = [max(0, int(round(limit * q / total_q))) for q in quotas]
+    """四道平滑加权轮转（SWR）产出**一条全局确定性序列**（取满 limit 为止）。
+
+    序列与调用参数无关地稳定（池/配额同 ⇒ 前缀同）：offset 续屏正是第 N+1 篇起，
+    不重叠不空洞。同分类≤3/同作者≤1 在输出流上永久跳过（确定、不复活）。
+    """
+    total_q = sum(quotas)
+    if total_q <= 0:
+        quotas = (45, 25, 10, 20)
+        total_q = 100
+    weight = dict(zip(LANES, quotas, strict=True))
+    acc = dict.fromkeys(LANES, 0)
+    ptr = dict.fromkeys(LANES, 0)
+    live = {lane for lane in LANES if buckets.get(lane)}
     picked: list[dict] = []
     picked_ids: set[str] = set()
     per_cat: dict[str, int] = {}
     per_author: dict[str, int] = {}
 
-    def fits(it: dict) -> bool:
-        if it["arxiv_id"] in picked_ids:
-            return False
-        if per_cat.get(it["primary_category"], 0) >= MAX_PER_CATEGORY:
-            return False
-        if any(per_author.get(a, 0) >= MAX_PER_AUTHOR for a in it["authors"]):
-            return False
-        return True
+    def take_valid(lane: str) -> dict | None:
+        items = buckets.get(lane, [])
+        while ptr[lane] < len(items):
+            it = items[ptr[lane]]
+            ptr[lane] += 1
+            if it["arxiv_id"] in picked_ids:
+                continue
+            if per_cat.get(it["primary_category"], 0) >= MAX_PER_CATEGORY:
+                continue
+            if any(per_author.get(a, 0) >= MAX_PER_AUTHOR for a in it["authors"]):
+                continue
+            picked_ids.add(it["arxiv_id"])
+            per_cat[it["primary_category"]] = per_cat.get(it["primary_category"], 0) + 1
+            for a in it["authors"]:
+                per_author[a] = per_author.get(a, 0) + 1
+            return {**it, "lane": lane}
+        return None
 
-    def commit(it: dict, lane: str) -> None:
-        it = {**it, "lane": lane}
-        picked.append(it)
-        picked_ids.add(it["arxiv_id"])
-        per_cat[it["primary_category"]] = per_cat.get(it["primary_category"], 0) + 1
-        for a in it["authors"]:
-            per_author[a] = per_author.get(a, 0) + 1
-
-    for lane, want in zip(LANES, counts, strict=True):
-        got = 0
-        for it in buckets.get(lane, []):
-            if got >= want:
-                break
-            if fits(it):
-                commit(it, lane)
-                got += 1
-    if len(picked) < limit:                     # 配额没吃饱 ⇒ 按道序轮转补满
+    while len(picked) < limit and live:
         for lane in LANES:
-            for it in buckets.get(lane, []):
-                if len(picked) >= limit:
-                    break
-                if fits(it):
-                    commit(it, lane)
-    nonexp = [x for x in picked if x["lane"] != "explore"]
-    exp = [x for x in picked if x["lane"] == "explore"]
-    out: list[dict] = []
-    while nonexp or exp:
-        for _ in range(4):
-            if nonexp:
-                out.append(nonexp.pop(0))
-        if exp:
-            out.append(exp.pop(0))
-    return out[:limit]
+            acc[lane] += weight[lane]
+        guard = 0
+        while guard <= len(live):  # 本轮最多把枯道全部摘除
+            best = max(live, key=lambda lane_: (acc[lane_], -LANES.index(lane_)))
+            acc[best] -= total_q
+            item = take_valid(best)
+            if item is not None:
+                picked.append(item)
+                break
+            live.discard(best)
+            guard += 1
+            if not live:
+                break
+        if not live:
+            break
+    return picked

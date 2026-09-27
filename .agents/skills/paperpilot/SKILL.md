@@ -97,3 +97,4 @@ description: >-
 - 反馈随手记：用户说“下了/看了/不感兴趣” ⇒ `record_signal(download|read|uninterested)`；站内点击已自动实测，同表同权。
 - 画像审计：`get_profile` 看分类熵与 top 权重；熵过低时系统会自动加倍探索道（代码保底，你可再抬不可压穿）；`reset_profile` 是人类专属，别想着自改锚点。
 - 数量自由：日报 `finalize_briefing(max_items=N)` 可按当次语境定篇数（显式 > 配置）。
+- 刷新的决定权全在你（Web 故意不设刷新按钮）：接着往下端 `offset=`上次回执的 meta.next_offset；换口味改 mix/quotas，换窗口改 days/seen_days；池子浅了 fetch_papers 补货。用户只需要说话，手段组合由你判。

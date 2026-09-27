@@ -92,7 +92,8 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
              omit=("actor",)),
     ToolDecl("feed_generate", "feed_generate", "read",
              "生成兴趣推荐流（四道召回：主兴趣/邻接桥/热点作者/探索，带道属与 why，确定性可复算）。"
-             "limit/mix/quotas 按语境自定：用户想看点野的⇒mix=explorer。"),
+             "刷新由你定：换口味改 mix/quotas，换窗口改 days/seen_days，接着往下端用上次回执的 meta.next_offset；"
+             "池子浅了就 fetch_papers 补货。用户说'想看点野的'⇒mix=explorer。"),
     # ------------------------------------------------------------ 写入 / 运行面（14）
     ToolDecl("undo_change", "undo", "write",
              "撤销一条可逆的写入（seq=0=最近一条可逆操作）。入库与定稿不可逆，会明确说明。",

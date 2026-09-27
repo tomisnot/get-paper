@@ -153,3 +153,33 @@ def test_feed_page_reuses_digest_card(tmp_path):
     assert "TL;DR" in body and "一句话结论" in body           # 简报同款摘要块直接复用
     assert "与你的方向很相关" in body                        # 评审过⇒理由优先于道属
     assert "还没有中文摘要" in body                          # 没评过的给指路，不装
+
+
+def test_feed_refresh_cursor_is_ai_owned(tmp_path):
+    """能红（刷新自由归 AI）：offset 换屏不重喂不空转，回执带 next_offset 自续标；
+    越过池底不静默——notes 里给出路；每次刷先进归因总线（监控/记录仪可见性）。"""
+    _c, reg = _reg(tmp_path)
+    from paperpilot.infra.arxiv import parse_atom
+
+    from .conftest import SAMPLE_XML
+    papers = parse_atom(SAMPLE_XML.read_text(encoding="utf-8"))
+    _c.repo.upsert_papers(papers, actor="human", reason="seed")
+    reg.invoke("record_signal", arxiv_id=papers[0].arxiv_id, signal="download")
+
+    s1 = reg.invoke("feed_generate", limit=3, days=120, seen_days=0)
+    assert s1["ok"] and s1["count"] == 3
+    ids1 = [e["arxiv_id"] for e in s1["feed"]]
+    s2 = reg.invoke("feed_generate", limit=3, days=120, seen_days=0,
+                    offset=s1["meta"]["next_offset"])
+    assert s2["ok"] and s2["count"] == 3
+    ids2 = [e["arxiv_id"] for e in s2["feed"]]
+    assert set(ids1).isdisjoint(ids2)                      # 换屏不重喂
+    assert s2["meta"]["next_offset"] == 6                  # 游标自续，AI 自己拿得走
+
+    drained = reg.invoke("feed_generate", limit=3, days=120, seen_days=0, offset=999)
+    assert drained["ok"] and drained["count"] == 0
+    assert any("池底" in n for n in drained["meta"]["notes"])   # 见底不静默，给出路
+
+    ev = reg.invoke("get_activity", op="feed_generate")
+    assert ev["events_count"] >= 3                          # 每次刷都进记录仪（谁在刷可查）
+    assert ev["events"][-1]["after"]["lanes"]                  # 留痕带得够诊断的料

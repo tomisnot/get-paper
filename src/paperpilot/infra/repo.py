@@ -589,6 +589,18 @@ class PaperRepository:
             s.commit()
             return {"ok": True, "removed": len(snap), "kind": kind or "all"}
 
+    def record_op(self, op: str, *, target: str = "", after: dict | None = None,
+                  actor: str = "system", reason: str = "") -> None:
+        """操作留痕（只读面的使用日志，如 feed 刷新）：进归因总线，reversible=0。
+
+        读操作不改状态不进 mecha History（监控面按设计只显状态变化），但**谁在刷、
+        刷出了什么**属于域归因面，该进 Web /activity 记录仪。
+        """
+        with self.sf() as s:
+            self._event(s, op=op, actor=actor, reason=reason, target=target,
+                        after=after or {}, reversible=0)
+            s.commit()
+
     def feed_candidates(self, *, days: int, limit: int = 800) -> list[Paper]:
         """近 N 天 published_at 的库内论文，发布日倒序（feed 候选池）。
 
