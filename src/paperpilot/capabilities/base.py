@@ -64,7 +64,7 @@ class ToolSpec:
     name: str
     description: str
     handler: Callable[..., dict]
-    kind: Literal["read", "write"] = "read"
+    kind: Literal["read", "write", "read_telemetry"] = "read"
     reversible: bool = False
     params: dict[str, dict] = field(default_factory=dict)
 
@@ -161,7 +161,7 @@ class Registry:
         *,
         name: str,
         description: str,
-        kind: Literal["read", "write"] = "read",
+        kind: Literal["read", "write", "read_telemetry"] = "read",
         reversible: bool = False,
         params_desc: dict | None = None,
     ) -> Callable:

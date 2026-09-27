@@ -180,7 +180,7 @@ def test_feed_refresh_cursor_is_ai_owned(tmp_path):
     assert drained["ok"] and drained["count"] == 0
     assert any("池底" in n for n in drained["meta"]["notes"])   # 见底不静默，给出路
 
-    ev = reg.invoke("get_activity", op="feed_generate")
+    ev = reg.invoke("get_activity", op="telemetry.feed_generate")   # ⚠ op 名带 telemetry. 前缀（本批改）
     assert ev["events_count"] >= 3                          # 每次刷都进记录仪（谁在刷可查）
     assert ev["events"][-1]["after"]["lanes"]                  # 留痕带得够诊断的料
 

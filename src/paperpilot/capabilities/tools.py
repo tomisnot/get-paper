@@ -380,7 +380,10 @@ def build_registry(container) -> Registry:
         return ok(**view, note="画像由行为信号驱动；熵过低=兴趣收窄，feed 会自动加倍探索道；"
                                 "重置仅人类侧（reset_profile）")
 
-    @reg.tool(name="feed_generate", kind="read",
+    # ⭐ 声明与行为对齐（2026-09-26）：它**不改业务状态**（预览不落库、不建 feed 期——建期的是
+    # `publish_feed`），但会追加一条 `telemetry.*` 痕 ⇒ 这正是"读 + 遥测"那一档。
+    # ⚠ 框架没有这一档（ADR `读写遥测三档不进框架`）⇒ 由项目侧判据对账（`tests/test_telemetry_kinds.py`）。
+    @reg.tool(name="feed_generate", kind="read_telemetry",
               description="生成兴趣推荐流（四道召回：主兴趣/邻接桥/热点作者/探索，带道属与 why，"
                           "确定性可复算、0 token）。limit/mix/quotas 由调用者按语境自由定——显式意图胜默认。")
     def feed_generate(limit: int = 25, days: int = 14, mix: str = "auto",
@@ -465,7 +468,10 @@ def build_registry(container) -> Registry:
             meta["notes"].append(
                 f"offset={offset} 已越过池底（pool={meta['pool']}）：回第一屏用 offset=0，"
                 "或 fetch_papers 补货/加大 days/清 seen_days")
-        repo.record_op("feed_generate", actor=actor,
+        # ⚠ op 名带 **`telemetry.` 前缀**（2026-09-26）：按《接入指南》第 4 步的**前缀分离**
+        # 口径（`telemetry.*` 与 `signal:*` 互不计入）。**逻辑一字未改**，只改了名字
+        # ⇒ `/activity` 与 `get_activity(op=…)` 的过滤串随之变化（已申报）。
+        repo.record_op("telemetry.feed_generate", actor=actor,
                        reason=f"刷流 offset={offset} limit={limit} mix={mix or 'auto'}",
                        after={"count": len(screen), "offset": int(offset),
                               "pool": meta["pool"], "mix": meta["mix"],
