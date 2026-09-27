@@ -90,6 +90,9 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
              "记一个兴趣信号（view/outbound/download/star/read/skip/uninterested）；"
              "用户口头说'我下了/看了/不感兴趣'时用它声明，与站内实测信号同权。",
              omit=("actor",)),
+    ToolDecl("feed_generate", "feed_generate", "read",
+             "生成兴趣推荐流（四道召回：主兴趣/邻接桥/热点作者/探索，带道属与 why，确定性可复算）。"
+             "limit/mix/quotas 按语境自定：用户想看点野的⇒mix=explorer。"),
     # ------------------------------------------------------------ 写入 / 运行面（14）
     ToolDecl("undo_change", "undo", "write",
              "撤销一条可逆的写入（seq=0=最近一条可逆操作）。入库与定稿不可逆，会明确说明。",

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}推荐流{% endblock %}
+{% block content %}
+<h1>🌊 推荐流</h1>
+<div class="muted" style="margin-bottom:14px;">
+  {{ meta.count_pool or "" }}共 {{ count }} 条 · mix={{ meta.mix }} ·
+  探索占比 {{ meta.explore_share_pct }}% · 分类熵 {{ meta.category_entropy }}
+  {% if meta.days is defined %} · 近 {{ meta.days }} 天{% endif %}
+  {% for n in meta.notes %} · <b>{{ n }}</b>{% endfor %}
+</div>
+{% if not entries %}
+  <div class="flash">这一屏没端出论文——多半是库里窗口内无新文，让 AI 跑一次 fetch_papers 再刷。</div>
+{% endif %}
+{% for it in entries %}
+  <div class="card" style="margin-bottom:12px;">
+    <div style="display:flex;gap:8px;align-items:baseline;">
+      {% if it.lane == "explore" %}<span class="chip" style="background:#eef;color:#33c;">探索</span>
+      {% elif it.lane == "adjacent" %}<span class="chip">邻接</span>
+      {% elif it.lane == "hot" %}<span class="chip">热点</span>
+      {% else %}<span class="chip" style="background:#e8f6e8;color:#274;">主兴趣</span>{% endif %}
+      <a href="/papers/{{ it.arxiv_id }}" style="font-weight:600;color:var(--ink);text-decoration:none;">{{ it.title }}</a>
+    </div>
+    <div class="muted" style="font-size:13px;margin-top:4px;">
+      {{ it.arxiv_id }} · {{ it.primary_category }} · 分 {{ it.score }} · {{ it.published }}
+    </div>
+    <div style="font-size:13px;margin-top:6px;color:var(--muted);">why：{{ it.why | join("；") }}</div>
+    <div class="actions" style="margin-top:8px;">
+      <a class="btn ghost" href="/papers/{{ it.arxiv_id }}/go" target="_blank" rel="noopener">arXiv 原文</a>
+      <a class="btn ghost" href="/papers/{{ it.arxiv_id }}/pdf" target="_blank" rel="noopener">⬇ 直下 PDF</a>
+      <form method="post" action="/papers/{{ it.arxiv_id }}/star"><button class="ghost">☆ 收藏</button></form>
+      <form method="post" action="/papers/{{ it.arxiv_id }}/uninterested" style="display:inline">
+        <input type="hidden" name="next_url" value="/feed">
+        <button class="ghost">✕ 不感兴趣</button>
+      </form>
+    </div>
+  </div>
+{% endfor %}
+<p class="muted">刷新再来一屏：Feed 是纯程序确定性产物（同画像同窗口同结果）；想要别的口味，去 dsh 跟 AI 说「今天想看点野的」（mix=explorer）。</p>
+{% endblock %}

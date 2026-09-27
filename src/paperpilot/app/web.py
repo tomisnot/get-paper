@@ -102,7 +102,40 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         detail = container.retrieval.detail(arxiv_id)
         if detail is None:
             return render(request, "paper_detail.html", detail=None, arxiv_id=arxiv_id)
+        # M1 埋点：详情页打开=view 信号（弱正 +0.3）；记账失败不拦页面
+        try:
+            container.repo.record_signal(arxiv_id, "view", actor="human",
+                                         reason="Web 详情页浏览")
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger("paperpilot.web").exception("view 信号记账失败（页面照常）")
         return render(request, "paper_detail.html", detail=detail, arxiv_id=arxiv_id)
+
+    # ---------------------------------------------------------------- 推荐流（M2：只读面，无写权闸）
+    @app.get("/feed", response_class=HTMLResponse)
+    def feed_page(request: Request, limit: int = 25, mix: str = "auto", days: int = 14):
+        res = registry_for(container).invoke("feed_generate",
+                                             limit=limit, mix=mix, days=days)
+        if not res.get("ok"):
+            return render(request, "feed.html", entries=[], count=0,
+                          meta={"mix": mix, "explore_share_pct": 0, "notes": [],
+                                "category_entropy": 0,
+                                "days": days},
+                          msg=res.get("error", {}).get("message", "生成失败"))
+        return render(request, "feed.html", entries=res.get("feed", []),
+                      count=res.get("count", 0), meta=res.get("meta", {}))
+
+    @app.post("/papers/{arxiv_id}/uninterested")
+    def uninterested(arxiv_id: str, next_url: str = Form("")):
+        """显式负反馈（最强负权）：直写 repo 信号（轻量人类操作，同 M0 族）。"""
+        try:
+            container.repo.record_signal(arxiv_id, "uninterested", actor="human",
+                                         reason="Web 显式不感兴趣")
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger("paperpilot.web").exception("uninterested 信号记账失败")
+        dest = next_url if next_url.startswith("/") else _back(arxiv_id)   # 只允站内路径，防开放重定向
+        return RedirectResponse(dest, status_code=303)
 
     # ---------------------------------------------------------------- 论文动作
     # 有 stack（统一启动）→ 经 mecha 命令面（human 通道 + 写权门 + 审计）；否则直调（向后兼容）。

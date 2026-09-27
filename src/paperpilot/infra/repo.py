@@ -589,6 +589,32 @@ class PaperRepository:
             s.commit()
             return {"ok": True, "removed": len(snap), "kind": kind or "all"}
 
+    def feed_candidates(self, *, days: int, limit: int = 800) -> list[Paper]:
+        """近 N 天 published_at 的库内论文，发布日倒序（feed 候选池）。
+
+        注：既有 `recent_papers` 是论文库列表页用的（无日期窗口），两码事不同名。
+        """
+        from datetime import timedelta
+        cutoff = utcnow() - timedelta(days=max(1, int(days)))
+        with self.sf() as s:
+            return list(s.scalars(select(Paper)
+                                  .where(Paper.published_at >= cutoff)
+                                  .order_by(Paper.published_at.desc())
+                                  .limit(int(limit))).all())
+
+    def feed_seen_ids(self, *, days: int = 7) -> set[str]:
+        """近 N 天有过信号（view/outbound/download/uninterested…）的 arxiv_id——feed 换屏不重喂。"""
+        if days <= 0:
+            return set()
+        from datetime import timedelta
+
+        from .orm import Event
+        cutoff = utcnow() - timedelta(days=int(days))
+        with self.sf() as s:
+            rows = s.scalars(select(Event.target).where(
+                Event.op.like("signal:%"), Event.ts >= cutoff)).all()
+        return {r for r in rows if r}
+
     def reset_statuses(
         self,
         arxiv_ids: Sequence[str],

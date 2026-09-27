@@ -54,6 +54,11 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
                       "date": "评审对应日期 ISO 格式（省略=今天）",
                       "reason": "一句话中文说明目的"},
     "list_briefings": {"limit": "最多返回条数（1-60，默认 14）"},
+    "feed_generate": {"limit": "本次端多少篇（1-200，默认 25；AI 按语境自定）",
+                      "days": "候选窗口：近 N 天入库论文（默认 14）",
+                      "mix": "口味预设 auto|strict|explorer（explorer=想看点野的）",
+                      "quotas": "显式四道配比 csv，如 '40,25,10,25'（覆盖 mix；探索地板 10% 压不穿）",
+                      "seen_days": "近 N 天有过信号的篇目不重喂（默认 7，0=不排）"},
     "get_profile": {"top": "每维返回条数（1-50，默认 12）",
                     "half_life_days": "衰减半衰期（天，默认 30）：旧兴趣按指数淡出"},
     "reset_profile": {"kind": "只清某一维 category|term|author；空=全部",
@@ -64,6 +69,7 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "delete_briefing": {"date": "简报日期 ISO 格式（必填；先 list_briefings 确认）",
                         "reason": "一句话中文说明删除原因"},
     "finalize_briefing": {"date": "日期 ISO 格式（省略=今天）", "force": "已定稿时是否强制重跑",
+                          "max_items": "本次定稿最多入选篇数（1-200；省略=按配置）——显式篇数胜配置（N12 同族）",
                           "reason": "一句话中文说明目的"},
     "run_pipeline": {"date": "日期 ISO 格式（省略=今天）", "force": "已存在时是否强制重跑",
                      "reason": "一句话中文说明目的"},
@@ -328,6 +334,82 @@ def build_registry(container) -> Registry:
         return ok(**view, note="画像由行为信号驱动；熵过低=兴趣收窄，feed 会自动加倍探索道；"
                                 "重置仅人类侧（reset_profile）")
 
+    @reg.tool(name="feed_generate", kind="read",
+              description="生成兴趣推荐流（四道召回：主兴趣/邻接桥/热点作者/探索，带道属与 why，"
+                          "确定性可复算、0 token）。limit/mix/quotas 由调用者按语境自由定——显式意图胜默认。")
+    def feed_generate(limit: int = 25, days: int = 14, mix: str = "auto",
+                      quotas: str = "", seen_days: int = 7) -> dict:
+        from ..domain.feed import allocate, maybe_entropy_boost, resolve_quotas
+        from ..domain.profile import paper_features, score_paper
+        from ..infra import arxiv_taxonomy as tax
+        if not 1 <= int(limit) <= 200:
+            return err("bad_params", f"limit={limit} 越界（1-200）",
+                       hint="一次 20~40 是合适的刷屏量；更大窗口建议分批")
+        repo.profile_seed_if_empty(settings.topics)
+        view = repo.profile_view()
+        weights = repo.profile_weights_map()
+        if not weights:
+            return err("empty_profile", "画像无任何权重（无信号且无主题可播）",
+                       hint="先 fetch_papers 让库里有货并产生信号，或 record_signal 声明兴趣")
+        rows = repo.feed_candidates(days=max(1, int(days)))
+        if not rows:
+            return ok(feed=[], count=0, meta={"days": days, "mix": mix, "notes": [],
+                                              "explore_share_pct": 0,
+                                              "category_entropy": view["category_entropy"]},
+                      hint=f"近 {days} 天库内无新论文：先 fetch_papers(days={max(1, int(days))}) 再刷")
+        seen = repo.feed_seen_ids(days=max(0, int(seen_days)))
+        top_pos = [k for k, w, _h in view["top"]["category"] if w > 0]
+        top_set = set(top_pos)
+        adj: set[str] = set()
+        for c in list(top_set)[:8]:
+            adj.update(tax.siblings_of(c))
+            bridges = set(tax.bridge_groups(c))
+            adj.update(x for x in tax.KNOWN if tax.group_of(x) in bridges)
+        adj -= top_set
+        top_auth = {k for k, w, _h in view["top"]["author"] if w > 0}
+        buckets: dict[str, list[dict]] = {"primary": [], "adjacent": [], "hot": [], "explore": []}
+        for p in rows:
+            if p.arxiv_id in seen:
+                continue
+            feat = paper_features(list(p.categories or []), p.primary_category,
+                                  p.title or "", p.abstract or "", list(p.authors or []))
+            sc, why = score_paper(feat, weights)
+            pr = feat["primary"]
+            if pr in top_set:
+                lane = "primary"
+            elif any(c in adj for c in feat["categories"]):
+                lane = "adjacent"
+            elif top_auth & set(feat["authors"]):
+                lane = "hot"
+            else:
+                lane = "explore"
+            if not why:   # 宁窄勿玄的反面是“宁窄勿无由”：道属本身就是可读理由
+                why = [{
+                    "primary": f"主兴趣：{pr} 在画像高分区",
+                    "adjacent": f"邻接桥：{pr or '未标分类'} 与画像分类相邻（扩边召回）",
+                    "hot": "热点：关注作者的新论文",
+                    "explore": f"探索位：{pr or '未标分类'} 在画像外——扩边界是默认目标（信条 7）",
+                }[lane]]
+            buckets[lane].append({
+                "arxiv_id": p.arxiv_id, "title": p.title, "primary_category": pr,
+                "categories": feat["categories"][:4], "authors": feat["authors"][:5],
+                "published": p.published_at.date().isoformat() if p.published_at else "",
+                "score": round(sc, 4), "why": why, "lane": lane})
+        for lst in buckets.values():
+            lst.sort(key=lambda x: (-x["score"], x["arxiv_id"]))    # 平分时按 id，确定性
+        q, note_q = resolve_quotas(mix, quotas)
+        boost = ""
+        if not (quotas or "").strip() and (mix or "auto") == "auto":
+            q, boost = maybe_entropy_boost(q, view["category_entropy"])
+        picked = allocate(buckets, limit=int(limit), quotas=q)
+        n_exp = sum(1 for x in picked if x["lane"] == "explore")
+        meta = {"mix": (mix or "auto"), "quotas": list(q),
+                "explore_share_pct": round(100.0 * n_exp / max(1, len(picked)), 1),
+                "category_entropy": view["category_entropy"], "seen_excluded": len(seen),
+                "days": days, "pool": sum(len(v) for v in buckets.values()),
+                "notes": [x for x in (note_q, boost) if x]}
+        return ok(feed=picked, count=len(picked), meta=meta)
+
     @reg.tool(name="reset_profile", kind="write", reversible=True,
               description="清空/重置兴趣画像（**人类专属**：不投影给 AI，防自改锚点）。"
                           "快照留痕，undo_change 可还原。")
@@ -363,17 +445,27 @@ def build_registry(container) -> Registry:
 
     @reg.tool(name="finalize_briefing", kind="write",
               description="阶段3：用已提交评审（缺的用基线分）做筛选、精读、生成简报并落库。")
-    def finalize_briefing(date: str = "", force: bool = False,
+    def finalize_briefing(date: str = "", force: bool = False, max_items: int = 0,
                           actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
-        result = pipeline.finalize_review(
-            _parse_date(date), force=force, actor=actor, reason=reason or "定稿简报"
-        )
+        from ..domain.pipeline import pipeline_config_override
+        if max_items and not 1 <= int(max_items) <= 200:
+            return err("bad_params", f"max_items={max_items} 越界（1-200；0=按配置）")
+        if max_items:
+            # N12 同族：显式篇数 > 配置（gate/yaml），只活在本次调用的线程局部覆盖里
+            with pipeline_config_override(scoring=settings.scoring.model_copy(
+                    update={"max_papers": int(max_items)})):
+                result = pipeline.finalize_review(
+                    _parse_date(date), force=force, actor=actor, reason=reason or "定稿简报")
+        else:
+            result = pipeline.finalize_review(
+                _parse_date(date), force=force, actor=actor, reason=reason or "定稿简报")
         if result.error:
             return err("finalize_failed", result.error)
         return ok(date=result.date, run_id=result.run_id, fetched=result.fetched,
                   after_rules=result.after_rules, selected=result.selected,
                   reused=result.reused, briefing_id=result.briefing_id,
-                  degraded=result.degraded)
+                  degraded=result.degraded,
+                  max_items_applied=int(max_items) if max_items else None)
 
     @reg.tool(name="run_pipeline", kind="write",
               description="一键全流程（无外部评审）：候选→规则→程序化AI档（未配key时heuristic）→简报。")

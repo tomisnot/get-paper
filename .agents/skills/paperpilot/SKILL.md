@@ -89,3 +89,11 @@ description: >-
   `search_papers` 搜到标题后直接补评（submit 按全量 stored 候选校验，展示层之外也能收）。
 - 提交被 rejected：列表会点名哪篇缺什么；补齐重提即可（增量合并，不伤已评）。
 - 不确定某项能力怎么用：`paperpilot tools` 或 registry `specs()` 有自描述清单。
+
+## 推荐流（feed，M2）
+
+- 刷流：`feed_generate(limit=25~40, mix=auto|strict|explorer, days=14)`。用户说“今天想看点野的”⇒ `mix=explorer`；想看多点⇒抬 `limit`。
+- 每条带 lane（主兴趣/邻接/热点/探索）与 why；**播报前 6 条时逐条念 why**，探索条说清“这是扩边界位”。
+- 反馈随手记：用户说“下了/看了/不感兴趣” ⇒ `record_signal(download|read|uninterested)`；站内点击已自动实测，同表同权。
+- 画像审计：`get_profile` 看分类熵与 top 权重；熵过低时系统会自动加倍探索道（代码保底，你可再抬不可压穿）；`reset_profile` 是人类专属，别想着自改锚点。
+- 数量自由：日报 `finalize_briefing(max_items=N)` 可按当次语境定篇数（显式 > 配置）。
