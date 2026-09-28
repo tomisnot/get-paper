@@ -334,6 +334,22 @@ class ArxivClient:
 
     _page_size = 50
 
+    def fetch_authors(self, authors: Sequence[str], *, since: datetime | None = None,
+                      until: datetime | None = None, max_per_author: int = 25
+                      ) -> dict[str, list[NormalizedPaper]]:
+        """按作者监控：每人一条 author:"X" (+投稿窗口) 查询；单作者失败不碎全集。"""
+        window = _date_window(since, until)
+        out: dict[str, list[NormalizedPaper]] = {}
+        for a in authors:
+            q = f'author:"{a}"'
+            query = f"{q} AND {window}" if window else q
+            try:
+                out[a] = self.collect(query, max_per_query=max_per_author)
+            except ArxivError as exc:
+                logger.warning("作者监控查询失败：%s（%s）", a, exc)
+                out[a] = []
+        return out
+
     def fetch_candidates(
         self,
         *,

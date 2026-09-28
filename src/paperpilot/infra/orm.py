@@ -203,6 +203,20 @@ class ProfileWeight(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class CitationEdge(Base):
+    """库内引文边：src（在库论文）引用 dst（S2 文献）。重跑全量替换，幂等。"""
+    __tablename__ = "citation_edges"
+    __table_args__ = (UniqueConstraint("src_arxiv_id", "dst_arxiv_id", name="uq_cite_edge"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    src_arxiv_id: Mapped[str] = mapped_column(String(64), index=True)
+    dst_arxiv_id: Mapped[str] = mapped_column(String(64), index=True)
+    dst_title: Mapped[str] = mapped_column(Text, default="")
+    dst_citations: Mapped[int] = mapped_column(Integer, default=0)
+    influential: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class FeedIssue(Base):
     """feed 一期快照（由 AI 经命令面 publish_feed 发布）：/feed 面板只读最新期，
 

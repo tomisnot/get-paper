@@ -248,6 +248,23 @@ class PaperRepository:
                 s.delete(row)
             return {"removed_feed_issue": iid}
 
+        if op == "sync_citations":
+            # 回滚引文边：先把 src 现边清空，再按 before 快照重建（忠实回上一轮）
+            from .orm import CitationEdge
+            src = event.target or ""
+            for e in s.scalars(select(CitationEdge).where(
+                    CitationEdge.src_arxiv_id == src)).all():
+                s.delete(e)
+            s.flush()
+            restored = 0
+            for item in (event.before or {}).get("edges") or []:
+                s.add(CitationEdge(src_arxiv_id=src, dst_arxiv_id=item["dst"],
+                                   dst_title=item.get("title", ""),
+                                   dst_citations=int(item.get("citations", 0)),
+                                   influential=bool(item.get("infl"))))
+                restored += 1
+            return {"restored_edges": restored}
+
         if op == "write_summary":
             # 撤销补卡：删掉那一轮的总结行与评分行（同 run_id 成对）
             from .orm import PaperScore, PaperSummaryRow
@@ -683,6 +700,129 @@ class PaperRepository:
                         reversible=1)
             s.commit()
             return {"run_id": run_id}
+
+    # ---------------------------------------------------------------- 引文网络与调研统计（M4）
+    def replace_citation_edges(self, src_arxiv_id: str, rows: list[dict], *,
+                               actor: str = "ai", reason: str = "") -> dict:
+        """src 的引用边全集重跑：删旧插新幂等；旧边快照进事件，undo 可回。"""
+        from .orm import CitationEdge
+        with self.sf() as s:
+            old = list(s.scalars(select(CitationEdge).where(
+                CitationEdge.src_arxiv_id == src_arxiv_id)).all())
+            snapshot = [{"dst": e.dst_arxiv_id, "title": e.dst_title,
+                         "citations": e.dst_citations, "infl": e.influential} for e in old]
+            for e in old:
+                s.delete(e)
+            s.flush()                       # 先落删除，同 (src,dst) 重跑不撞唯一约束
+            added = 0
+            for r in rows:
+                dst = (r.get("arxiv_id") or "").strip()
+                if not dst or dst == src_arxiv_id:
+                    continue
+                s.add(CitationEdge(
+                    src_arxiv_id=src_arxiv_id, dst_arxiv_id=dst,
+                    dst_title=r.get("title") or "",
+                    dst_citations=int(r.get("citation_count") or 0),
+                    influential=bool(r.get("influential"))))
+                added += 1
+            self._event(s, op="sync_citations", actor=actor,
+                        reason=reason or f"落库引文边：{src_arxiv_id}", target=src_arxiv_id,
+                        before={"edges": snapshot},
+                        after={"added": added, "replaced": len(old)}, reversible=1)
+            s.commit()
+            return {"added": added, "replaced": len(old)}
+
+    def upstream_clusters(self, *, min_count: int = 2, limit: int = 20) -> list[dict]:
+        """关键上游簇：库内多篇反复引用的同一文献（入组数≥min_count），按组数降序。"""
+        from .orm import CitationEdge
+        with self.sf() as s:
+            rows = list(s.scalars(select(CitationEdge)).all())
+        grouped: dict[str, dict] = {}
+        for e in rows:
+            g = grouped.setdefault(e.dst_arxiv_id, {
+                "dst_arxiv_id": e.dst_arxiv_id, "title": e.dst_title,
+                "dst_citations": e.dst_citations, "cited_by": []})
+            g["cited_by"].append(e.src_arxiv_id)
+        out = [g for g in grouped.values() if len(g["cited_by"]) >= max(2, int(min_count))]
+        out.sort(key=lambda g: (-len(g["cited_by"]), -g["dst_citations"]))
+        for g in out:
+            g["count"] = len(g["cited_by"])
+            g["cited_by"] = g["cited_by"][:8]
+        return out[:limit]
+
+    def related_by_cocitation(self, arxiv_id: str, *, limit: int = 10) -> list[dict]:
+        """共引相似：与本篇引用集交集最大的库内其它论文（邻接道的免费弹药）。"""
+        from .orm import CitationEdge
+        with self.sf() as s:
+            mine = {e.dst_arxiv_id for e in s.scalars(select(CitationEdge).where(
+                CitationEdge.src_arxiv_id == arxiv_id)).all()}
+            others = list(s.scalars(select(CitationEdge).where(
+                CitationEdge.src_arxiv_id != arxiv_id)).all())
+        if not mine:
+            return []
+        inter: dict[str, set] = {}
+        for e in others:
+            inter.setdefault(e.src_arxiv_id, set()).add(e.dst_arxiv_id)
+        scored = sorted(((len(mine & dsts), src) for src, dsts in inter.items() if mine & dsts),
+                        key=lambda x: (-x[0], x[1]))
+        return [{"arxiv_id": src, "shared_references": n} for n, src in scored[:limit]]
+
+    def coverage_report(self, *, sample_missing: int = 15) -> dict:
+        """调研资产覆盖率：多少篇有卡/读过/收藏，最新的无卡清单（AI 补卡工单）。"""
+        from .orm import PaperSummaryRow, ReadingState
+        with self.sf() as s:
+            papers = list(s.scalars(select(Paper).order_by(Paper.first_seen_at.desc())).all())
+            with_sum = set(s.scalars(select(PaperSummaryRow.paper_id)).all())
+            reading = {r.paper_id: r for r in s.scalars(select(ReadingState)).all()}
+        total = len(papers)
+        has_sum = sum(1 for p in papers if p.id in with_sum)
+        missing = [{"arxiv_id": p.arxiv_id, "title": (p.title or "")[:120]}
+                   for p in papers if p.id not in with_sum][:sample_missing]
+        return {
+            "total": total, "with_summary": has_sum,
+            "coverage_pct": round(100.0 * has_sum / total, 1) if total else 0.0,
+            "read": sum(1 for p in papers if p.id in reading and reading[p.id].read),
+            "starred": sum(1 for p in papers if p.id in reading and reading[p.id].star),
+            "in_briefing": sum(1 for p in papers if p.status == "in_briefing"),
+            "missing_sample": missing,
+        }
+
+    def stats_timeseries(self, *, days: int = 30) -> dict:
+        """趋势聚合：每日入库、信号漏斗计数、简报节奏、AI 成本按 purpose（近 N 天）。"""
+        from collections import defaultdict
+        from datetime import timedelta
+
+        from .orm import AICall
+        cutoff = utcnow() - timedelta(days=max(1, int(days)))
+        with self.sf() as s:
+            daily_new: dict[str, int] = defaultdict(int)
+            for ts in s.scalars(select(Paper.first_seen_at)).all():
+                if ts and ts >= cutoff:
+                    daily_new[ts.date().isoformat()] += 1
+            signals: dict[str, int] = defaultdict(int)
+            for op, in s.execute(select(Event.op).where(
+                    Event.op.like("signal:%"), Event.ts >= cutoff)).all():
+                signals[op] += 1
+            brief_days = [b.date for b in s.scalars(select(Briefing).where(
+                Briefing.status != "superseded", Briefing.created_at >= cutoff)).all()]
+            ai_agg: dict[str, dict] = {}
+            for c in s.scalars(select(AICall).where(AICall.ts >= cutoff)).all():
+                a = ai_agg.setdefault(c.purpose or "?", {"calls": 0, "ok": 0, "tokens": 0, "latency_ms": 0})
+                a["calls"] += 1
+                a["ok"] += 1 if c.ok else 0
+                a["tokens"] += int(c.tokens or 0)
+                a["latency_ms"] += int(c.latency_ms or 0)
+        for a in ai_agg.values():
+            a["avg_latency_ms"] = round(a["latency_ms"] / max(1, a["calls"]))
+            a.pop("latency_ms")
+        return {
+            "days": days,
+            "daily_new": dict(sorted(daily_new.items())),
+            "signals": dict(sorted(signals.items())),
+            "briefings": {"days_with_briefing": len(set(brief_days)),
+                          "total": len(brief_days)},
+            "ai_by_purpose": ai_agg,
+        }
 
     def save_feed_issue(self, *, params: dict, items: list, actor: str = "ai",
                         reason: str = "") -> int:

@@ -271,3 +271,110 @@ def test_write_summary_single_paper_card(tmp_path):
     d2 = reg.invoke("get_paper", arxiv_id=p0.arxiv_id)
     assert d2["summary"] is None
     assert all(sc["score"] != 0.86 for sc in d2["scores"])
+
+
+# ---------------------------------------------------------------- M4 调研基建
+class _FakeScholar:
+    def __init__(self, *a, **k):
+        pass
+
+    def references(self, ext_id, *, limit=100):
+        return [
+            {"citedPaper": {"externalIds": {"ArXiv": "1512.03385"}, "title": "ResNet",
+                            "citationCount": 90000}, "isInfluential": True},
+            {"citedPaper": {"externalIds": {"ArXiv": "1706.03762"}, "title": "Attention",
+                            "citationCount": 80000}, "isInfluential": False},
+            {"citedPaper": {"title": "no-arxiv-here"}, "isInfluential": False},   # 无号边被丢
+        ]
+
+    def close(self):
+        pass
+
+
+def test_citation_edges_upstream_related_undo(tmp_path, monkeypatch):
+    """能红：sync 落边（无 arXiv 号的丢弃、重跑幂等）；upstream 认多篇同引；
+    related 共引交集；undo 撤本轮边回快照。"""
+    from sqlalchemy import select
+
+    import paperpilot.capabilities.tools as tools_mod
+
+    _c, reg = _reg(tmp_path)
+    from paperpilot.infra.arxiv import parse_atom
+    from paperpilot.infra.orm import CitationEdge
+
+    from .conftest import SAMPLE_XML
+    papers = parse_atom(SAMPLE_XML.read_text(encoding="utf-8"))
+    _c.repo.upsert_papers(papers, actor="human", reason="seed")
+    monkeypatch.setattr(tools_mod, "SemanticScholarClient", _FakeScholar)
+    a, b = papers[0].arxiv_id, papers[1].arxiv_id
+
+    r = reg.invoke("sync_citations", arxiv_id=a, reason="测网络")
+    assert r["ok"] and r["edges"] == 2                      # 第三条无号丢弃
+    r2 = reg.invoke("sync_citations", arxiv_id=a)           # 重跑幂等
+    assert r2["ok"] and r2["edges"] == 2 and r2["replaced"] == 2
+    reg.invoke("sync_citations", arxiv_id=b)
+    with _c.repo.sf() as s:
+        assert len(s.scalars(select(CitationEdge)).all()) == 4   # 2 src × 2 dst，没膨胀
+
+    up = reg.invoke("upstream_clusters")
+    assert up["ok"] and up["count"] == 2
+    resnet = [g for g in up["clusters"] if g["dst_arxiv_id"] == "1512.03385"][0]
+    assert resnet["count"] == 2 and set(resnet["cited_by"]) == {a, b}
+
+    rel = reg.invoke("related_papers", arxiv_id=a)
+    assert rel["ok"] and rel["related"][0]["arxiv_id"] == b
+    assert rel["related"][0]["shared_references"] == 2
+
+    u = reg.invoke("undo", seq=0)                            # 撤 b 的本轮：快照为空 ⇒ 删光 b 边
+    assert u["ok"] and u["op"] == "sync_citations"
+    with _c.repo.sf() as s:
+        assert len(s.scalars(select(CitationEdge).where(
+            CitationEdge.src_arxiv_id == b)).all()) == 0
+
+
+def test_coverage_and_timeseries_and_watch(tmp_path, monkeypatch):
+    """能红：覆盖率对账；趋势聚合含信号计数；作者监控=主题 authors ∪ 画像作者，
+    无作者响亮 no_authors；无库时不误写。"""
+    import paperpilot.capabilities.tools as tools_mod
+    _c, reg = _reg(tmp_path)
+    from paperpilot.infra.arxiv import parse_atom
+
+    from .conftest import SAMPLE_XML
+    papers = parse_atom(SAMPLE_XML.read_text(encoding="utf-8"))
+    _c.repo.upsert_papers(papers, actor="human", reason="seed")
+
+    # 作者监控空态必须第一时间验（后面的 download 信号会把论文作者进画像正权）：
+    no = reg.invoke("watch_authors")
+    assert no["ok"] is False and no["error"]["kind"] == "no_authors"
+
+    cov0 = reg.invoke("coverage_report")
+    assert cov0["ok"] and cov0["total"] == len(papers) and cov0["with_summary"] == 0
+    reg.invoke("write_summary", arxiv_id=papers[0].arxiv_id, tldr="卡一", reason="测覆盖")
+    cov1 = reg.invoke("coverage_report")
+    assert cov1["with_summary"] == 1 and cov1["coverage_pct"] > 0
+    assert all(m["arxiv_id"] != papers[0].arxiv_id for m in cov1["missing_sample"])  # 有卡的不进缺卡单
+
+    reg.invoke("record_signal", arxiv_id=papers[1].arxiv_id, signal="download")
+    st = reg.invoke("stats_timeseries", days=30)
+    assert st["ok"] and st["signals"]["signal:download"] >= 1
+    assert sum(st["daily_new"].values()) >= len(papers)      # 入库日聚合对得上
+    assert reg.invoke("stats_timeseries", days=0)["ok"] is False
+
+    reg.invoke("update_topic", name=_c.settings.topics[0].name, authors="Lukin, 陈妄")
+
+    class _FakeArxiv:
+        def __init__(self, *a, **k):
+            pass
+
+        def fetch_authors(self, names, *, since=None, max_per_author=25):
+            return {n: papers[:1] for n in names}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(tools_mod, "ArxivClient", _FakeArxiv)
+    w = reg.invoke("watch_authors", days=7)
+    assert w["ok"] and {"Lukin", "陈妄"} <= set(w["watched"])   # 主题作者必在监控里
+    # 画像正权作者（前面 download 带进去的论文作者）也在——两路汇入就是设计行为
+    assert set(w["authors"]) == set(w["watched"])                # 每位受监控者都有报告条目
+    assert w["authors"]["Lukin"][0]["arxiv_id"] == papers[0].arxiv_id

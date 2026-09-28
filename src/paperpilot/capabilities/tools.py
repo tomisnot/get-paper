@@ -32,6 +32,13 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
                      "op": "按操作类型过滤", "days": "背景统计的回溯天数",
                      "limit": "事件最多返回条数"},
     "review_status": {"date": "日期 ISO 格式（省略=今天）"},
+    "sync_citations": {"arxiv_id": "在库论文 arXiv 编号", "limit": "取多少条引用（≤100，默认 40）",
+                       "reason": "一句话中文说明为何落库"},
+    "upstream_clusters": {"min_count": "至少几篇库内论文同引（默认 2）", "limit": "最多返回簇数"},
+    "related_papers": {"arxiv_id": "基准论文（需已 sync_citations）", "limit": "返回相似篇数"},
+    "coverage_report": {"sample_missing": "缺卡清单长度（1-50，默认 15）"},
+    "stats_timeseries": {"days": "回溯窗口天数（1-365，默认 30）"},
+    "watch_authors": {"days": "近 N 天新提交（默认 7）", "max_authors": "最多监控几位作者"},
     "paper_metrics": {"arxiv_id": "论文 arXiv 编号"},
     "get_references": {"arxiv_id": "论文 arXiv 编号", "limit": "最多返回条数（≤100）",
                        "sort_by_citations": "是否按引用数降序"},
@@ -266,6 +273,92 @@ def build_registry(container) -> Registry:
               description="看某天评审进度（候选数/已评审数/状态）。")
     def review_status(date: str = "") -> dict:
         return pipeline.review_status(date or datetime.now().date().isoformat())
+
+    # ============================================================== M4 调研基建：引文网络/覆盖率/趋势/作者
+    @reg.tool(name="sync_citations", kind="write", reversible=True,
+              description="把一篇在库论文的引用边（它引用了谁）落库成本地图谱；重跑幂等替换。"
+                          "落完 upstream_clusters/related_papers 本地免费查，不再消耗 S2 额度。")
+    def sync_citations(arxiv_id: str, limit: int = 40,
+                       actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        if repo.get_paper(arxiv_id) is None:
+            return err("not_found", f"库里没有 {arxiv_id}",
+                       hint="先 fetch_paper_by_id 拉进入库")
+        client = _scholar()
+        try:
+            items = client.references(arxiv_ext_id(arxiv_id), limit=min(int(limit), 100))
+        finally:
+            client.close()
+        rows = []
+        for it in items:
+            p = it.get("citedPaper") or {}
+            ext = p.get("externalIds") or {}
+            aid = (ext.get("ArXiv") or p.get("arxiv_id") or "").strip()
+            if not aid:
+                continue                      # 只留有 arXiv 号的边（可溯可互引）
+            rows.append({"arxiv_id": aid, "title": p.get("title") or "",
+                         "citation_count": p.get("citationCount") or 0,
+                         "influential": bool(it.get("isInfluential"))})
+        out = repo.replace_citation_edges(arxiv_id, rows, actor=actor,
+                                          reason=reason or f"落库引文边 {arxiv_id}")
+        return ok(arxiv_id=arxiv_id, edges=out["added"], replaced=out["replaced"],
+                  hint="本地图谱已更新；upstream_clusters 聚合簇、related_papers 找同伙")
+
+    @reg.tool(name="upstream_clusters", kind="read",
+              description="关键上游簇：库内多篇反复引同一文献⇒该领域的思想源头；按入组数降序。")
+    def upstream_clusters(min_count: int = 2, limit: int = 20) -> dict:
+        clusters = repo.upstream_clusters(min_count=max(1, int(min_count)), limit=limit)
+        if not clusters:
+            return ok(clusters=[], hint="还没有多引上游：先对几篇关键论文 sync_citations")
+        return ok(clusters=clusters, count=len(clusters))
+
+    @reg.tool(name="related_papers", kind="read",
+              description="共引相似度：与指定论文引用集交集最大的库内论文（谁和它在研究同一堆事）。")
+    def related_papers(arxiv_id: str, limit: int = 10) -> dict:
+        rel = repo.related_by_cocitation(arxiv_id, limit=limit)
+        if not rel:
+            return ok(related=[], hint=f"{arxiv_id} 本地无边或与库无交集：先 sync_citations 几篇")
+        return ok(related=rel)
+
+    @reg.tool(name="coverage_report", kind="read",
+              description="调研资产覆盖率：多少篇有卡/读过/收藏，最新缺卡清单——就是 write_summary 的工单。")
+    def coverage_report(sample_missing: int = 15) -> dict:
+        rep = repo.coverage_report(sample_missing=max(1, min(int(sample_missing), 50)))
+        return ok(**rep, hint="缺卡清单按新→旧；挑要紧的 write_summary 补，别一次刷满惊跑写权门")
+
+    @reg.tool(name="stats_timeseries", kind="read",
+              description="趋势聚合（近 N 天）：每日入库、信号漏斗计数、简报节奏、AI 成本按用途汇总。")
+    def stats_timeseries(days: int = 30) -> dict:
+        if not 1 <= int(days) <= 365:
+            return err("bad_params", f"days={days} 越界（1-365）")
+        return ok(**repo.stats_timeseries(days=int(days)))
+
+    @reg.tool(name="watch_authors", kind="read",
+              description="作者监控：主题关注作者 + 画像正权作者的近 N 天新提交（只读报告；"
+                          "要入库逐篇 fetch_paper_by_id，不自动写库）。")
+    def watch_authors(days: int = 7, max_authors: int = 12) -> dict:
+        names: list[str] = []
+        for t in settings.topics:
+            for a in (getattr(t, "authors", []) or []):
+                if a and a not in names:
+                    names.append(a)
+        for key, w, _h in repo.profile_view()["top"]["author"]:
+            if w > 0 and key not in names:
+                names.append(key)
+        names = names[:max(1, int(max_authors))]
+        if not names:
+            return err("no_authors", "当前没有关注作者",
+                       hint="update_topic 给主题加 authors，或靠 record_signal 攒出画像作者权重")
+        client = ArxivClient(cache_dir=settings.cache_dir / "arxiv")
+        try:
+            found = client.fetch_authors(
+                names, since=datetime.utcnow() - timedelta(days=max(1, int(days))))
+        finally:
+            client.close()
+        return ok(days=days, watched=names, authors={
+            a: [{"arxiv_id": p.arxiv_id, "title": p.title,
+                 "published": p.published_at.date().isoformat() if p.published_at else ""}
+                for p in ps] for a, ps in found.items()},
+            hint="只读报告；要哪篇就 fetch_paper_by_id，顺带 record_signal(download) 喂画像")
 
     # ============================================================== 写入 / 运行面
     @reg.tool(name="undo", kind="write", reversible=True,
