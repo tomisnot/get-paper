@@ -16,9 +16,6 @@
 <div class="actions">
   <a class="btn" href="/papers/{{ p.arxiv_id }}/go" target="_blank" rel="noopener">arXiv 原文</a>
   <a class="btn ghost" href="/papers/{{ p.arxiv_id }}/pdf" target="_blank" rel="noopener">⬇ 直下 PDF</a>
-  <form method="post" action="/papers/{{ p.arxiv_id }}/sync_citations" style="display:inline">
-    <button class="ghost" title="拉取/刷新本论文的引用边入本地图谱（与 AI 的 sync_citations 同源可撤）">🔄 同步引用</button>
-  </form>
   <form method="post" action="/papers/{{ p.arxiv_id }}/read">
     <button class="ghost">{{ "标记未读" if detail.reading and detail.reading.read else "标记已读" }}</button>
   </form>

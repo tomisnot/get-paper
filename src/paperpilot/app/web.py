@@ -212,8 +212,8 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         if not edges:
             return render(request, "network.html", nodes=[], links=[], focus=focus,
                           stats={"edges": 0, "src": 0, "dst": 0, "shown": 0},
-                          msg="引文图谱还空着：在 dsh 让 AI 对关键论文 sync_citations，"
-                              "或进任意论文详情页点「🔄 同步引用」")
+                          msg="引文图谱还空着：这页是 AI 调研成果的显示器——"
+                              "在 dsh 让 AI 对关键论文 sync_citations，调查完回这里看图")
         dst_info: dict[str, dict] = {}
         src_out: dict[str, int] = {}
         for e in edges:
@@ -279,20 +279,6 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         bars = [{"d": k, "n": v, "pct": max(2, round(100 * v / mx))}
                 for k, v in sorted(dn.items())][-14:]
         return render(request, "lab.html", cov=cov, st=st, bars=bars, msg="")
-
-    @app.post("/papers/{arxiv_id}/sync_citations")
-    def sync_citations_btn(arxiv_id: str):
-        """人类侧同步按钮：与 AI 的 sync_citations 同一能力、同一审计道（有栈走命令面）。"""
-        if stack is None:
-            res = registry_for(container).invoke(
-                "sync_citations", arxiv_id=arxiv_id, actor="human",
-                reason="Web 详情页同步引用")
-            msg = (f"引用边已更新（+{res['edges']} 条）" if res.get("ok")
-                   else f"同步失败：{res.get('error', {}).get('message', '')}")
-            return RedirectResponse(_with_msg(_back(arxiv_id), msg), status_code=303)
-        msg = _gated("sync_citations", arxiv_id=arxiv_id, reason="Web 详情页同步引用")
-        return RedirectResponse(_with_msg(_back(arxiv_id), msg or "引用边已更新"),
-                                status_code=303)
 
     # ---------------------------------------------------------------- 论文动作
     # 有 stack（统一启动）→ 经 mecha 命令面（human 通道 + 写权门 + 审计）；否则直调（向后兼容）。

@@ -34,27 +34,31 @@ def _seed(tmp_path):
     return _c, reg, papers
 
 
-def test_network_page_and_sync_button(tmp_path, monkeypatch):
-    """能红：空图有指路；同步按钮（人类侧、与 AI 同能力）写边后，网络页渲染
-    两侧节点+可点链接（在库→管理页，未入库上游→arXiv）；画像分进 tooltip。"""
+def test_network_page_shows_ai_research(tmp_path, monkeypatch):
+    """能红（显示器定位）：空图响亮指路；**AI 侧** sync_citations 调查完，页面即呈现
+    两侧节点+可点链接（在库→管理页，未入库上游→arXiv）；画像分进 tooltip。
+    注：人类侧无同步按钮（显示器不抢编辑的手）——若模板里冒出同步表单就该红。"""
     import paperpilot.capabilities.tools as tools_mod
-    _c, _reg_, papers = _seed(tmp_path)
+    _c, reg, papers = _seed(tmp_path)
     monkeypatch.setattr(tools_mod, "SemanticScholarClient", _FakeScholar)
     client = TestClient(create_app(_c, None), follow_redirects=True)
 
     body = client.get("/network").text
     assert "引文图谱还空着" in body                      # 空态响亮指路，不白屏
+    assert "同步引用" not in body                        # 人类侧无编辑按钮（图谱编辑是 AI 的活）
 
-    r = client.post(f"/papers/{papers[0].arxiv_id}/sync_citations")
-    assert r.status_code == 200 and "引用边已更新" in r.text   # 303→详情页 flash
+    # AI 调查两篇（能力面直调，等价于 dsh 里的 sync_citations）：
+    for i in (0, 1):
+        r = reg.invoke("sync_citations", arxiv_id=papers[i].arxiv_id, actor="ai",
+                       reason="测网络")
+        assert r["ok"] and r["edges"] == 2
 
-    client.post(f"/papers/{papers[1].arxiv_id}/sync_citations")
     body = client.get("/network").text
     assert "<svg" in body and "引文网络" in body
     assert f'href="/papers/{papers[0].arxiv_id}"' in body          # 在库节点→管理页
     assert "https://arxiv.org/abs/1512.03385" in body              # 未入库上游→arXiv
     assert "ResNet" in body and "画像分" in body                   # 权重与 tooltip 在用
-    assert "?focus=" in body or "focus" in body                    # 聚焦玩法入说明
+    assert "显示器" in body                                        # 页面自报定位
 
 
 def test_lab_page_reuses_m4_numbers(tmp_path):
