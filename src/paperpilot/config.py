@@ -45,17 +45,32 @@ class ScoringCfg(BaseModel):
 
 
 class GraphCfg(BaseModel):
-    """图底座（F5）呈现参数：所有图实例共用；层数不在此（那是拓扑属性，不是配置）。"""
+    """图底座呈现参数：**视图未覆盖时**的缺省值（视图 spec 优先，见 GraphView）。
+
+    分工：/settings 的表单改这里（人侧持久化）；AI 侧用 set_graph_view 发布视图
+    （落 graph_views 表，即时生效）——两条路互不覆盖，视图优先。
+    """
 
     max_label_len: int = 18
     layer_gap: int = 130
     node_gap: int = 90
     size_by: str = "degree"          # degree|weight|flat
-    color_by: str = "kind"           # kind|in_lib|weight
+    color_by: str = "auto"           # auto|kind|in_lib|weight|tag|group
     sort_within: str = "weight"      # weight|year（用户：不一定按时间）
-    max_nodes: int = 40
-    max_edges: int = 220             # 边按权重采样上限（实测 684 条全画=蜘蛛网）
+    max_nodes: int = 90
+    max_edges: int = 400             # 边按权重采样上限（实测 684 条全画=蜘蛛网）
     focus_depth: int = 2             # 单根聚焦缺省深度（/network?root=…&depth= 可覆盖）
+    root_default: str = ""           # 无参数打开 /network 时的聚焦根（空＝全库视角）
+    layout: str = "layer"            # layer|timeline（年代编排）
+    sides: str = "both"              # both|upstream|downstream（有向分层：上游在上/下游在下）
+    in_lib_only: bool = False        # 图上只放库内论文（缺的用 materialize_view 入库）
+    group_by: str = "none"           # none|tag|group（泳道分组）
+    group_quota: int = 0             # 每组保底篇数（0=不保底）
+    label_mode: str = "auto"         # auto|always|hover（auto＝布点数少时常显）
+    label_style: str = "title"       # title|id
+    label_auto_max: int = 90         # auto 模式的"常显"阈值（布点数；默认视图 75 点即可见）
+    badge: bool = True               # 标签角标（文字表达，不只靠颜色）
+    arrow_size: int = 13             # 箭头像素尺寸（userSpaceOnUse，不随线宽缩）
 
 
 class AICfg(BaseModel):

@@ -260,6 +260,49 @@ class PaperRepository:
                     s.delete(row)
             return {"restored_tag": old or "(removed)"}
 
+        if op == "set_tags":
+            from .orm import PaperTag
+            rows = ((event.before or {}).get("tags") or [])
+            for item in rows:
+                aid = item.get("arxiv_id") or ""
+                old = item.get("tag") or ""
+                if not aid:
+                    continue
+                row = s.get(PaperTag, aid)
+                if old:
+                    if row is None:
+                        s.add(PaperTag(arxiv_id=aid, tag=old, actor=event.actor))
+                    else:
+                        row.tag = old
+                elif row is not None:
+                    s.delete(row)
+            return {"restored_tags": len(rows)}
+
+        if op == "set_graph_view":
+            from .orm import GraphView
+            name = event.target or ""
+            before = event.before or {}
+            row = s.get(GraphView, name) if name else None
+            if before.get("existed"):
+                if row is None:
+                    row = GraphView(name=name)
+                    s.add(row)
+                row.spec = before.get("spec") or {}
+                row.actor = before.get("actor") or ""
+                row.reason = before.get("reason") or ""
+                row.is_default = bool(before.get("is_default"))
+                return {"restored_view": name}
+            if row is not None:
+                s.delete(row)
+            return {"removed_view": name}
+
+        if op == "set_default_view":
+            from .orm import GraphView
+            prev = (event.before or {}).get("default") or ""
+            for v in s.scalars(select(GraphView)).all():
+                v.is_default = bool(prev) and v.name == prev
+            return {"restored_default": prev or "(none)"}
+
         if op == "sync_citations":
             # 回滚引文边：先把 src 现边清空，再按 before 快照重建（忠实回上一轮）
             from .orm import CitationEdge
@@ -273,7 +316,9 @@ class PaperRepository:
                 s.add(CitationEdge(src_arxiv_id=src, dst_arxiv_id=item["dst"],
                                    dst_title=item.get("title", ""),
                                    dst_citations=int(item.get("citations", 0)),
-                                   influential=bool(item.get("infl"))))
+                                   influential=bool(item.get("infl")),
+                                   direction=item.get("direction", "cites"),
+                                   year=int(item.get("year") or 0)))
                 restored += 1
             return {"restored_edges": restored}
 
@@ -292,7 +337,8 @@ class PaperRepository:
         raise AIError(
             f"操作 {op} 不支持撤销",
             kind="unsupported_undo",
-            hint="目前支持：阅读态/笔记/主题同步/状态重置/删简报/画像重置的撤销",
+            hint="目前支持：阅读态/笔记/主题同步/状态重置/删简报/画像重置/钉标签/"
+                 "视图发布的撤销",
         )
 
     # ---------------------------------------------------------------- topics
@@ -722,7 +768,8 @@ class PaperRepository:
             old = list(s.scalars(select(CitationEdge).where(
                 CitationEdge.src_arxiv_id == src_arxiv_id)).all())
             snapshot = [{"dst": e.dst_arxiv_id, "title": e.dst_title,
-                         "citations": e.dst_citations, "infl": e.influential} for e in old]
+                         "citations": e.dst_citations, "infl": e.influential,
+                         "year": e.year} for e in old]
             for e in old:
                 s.delete(e)
             s.flush()                       # 先落删除，同 (src,dst) 重跑不撞唯一约束
@@ -735,7 +782,9 @@ class PaperRepository:
                     src_arxiv_id=src_arxiv_id, dst_arxiv_id=dst,
                     dst_title=r.get("title") or "",
                     dst_citations=int(r.get("citation_count") or 0),
-                    influential=bool(r.get("influential"))))
+                    influential=bool(r.get("influential")),
+                    direction="cites",
+                    year=int(r.get("year") or 0)))
                 added += 1
             self._event(s, op="sync_citations", actor=actor,
                         reason=reason or f"落库引文边：{src_arxiv_id}", target=src_arxiv_id,
@@ -812,6 +861,154 @@ class PaperRepository:
         with self.sf() as s:
             return {t.arxiv_id: t.tag for t in s.scalars(select(PaperTag)).all()}
 
+    def tag_counts(self) -> dict[str, int]:
+        """标签 → 篇数（图例与批量钉标的回执）。"""
+        from .orm import PaperTag
+        with self.sf() as s:
+            out: dict[str, int] = {}
+            for t in s.scalars(select(PaperTag)).all():
+                out[t.tag] = out.get(t.tag, 0) + 1
+            return out
+
+    def set_tags(self, rows: list[dict], *, actor: str = "ai", reason: str = "") -> dict:
+        """**批量**钉标（一次事件、可整批撤销）：rows=[{arxiv_id, tag}]。
+
+        单篇一枚的语义不变（重跑替换）；批量入口只是把 N 次调用收成 1 次——
+        此前给四十篇钉标要四十条事件，审计与撤销都难用。
+        """
+        from .orm import PaperTag
+        with self.sf() as s:
+            before: list[dict] = []
+            applied: list[dict] = []
+            for r in rows:
+                aid = (r.get("arxiv_id") or "").strip()
+                tag = (r.get("tag") or "").strip()
+                if not aid or not tag:
+                    continue
+                old = s.get(PaperTag, aid)
+                before.append({"arxiv_id": aid, "tag": old.tag if old is not None else ""})
+                if old is not None:
+                    old.tag, old.actor, old.ts = tag, actor, utcnow()
+                else:
+                    s.add(PaperTag(arxiv_id=aid, tag=tag, actor=actor))
+                applied.append({"arxiv_id": aid, "tag": tag})
+            if applied:
+                self._event(s, op="set_tags", actor=actor,
+                            reason=reason or f"批量钉标 {len(applied)} 篇",
+                            target=f"tags:{len(applied)}",
+                            before={"tags": before}, after={"tags": applied}, reversible=1)
+            s.commit()
+            return {"applied": applied, "count": len(applied)}
+
+    # ---------------------------------------------------------------- 图视图（P5：视图一等公民）
+    def save_graph_view(self, name: str, spec: dict, *, is_default: bool = True,
+                        actor: str = "ai", reason: str = "") -> dict:
+        """发布/更新一张视图（name 为键，重跑替换）；``is_default`` 时把默认指针挪过来。
+
+        视图 = 根/深度/布局/分组/着色/标签/预算/锚点 的一份 spec：HTML 渲染与
+        /network.json 读同一份 ⇒ "AI 画的"就是"页面显示的"。
+        """
+        from .orm import GraphView
+        name = (name or "").strip() or "默认视图"
+        with self.sf() as s:
+            old = s.get(GraphView, name)
+            snapshot = ({"existed": True, "spec": old.spec or {}, "actor": old.actor,
+                         "reason": old.reason, "is_default": bool(old.is_default)}
+                        if old is not None else {"existed": False})
+            if old is None:
+                s.add(GraphView(name=name, spec=dict(spec), is_default=bool(is_default),
+                                actor=actor, reason=reason))
+            else:
+                old.spec, old.actor, old.reason = dict(spec), actor, reason
+                old.is_default, old.ts = bool(is_default), utcnow()
+            if is_default:
+                for v in s.scalars(select(GraphView)).all():
+                    if v.name != name:
+                        v.is_default = False
+            self._event(s, op="set_graph_view", actor=actor,
+                        reason=reason or f"发布视图：{name}", target=name,
+                        before=snapshot, after={"spec": dict(spec), "is_default": bool(is_default)},
+                        reversible=1)
+            s.commit()
+            return {"name": name, "replaced": old is not None, "is_default": bool(is_default)}
+
+    def get_graph_view(self, name: str) -> dict | None:
+        from .orm import GraphView
+        with self.sf() as s:
+            row = s.get(GraphView, (name or "").strip())
+            if row is None:
+                return None
+            return {"name": row.name, "spec": dict(row.spec or {}),
+                    "is_default": bool(row.is_default), "ts": row.ts,
+                    "actor": row.actor, "reason": row.reason}
+
+    def default_graph_view(self) -> dict | None:
+        from .orm import GraphView
+        with self.sf() as s:
+            row = s.scalars(select(GraphView).where(GraphView.is_default.is_(True))).first()
+            if row is None:
+                return None
+            return {"name": row.name, "spec": dict(row.spec or {}),
+                    "is_default": True, "ts": row.ts, "actor": row.actor,
+                    "reason": row.reason}
+
+    def list_graph_views(self) -> list[dict]:
+        from .orm import GraphView
+        with self.sf() as s:
+            rows = list(s.scalars(select(GraphView)).all())
+        rows.sort(key=lambda r: (not r.is_default, r.name))
+        return [{"name": r.name, "is_default": bool(r.is_default), "spec": dict(r.spec or {}),
+                 "ts": r.ts, "actor": r.actor, "reason": r.reason} for r in rows]
+
+    def set_default_graph_view(self, name: str, *, actor: str = "ai",
+                               reason: str = "") -> dict:
+        from .orm import GraphView
+        name = (name or "").strip()
+        with self.sf() as s:
+            target = s.get(GraphView, name)
+            if target is None:
+                raise AIError(f"没有这张视图：{name}", kind="not_found",
+                              hint="先用 query_graph_views 看已发布的视图名")
+            prev = next((v.name for v in s.scalars(select(GraphView)).all()
+                         if v.is_default), "")
+            for v in s.scalars(select(GraphView)).all():
+                v.is_default = v.name == name
+            self._event(s, op="set_default_view", actor=actor,
+                        reason=reason or f"默认视图切到 {name}", target=name,
+                        before={"default": prev}, after={"default": name}, reversible=1)
+            s.commit()
+            return {"name": name, "previous": prev}
+
+    def delete_graph_view(self, name: str, *, actor: str = "ai", reason: str = "") -> dict:
+        from .orm import GraphView
+        name = (name or "").strip()
+        with self.sf() as s:
+            row = s.get(GraphView, name)
+            if row is None:
+                raise AIError(f"没有这张视图：{name}", kind="not_found",
+                              hint="先用 query_graph_views 看已发布的视图名")
+            snap = {"existed": True, "spec": row.spec or {}, "actor": row.actor,
+                    "reason": row.reason, "is_default": bool(row.is_default)}
+            s.delete(row)
+            self._event(s, op="set_graph_view", actor=actor,
+                        reason=reason or f"删除视图：{name}", target=name,
+                        before=snap, after={"deleted": True}, reversible=1)
+            s.commit()
+            return {"deleted": name}
+
+    def edge_years(self) -> dict[str, int]:
+        """dst → 年份（年代编排用）：同篇多来源取最大值（新近者优先）。"""
+        from .orm import CitationEdge
+        with self.sf() as s:
+            rows = s.scalars(select(CitationEdge)).all()
+        out: dict[str, int] = {}
+        for e in rows:
+            y = int(e.year or 0)
+            for aid in (e.dst_arxiv_id, e.src_arxiv_id):
+                if y and y > out.get(aid, 0):
+                    out[aid] = y
+        return out
+
     def add_citation_edges(self, rows: list[dict], *, actor: str = "ai",
                            reason: str = "", target: str = "") -> int:
         """增量幂等加边（P4 反向边用）：已存在的 (src,dst) 跳过。
@@ -829,7 +1026,9 @@ class PaperRepository:
                 s.add(CitationEdge(src_arxiv_id=src, dst_arxiv_id=dst,
                                    dst_title=r.get("title") or dst,
                                    dst_citations=int(r.get("citations") or 0),
-                                   influential=bool(r.get("influential"))))
+                                   influential=bool(r.get("influential")),
+                                   direction="cited_by",
+                                   year=int(r.get("year") or 0)))
                 have.add((src, dst))
                 added += 1
             self._event(s, op="sync_cited_by", actor=actor,

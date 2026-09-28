@@ -23,9 +23,33 @@ def make_engine(db_path: Path | str, *, echo: bool = False) -> Engine:
     )
 
 
+#: 轻量列迁移表：{表: [(列, DDL 类型, 默认值)]}。
+#: 为什么需要：`create_all` 只建**缺的表**，不会给老表加列；没有 alembic 的个人单机
+#: 项目里，加列靠"探测 PRAGMA → 缺就 ALTER"，幂等且无需人工介入。
+_ADDED_COLUMNS: dict[str, list[tuple[str, str, str]]] = {
+    "citation_edges": [("direction", "VARCHAR(16)", "'cites'"), ("year", "INTEGER", "0")],
+}
+
+
+def _ensure_columns(engine: Engine) -> None:
+    """给既有表补新列（幂等；老库第一次跑 init_db 时静默补齐）。"""
+    with engine.begin() as conn:
+        for table, cols in _ADDED_COLUMNS.items():
+            rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+            if not rows:                       # 表还不存在：create_all 已按新 schema 建好
+                continue
+            have = {r[1] for r in rows}
+            for name, ddl, default in cols:
+                if name in have:
+                    continue
+                conn.execute(text(
+                    f"ALTER TABLE {table} ADD COLUMN {name} {ddl} DEFAULT {default}"))
+
+
 def init_db(engine: Engine) -> None:
-    """建表 + FTS5 全文索引表 + events 只增不改触发器（见 orm.Event）。"""
+    """建表 + FTS5 全文索引表 + events 只增不改触发器（见 orm.Event）+ 轻量列迁移。"""
     Base.metadata.create_all(engine)
+    _ensure_columns(engine)
     with engine.begin() as conn:
         conn.execute(
             text(

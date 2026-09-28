@@ -39,6 +39,43 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "tag_paper": {"arxiv_id": "在库论文 arXiv 编号",
                   "tag": "平台源头|理论源头|综述枢纽|实验谱系|下游扩散|动机（一论文一枚）",
                   "reason": "一句话中文说明为何这么标"},
+    "tag_papers": {"items": "'arxiv:标签' 逗号分隔（如 1707.04344:平台源头,1208.1220:动机）",
+                   "reason": "一句话中文说明这批为什么这么标"},
+    "query_tags": {},
+    "set_graph_view": {
+        "name": "视图名（重名覆盖；默认视图＝/network 首屏）",
+        "root": "单根聚焦的 arXiv 编号（空＝全库视角）",
+        "depth": "从根 BFS 的半径（1-6）",
+        "layout": "layer（拓扑分层）| timeline（年代列，看脉络）",
+        "sides": "both（根居中，上游在上/下游在下）| upstream（只看它引的）| downstream（只看引用它的）",
+        "in_lib_only": "True 时图上只放库内论文（缺的用 materialize_view 入库，别靠隐藏）",
+        "color_by": "auto|kind|in_lib|weight|tag|group（auto＝有标签就用标签）",
+        "group_by": "none|tag|group（泳道分组，出分组标题带）",
+        "group_order": "泳道显示顺序，逗号分隔（如 '动机,平台源头,理论源头,综述枢纽,实验谱系,下游扩散'）",
+        "label_mode": "auto|always|hover（auto＝布点数 ≤ label_auto_max 就常显）",
+        "label_style": "title|id（拥挤时只显编号）",
+        "label_max": "标签截断字数（6-60；全称留给 hover 卡）",
+        "label_auto_max": "auto 模式的常显阈值：布点数 ≤ 此值就常显标签（0-400）",
+        "badge": "True/False：节点角标显示分类前两字（文字，不只靠颜色）",
+        "arrow_size": "箭头像素尺寸（6-40；userSpaceOnUse，画在节点圆外）",
+        "max_nodes": "布点上限（4-400）",
+        "max_edges": "画边上限（10-3000，按被引数采样）",
+        "group_quota": "每组保底篇数（0-50，防高被引把少数派挤掉）",
+        "sort_within": "weight（按库内同引）| year（按年份）",
+        "size_by": "degree|weight|flat（节点大小依据）",
+        "layer_gap": "层距/列距像素（40-400）",
+        "node_gap": "同层节点间距像素（24-300）",
+        "pin": "锚点 arXiv 编号（逗号分隔，永不截断）",
+        "title": "视图标题（页头那行话）",
+        "group_map": "'arxiv:组名' 逗号分隔（自定义叙事分组，替代固定六色）",
+        "group_colors": "'组名:#色值' 逗号分隔",
+        "is_default": "True 时设为默认视图",
+        "reason": "一句话中文说明这张图要表达什么"},
+    "query_graph_views": {},
+    "set_default_view": {"name": "已发布的视图名", "reason": "一句话中文说明为何切它"},
+    "materialize_view": {"name": "视图名（省略=默认视图）",
+                         "limit": "本次最多入库几篇（1-40，默认 12；arXiv 限速）",
+                         "reason": "一句话中文说明为何入库"},
     "upstream_clusters": {"min_count": "至少几篇库内论文同引（默认 2）", "limit": "最多返回簇数"},
     "related_papers": {"arxiv_id": "基准论文（需已 sync_citations）", "limit": "返回相似篇数"},
     "coverage_report": {"sample_missing": "缺卡清单长度（1-50，默认 15）"},
@@ -302,6 +339,7 @@ def build_registry(container) -> Registry:
                 continue                      # 只留有 arXiv 号的边（可溯可互引）
             rows.append({"arxiv_id": aid, "title": p.get("title") or "",
                          "citation_count": p.get("citationCount") or 0,
+                         "year": p.get("year") or 0,          # 年代编排（timeline）要用
                          "influential": bool(it.get("isInfluential"))})
         out = repo.replace_citation_edges(arxiv_id, rows, actor=actor,
                                           reason=reason or f"落库引文边 {arxiv_id}")
@@ -329,6 +367,7 @@ def build_registry(container) -> Registry:
             if aid and aid != arxiv_id:
                 rows.append({"src": aid, "dst": arxiv_id, "title": p.get("title") or aid,
                              "citations": p.get("citationCount") or 0,
+                             "year": p.get("year") or 0,
                              "influential": bool(it.get("isInfluential"))})
         added = repo.add_citation_edges(rows, actor=actor,
                                         reason=reason or f"反查 {arxiv_id} 的下游扩散",
@@ -350,6 +389,152 @@ def build_registry(container) -> Registry:
         out = repo.set_tag(arxiv_id, tag, actor=actor, reason=reason)
         return ok(arxiv_id=arxiv_id, tag=tag, replaced=out["replaced"],
                   hint="/network 把颜色依据切到 tag 即看图例；标错了 undo_change 还原旧标")
+
+    @reg.tool(name="tag_papers", kind="write", reversible=True,
+              description="**批量**钉标签（一次事件、可整批撤销）：items 形如 "
+                          "'1707.04344:平台源头,1605.04570:平台源头,1208.1220:动机'。"
+                          "四五十篇一次钉完，别一篇一个调用。")
+    def tag_papers(items: str, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        from ..app import graph_view as _gv
+        tags = set(_gv.TAG_COLORS)
+        rows, bad = [], []
+        for chunk in (items or "").replace(";", ",").split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            aid, _, tag = chunk.partition(":")
+            aid, tag = aid.strip(), tag.strip()
+            if not aid or tag not in tags:
+                bad.append(chunk)
+                continue
+            if repo.get_paper(aid) is None:
+                bad.append(f"{aid}(不在库)")
+                continue
+            rows.append({"arxiv_id": aid, "tag": tag})
+        if not rows:
+            return err("bad_params", "没有可钉的条目",
+                       hint="格式 'arxiv:标签'，标签枚举：" + "/".join(sorted(tags)),
+                       suggest=sorted(tags))
+        out = repo.set_tags(rows, actor=actor, reason=reason or f"批量钉标 {len(rows)} 篇")
+        return ok(count=out["count"], applied=out["applied"], skipped=bad,
+                  tags=repo.tag_counts(),
+                  hint="颜色/图例/角标即刻生效；错了 undo_change(seq=0) 整批还原")
+
+    @reg.tool(name="query_tags", kind="read",
+              description="读回已钉的图论标签（篇目 → 标签 + 各标签计数）：审计与二次编排用。")
+    def query_tags() -> dict:
+        m = repo.tag_map()
+        return ok(tags=m, counts=repo.tag_counts(), count=len(m))
+
+    @reg.tool(name="set_graph_view", kind="write", reversible=True,
+              description="**发布一张图视图**——/network 无参数打开就渲染它（AI 画什么，页面显示什么）。"
+                          "根/深度/方向/布局/分组/着色/标签/预算/锚点一次定完；重名覆盖，is_default=True 时"
+                          "把默认指针挪过来。sides=both ⇒ 根居中、**上游（它引的）在上、下游（引用它的）在下**；"
+                          "timeline 布局＝年代列；group_by=tag 出泳道标题；color_by=auto 时有标签就按标签着色。")
+    def set_graph_view(name: str = "默认视图", root: str = "", depth: int = 2,
+                       sides: str = "both",
+                       layout: str = "layer", color_by: str = "auto",
+                       group_by: str = "none", group_order: str = "",
+                       label_mode: str = "auto", label_style: str = "title",
+                       label_max: int = 18, label_auto_max: int = 90, badge: bool = True,
+                       arrow_size: int = 13, max_nodes: int = 90, max_edges: int = 400,
+                       group_quota: int = 0, sort_within: str = "weight",
+                       size_by: str = "degree", layer_gap: int = 130, node_gap: int = 90,
+                       in_lib_only: bool = False,
+                       pin: str = "", title: str = "",
+                       group_map: str = "", group_colors: str = "",
+                       is_default: bool = True,
+                       actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        """⚠ 参数面＝视图 spec 的全集：**少一个就会被边界层静默吞掉**（只有签名里有的才能落到 spec）。"""
+        from ..app import graph_view as _gv
+        gmap = {}
+        for chunk in (group_map or "").replace(";", ",").split(","):
+            aid, _, grp = chunk.partition(":")
+            if aid.strip() and grp.strip():
+                gmap[aid.strip()] = grp.strip()
+        gcol = {}
+        for chunk in (group_colors or "").replace(";", ",").split(","):
+            grp, _, col = chunk.partition(":")
+            if grp.strip() and col.strip():
+                gcol[grp.strip()] = col.strip()
+        spec = _gv.normalize_spec({
+            "root": root, "depth": depth, "sides": sides, "layout": layout,
+            "color_by": color_by,
+            "group_by": group_by, "group_order": group_order,
+            "label_mode": label_mode, "label_style": label_style, "label_max": label_max,
+            "label_auto_max": label_auto_max,
+            "badge": badge, "arrow_size": arrow_size, "max_nodes": max_nodes,
+            "max_edges": max_edges, "group_quota": group_quota, "sort_within": sort_within,
+            "size_by": size_by, "layer_gap": layer_gap, "node_gap": node_gap,
+            "in_lib_only": in_lib_only,
+            "pin": pin, "title": title or name,
+            "group_map": gmap, "group_colors": gcol,
+        })
+        out = repo.save_graph_view(name, spec, is_default=bool(is_default),
+                                   actor=actor, reason=reason or f"发布视图 {name}")
+        payload = _gv.build(repo, container.retrieval, container.settings, spec)
+        return ok(name=out["name"], replaced=out["replaced"], is_default=out["is_default"],
+                  spec=spec, stats=payload["stats"],
+                  legend=[f"{lg['tag']}×{lg['count']}" for lg in payload["legend"]],
+                  url=f"/network?view={out['name']}" if not out["is_default"] else "/network",
+                  hint="页面即刻生效（无需重启）；回执 stats 里 shown/layers 可自查；"
+                       "细节看 /network.json；发错了 undo_change 撤这一版")
+
+    @reg.tool(name="query_graph_views", kind="read",
+              description="列出已发布的图视图（名字/是否默认/spec 摘要）：切默认或复用前先看这里。")
+    def query_graph_views() -> dict:
+        views = repo.list_graph_views()
+        return ok(views=[{"name": v["name"], "is_default": v["is_default"],
+                          "title": (v["spec"] or {}).get("title", ""),
+                          "root": (v["spec"] or {}).get("root", ""),
+                          "layout": (v["spec"] or {}).get("layout", ""),
+                          "color_by": (v["spec"] or {}).get("color_by", "")}
+                         for v in views],
+                  count=len(views),
+                  hint="没有想要的视图就 set_graph_view 发一张（默认视图即 /network 首屏）")
+
+    @reg.tool(name="set_default_view", kind="write", reversible=True,
+              description="把某张已发布视图设为默认（/network 无参数渲染它）。")
+    def set_default_view(name: str, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        out = repo.set_default_graph_view(name, actor=actor,
+                                          reason=reason or f"默认视图切到 {name}")
+        return ok(name=out["name"], previous=out["previous"],
+                  url="/network", hint="刷新 /network 即是这张；undo_change 可回上一张")
+
+    @reg.tool(name="materialize_view", kind="write", reversible=False,
+              description="**把视图里还没入库的点全部入库**——图上的每篇论文都应是库内论文"
+                          "（能点进管理页、能补卡、信号能进画像）。幂等、可反复调用直到 remaining=0；"
+                          "每次受 limit 限制（arXiv 有 3s 限速），回执报 fetched/remaining。")
+    def materialize_view(name: str = "", limit: int = 12,
+                         actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        from ..app import graph_view as _gv
+        row = repo.get_graph_view(name) if (name or "").strip() else repo.default_graph_view()
+        if row is None:
+            return err("not_found", f"没有视图 {name or '(默认)'}",
+                       hint="先 set_graph_view 发一张，或 query_graph_views 看有哪些")
+        spec = row["spec"] or {}
+        cap = max(1, min(int(limit), 40))
+        fetched: list[str] = []
+        failed: list[str] = []
+        # ⚠ 必须**边抓边重渲染**：论文一旦入库，节点权重变化会让选点集合漂移
+        # （旧版只渲染一次就报 remaining，实测报 0 后仍缺 7 篇——回执不实就是 bug）。
+        for _ in range(8):
+            payload = _gv.build(repo, container.retrieval, container.settings, spec)
+            missing = [n["id"] for n in payload["nodes"] if not n.get("in_lib")]
+            if not missing or len(fetched) + len(failed) >= cap:
+                break
+            batch = missing[:max(1, min(8, cap - len(fetched) - len(failed)))]
+            for aid in batch:
+                res = reg.invoke("fetch_paper_by_id", arxiv_id=aid, actor=actor,
+                                 reason=reason or f"入库视图节点（{row['name']}）")
+                (fetched if res.get("ok") else failed).append(aid)
+        payload = _gv.build(repo, container.retrieval, container.settings, spec)
+        still = [n["id"] for n in payload["nodes"] if not n.get("in_lib")]
+        return ok(view=row["name"], fetched=len(fetched), fetched_ids=fetched,
+                  failed=failed, remaining=len(still), remaining_ids=still[:10],
+                  total_nodes=len(payload["nodes"]),
+                  hint=("继续调本工具直到 remaining=0" if still
+                        else "视图节点已全部入库：每篇都能点进管理页/补卡"))
 
     @reg.tool(name="upstream_clusters", kind="read",
               description="关键上游簇：库内多篇反复引同一文献⇒该领域的思想源头；按入组数降序。")

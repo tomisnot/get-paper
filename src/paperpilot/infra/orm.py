@@ -214,7 +214,12 @@ class PaperTag(Base):
 
 
 class CitationEdge(Base):
-    """库内引文边：src（在库论文）引用 dst（S2 文献）。重跑全量替换，幂等。"""
+    """库内引文边：src 引用 dst（S2 文献）。重跑全量替换，幂等。
+
+    ``direction`` 区分正向（``cites``：本篇引用的）与反查（``cited_by``：引用了本篇的）——
+    同一张表两种语义，靠"谁是 src"隐含推断会让"在库出发"与"下游扩散"混为一谈；
+    ``year`` 是 S2 已经返回、此前落库被丢掉的字段——年代编排（timeline 布局）靠它。
+    """
     __tablename__ = "citation_edges"
     __table_args__ = (UniqueConstraint("src_arxiv_id", "dst_arxiv_id", name="uq_cite_edge"),)
 
@@ -224,6 +229,8 @@ class CitationEdge(Base):
     dst_title: Mapped[str] = mapped_column(Text, default="")
     dst_citations: Mapped[int] = mapped_column(Integer, default=0)
     influential: Mapped[bool] = mapped_column(Boolean, default=False)
+    direction: Mapped[str] = mapped_column(String(16), default="cites")   # cites|cited_by
+    year: Mapped[int] = mapped_column(Integer, default=0)                 # 0=未知
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -241,6 +248,24 @@ class FeedIssue(Base):
     items: Mapped[list] = mapped_column(JSON, default=list)    # 装配原序条目
     actor: Mapped[str] = mapped_column(String(32), default="")
     reason: Mapped[str] = mapped_column(Text, default="")
+
+
+class GraphView(Base):
+    """图视图一期快照（由 AI 经命令面 set_graph_view 发布）：/network 默认渲染"默认视图"。
+
+    **视图是一等公民**：根/深度/布局/分组/着色/标签/预算/锚点全在这一行 spec 里，
+    HTML 渲染与 /network.json 回执读的是同一份 spec ⇒ "AI 画的东西"与"页面显示的东西"
+    不再是两处真相（这正是此前"只能靠 URL 与 /settings 两个旁路"的病根）。
+    """
+
+    __tablename__ = "graph_views"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    spec: Mapped[dict] = mapped_column(JSON, default=dict)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    actor: Mapped[str] = mapped_column(String(32), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    ts: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class Event(Base):

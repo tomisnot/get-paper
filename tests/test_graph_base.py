@@ -133,22 +133,31 @@ def test_g3_hover_card_comes_from_card_system(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------- P0/P2/P4
-def test_p0_root_focus_true_layers(tmp_path, monkeypatch):
-    """能红（P0 单根聚焦）：根→它引的 X/Y（层1）→与 X/Y 相连的另一篇在库论文（层2）；
-    depth=1 砍掉层2；无边之根响亮指路不白画。"""
+def test_p0_root_focus_directional_layers(tmp_path, monkeypatch):
+    """能红（**方向语义**）：根居中——上游（它引的）在上、下游（引用它的）在下；
+    `sides` 可只留一侧；同侪（与根共引同一篇）**不再被错当"层 2 祖先"**。
+
+    为什么改这条：旧实现用无向 BFS，"它引的"与"引用它的"混在同一层（用户指出看不出上下游）。
+    """
     _scholar_patch(monkeypatch)
     _c, reg, papers = _seed(tmp_path)
     for i in (0, 1):
         assert reg.invoke("sync_citations", arxiv_id=papers[i].arxiv_id)["ok"]
     root = papers[0].arxiv_id
+    reg.invoke("sync_cited_by", arxiv_id=root)                    # 下游要有边才现形
     client = TestClient(create_app(_c, None))
-    p1_link = f'href="/graph/go/{papers[1].arxiv_id}"'
-    body2 = client.get(f"/network?root={root}&depth=2").text
-    assert "单根聚焦" in body2 and p1_link in body2         # 真多层：p1 经共引升到层 2
-    body1 = client.get(f"/network?root={root}&depth=1").text
-    assert p1_link not in body1                             # depth 截断真实生效
+    body = client.get(f"/network?root={root}&depth=2").text
+    assert "单根聚焦" in body
+    assert "上游" in body and "下游" in body                      # 两侧都标出来
+    assert 'href="/graph/go/1512.03385"' in body                  # 它引的（上游）
+    assert 'href="/graph/go/2609.01111"' in body                  # 引用它的（下游）
+    assert f'href="/graph/go/{papers[1].arxiv_id}"' not in body    # 同侪不冒充祖先/后代
+    up_only = client.get(f"/network?root={root}&depth=2&sides=upstream").text
+    assert 'href="/graph/go/1512.03385"' in up_only and "2609.01111" not in up_only
+    down_only = client.get(f"/network?root={root}&depth=2&sides=downstream").text
+    assert "2609.01111" in down_only and "1512.03385" not in down_only
     lonely = client.get("/network?root=nope.99999").text
-    assert "在图里没有边" in lonely                          # 响亮指路，不空转
+    assert "在图里没有边" in lonely                                # 响亮指路，不空转
 
 
 def test_p2_tag_colors_legend_undo(tmp_path, monkeypatch):

@@ -199,151 +199,98 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         dest = next_url if next_url.startswith("/") else _back(arxiv_id)   # 只允站内路径，防开放重定向
         return RedirectResponse(dest, status_code=303)
 
-    # ---------------------------------------------------------------- 图底座实例（F1-F5：展示侧；改图的手在 AI）
-    _TAG_COLORS = {"平台源头": "#2563eb", "理论源头": "#7c3aed", "综述枢纽": "#059669",
-                   "实验谱系": "#d97706", "下游扩散": "#dc2626", "动机": "#0891b2"}
+    # ---------------------------------------------------------------- 图底座实例（视图一等公民；改图的手在 AI）
+    def _effective_spec(query: dict) -> dict:
+        """视图解析次序（总纲：显式意图 > 视图 > 配置）：
+        query 参数 > ?view= 指定视图 > **默认视图**（AI 发布的）> GraphCfg 缺省。"""
+        from . import graph_view as gv
+        base = {k: getattr(container.settings.graph, k, None)
+                for k in ("color_by", "label_mode", "badge", "arrow_size", "max_nodes",
+                          "max_edges", "group_by", "group_quota", "sort_within", "size_by",
+                          "layer_gap", "node_gap", "max_label_len", "focus_depth",
+                          "sides", "in_lib_only", "layout")
+                if hasattr(container.settings.graph, k)}
+        base = {k: v for k, v in base.items() if v is not None}
+        base["depth"] = container.settings.graph.focus_depth
+        base["label_max"] = container.settings.graph.max_label_len
+        want = str((query or {}).get("view") or "").strip()
+        row = container.repo.get_graph_view(want) if want else container.repo.default_graph_view()
+        spec = {**base, **(row["spec"] if row else {})}
+        if not want:
+            spec.setdefault("root", container.settings.graph.root_default)
+        return gv.spec_from_query(query or {}, spec)
 
     @app.get("/network", response_class=HTMLResponse)
-    def network(request: Request, focus: str = "", root: str = "", depth: int = 0):
-        """引文网络 = 图底座实例。**单根聚焦** ?root=&depth= 从根 BFS 真多层
-        （根→它引的→那些引文共引的上游＝思想源头；sync_cited_by 后下游也成层）；
-        无根则全库视角。着色可切 tag 图例（tag_paper 钉标）。"""
-        from ..domain.graph import Edge as GEdge
-        from ..domain.graph import Node as GNode
-        from ..domain.graph import label_for, layer_depths, layered_layout
-        from ..domain.profile import paper_features, score_paper
-        TAG_COLORS = _TAG_COLORS                     # 闭包直接可见，不必绕函数属性
-        g = container.settings.graph
-        edges = container.repo.citation_edges_all(limit=1500)
-        if not edges:
-            return render(request, "network.html", nodes=[], links=[], focus=focus,
-                          root="", depth=int(depth or g.focus_depth), legend=[],
-                          height=200, width=980,
-                          stats={"edges": 0, "src": 0, "dst": 0, "shown": 0,
-                                 "layers": 0, "edges_shown": 0},
-                          msg="引文图谱还空着：这页是 AI 调研成果的显示器——"
-                              "在 dsh 让 AI 对关键论文 sync_citations，调查完回这里看图")
-        dst_info: dict[str, dict] = {}
-        src_out: dict[str, int] = {}
-        for e in edges:
-            d = dst_info.setdefault(e.dst_arxiv_id, {"title": e.dst_title, "cites": 0,
-                                                     "citations": e.dst_citations})
-            d["cites"] += 1
-            src_out[e.src_arxiv_id] = src_out.get(e.src_arxiv_id, 0) + 1
-        weights = container.repo.profile_weights_map()
-        # 消费方适配器：CitationEdge → Node/Edge（F1；域层不认识“引用”）
-        nodes_g: list[GNode] = []
-        for sid in src_out:
-            p = container.repo.get_paper(sid)
-            if p is None:
-                # 库外引用者（sync_cited_by 反查来）也是节点——点击自入库（F3 句柄）
-                nodes_g.append(GNode(id=sid, kind="src", weight=0.0, meta={
-                    "kind": "src", "title": sid, "published": "", "in_lib": False,
-                    "cites": 0, "citations": src_out[sid]}))
-                continue
-            feat = paper_features(list(p.categories or []), p.primary_category,
-                                  p.title or "", p.abstract or "", list(p.authors or []))
-            sc, why = score_paper(feat, weights)
-            nodes_g.append(GNode(id=sid, kind="src", weight=sc, meta={
-                "kind": "src", "title": p.title or sid,
-                "published": p.published_at.date().isoformat() if p.published_at else "",
-                "in_lib": True, "sc": sc, "why0": why[0] if why else ""}))
-        for did, info in dst_info.items():
-            if did in src_out:
-                continue                                   # 在库身份优先（同人去重）
-            nodes_g.append(GNode(id=did, kind="dst",
-                                 weight=float(info["citations"]) / 1000.0, meta={
-                "kind": "dst", "title": info["title"] or did, "published": "",
-                "in_lib": False, "cites": info["cites"], "citations": info["citations"]}))
-        gedges = [GEdge(src=e.src_arxiv_id, dst=e.dst_arxiv_id,
-                        weight=float(e.dst_citations or 0),
-                        kind="infl" if e.influential else "") for e in edges]
-        # P0 单根聚焦：从根 BFS 真深度，截到 depth（无根则全库源集）
-        root = (root or "").strip()
-        depth = int(depth or g.focus_depth)
-        if root:
-            if not any(n.id == root for n in nodes_g):
-                return render(request, "network.html", nodes=[], links=[], focus=focus,
-                              root=root, depth=depth, legend=[], height=200, width=980,
-                              stats={"edges": len(edges), "src": len(src_out),
-                                     "dst": len(dst_info), "shown": 0, "layers": 0,
-                                     "edges_shown": 0},
-                              msg=f"根节点 {root} 在图里没有边：先让 AI 对它 sync_citations"
-                                  f"（要下游层再加 sync_cited_by）")
-            depths = layer_depths(nodes_g, gedges, {root})
-            nodes_g = [n for n in nodes_g if n.id in depths and depths[n.id] <= max(1, depth)]
-            keepids = {n.id for n in nodes_g}
-            gedges = [e for e in gedges if e.src in keepids and e.dst in keepids]
-            sources = {root}
-        else:
-            sources = set(src_out)
-        lay = layered_layout(nodes_g, gedges, sources=sources,
-                             layer_gap=int(g.layer_gap), node_gap=int(g.node_gap),
-                             max_nodes=int(g.max_nodes), sort_within=g.sort_within,
-                             size_by=g.size_by)
-        tagmap = container.repo.tag_map() if g.color_by == "tag" else {}
-        meta_by = {n.id: n.meta for n in nodes_g}
-        nodes: list[dict] = []
-        for nid, pt in lay["pos"].items():
-            m = meta_by.get(nid) or {}
-            if g.color_by == "tag":
-                fill = TAG_COLORS.get(tagmap.get(nid, ""), "#94a3b8")
-            elif g.color_by == "in_lib":
-                fill = "var(--accent)" if m.get("in_lib") else "#64748b"
-            elif g.color_by == "weight":
-                fill = "var(--accent)" if m.get("in_lib") else "#94a3b8"
-            else:
-                fill = "var(--accent)" if m.get("kind") == "src" else "#64748b"
-            nodes.append({**pt, "id": nid, "is_root": nid == root,
-                          "tag": tagmap.get(nid, ""),
-                          "label": label_for(m.get("title", ""), nid, max_len=int(g.max_label_len)),
-                          "fill": fill, "card": _node_hover_card(nid, m)})
-        legend: list[dict] = []
-        if g.color_by == "tag":
-            present = {n["tag"] for n in nodes if n["tag"]}
-            legend = [{"tag": t, "color": TAG_COLORS[t],
-                       "count": sum(1 for n in nodes if n["tag"] == t)}
-                      for t in TAG_COLORS if t in present]
-        pos = lay["pos"]
-        # 边采样：全画必成蜘蛛网（实测 684 条糊屏）——按权重（S2 被引数）取 top-K。
-        keep_edges = [le for le in lay["edges"] if le["keep"]]
-        if len(keep_edges) > int(g.max_edges):
-            keep_edges = sorted(keep_edges, key=lambda le: -le["weight"])[:int(g.max_edges)]
-        links = []
-        for i, lnk in enumerate(keep_edges):
-            a, b = pos[lnk["src"]], pos[lnk["dst"]]
-            bend = ((i % 5) - 2) * 16                       # 二次曲线错开，防重叠成一束
-            mx, my = (a["x"] + b["x"]) / 2 + bend, (a["y"] + b["y"]) / 2
-            links.append({"d": f"M {a['x']} {a['y']} Q {mx:.0f} {my:.0f} {b['x']} {b['y']}",
-                          "op": (0.8 if (not focus) or focus in (lnk["src"], lnk["dst"]) else 0.14),
-                          "infl": lnk["kind"] == "infl"})
-        return render(request, "network.html", nodes=nodes, links=links,
-                      focus=focus, msg=request.query_params.get("msg", ""),   # 跳转带话要接得住
-                      root=root, depth=depth, legend=legend,
-                      width=lay["width"], height=lay["height"],
-                      stats={"edges": len(edges), "src": len(src_out),
-                             "dst": len(dst_info), "shown": len(nodes),
-                             "layers": lay["layers"], "edges_shown": len(links)})
+    def network(request: Request, focus: str = "", root: str = "", depth: int = 0,
+                view: str = ""):
+        """引文网络 = 图底座实例，渲染**默认视图**（AI 经 set_graph_view 发布的那张）。
 
-    def _node_hover_card(nid: str, m: dict) -> dict:
-        """F4 富化协议：图不生产内容——文字从卡片系统（summary/score）与消费方 meta 拉。"""
-        facts: list[str] = []
-        if m.get("in_lib"):
-            facts.append(f"画像分 {m.get('sc', 0.0):.2f}")
-            detail = container.retrieval.detail(nid)
-            s = detail["summary"] if detail else None
-            lines = []
-            if s:
-                for tag, val in (("TL;DR", s.tldr), ("问题", s.problem), ("方法", s.method),
-                                 ("结论", s.results), ("贡献", s.novelty)):
-                    if val:
-                        lines.append(f"{tag}：{val}")
-            else:
-                lines = ["还没卡：在 dsh 让 AI write_summary 补一张"]
-        else:
-            facts += [f"库内同引 {m.get('cites', 0)} 篇", f"S2 被引 {m.get('citations', 0)}"]
-            lines = ["未入库：点击＝拉进入库并进管理页，卡由 AI 按需补"]
-        return {"title": m.get("title") or nid, "facts": facts, "lines": lines}
+        不带任何参数打开本页 = 我编排好的那张图；`?view=` 切别的已发布视图；
+        `?root=&depth=` 是临时覆盖（显式意图优先）。层号＝从根的拓扑深度；
+        `?layout=timeline` 改年代编排；着色/分组/标签/预算都在视图里。
+        """
+        from . import graph_view as gv
+        q = dict(request.query_params)
+        spec = _effective_spec(q)
+        if root:
+            spec["root"] = root.strip()
+        if depth:
+            spec["depth"] = int(depth)
+        if view:
+            spec["view"] = view
+        payload = gv.build(container.repo, container.retrieval, container.settings, spec,
+                           focus=focus)
+        stats = payload["stats"]
+        msg = request.query_params.get("msg", "")
+        if payload.get("empty"):
+            msg = ("引文图谱还空着：这页是 AI 调研成果的显示器——"
+                   "在 dsh 让 AI 对关键论文 sync_citations，调查完回这里看图")
+        elif not payload.get("root_found", True):
+            msg = (f"根节点 {spec['root']} 在图里没有边：先让 AI 对它 sync_citations"
+                   f"（要下游层再加 sync_cited_by）")
+        node_dicts = [{k: v for k, v in n.items() if k != "card"} for n in payload["nodes"]]
+        return render(request, "network.html", nodes=payload["nodes"], links=payload["links"],
+                      bands=payload["bands"], columns=payload["columns"],
+                      sides=payload.get("sides", []),
+                      legend=payload["legend"], views=payload["views"],
+                      spec=payload["spec"], view_title=payload["spec"].get("title", ""),
+                      focus=focus, msg=msg, root=payload["root"],
+                      depth=payload["depth"], label_on=payload["label_on"],
+                      layout=payload["layout"], badge_on=payload["badge_on"],
+                      arrow_size=payload["arrow_size"], color_by=payload["color_by"],
+                      group_by=payload["group_by"], svg_w=payload["width"],
+                      svg_h=payload["height"], stats=stats, node_dicts=node_dicts)
+
+    @app.get("/network.json")
+    def network_json(request: Request, focus: str = "", root: str = "", depth: int = 0,
+                     view: str = ""):
+        """**渲染回执**：同一份视图编译出的几何/配色/标签决策（确定性可复算）。
+
+        给 AI 自查用——"箭头被节点盖住""标签没出来""配色没生效"这类问题
+        以前只能靠用户截图发现，现在交付前就能核对（layout/坐标/端点/颜色/标签模式）。
+        """
+        from fastapi.responses import JSONResponse
+
+        from . import graph_view as gv
+        q = dict(request.query_params)
+        spec = _effective_spec(q)
+        if root:
+            spec["root"] = root.strip()
+        if depth:
+            spec["depth"] = int(depth)
+        payload = gv.build(container.repo, container.retrieval, container.settings, spec,
+                           focus=focus)
+        return JSONResponse({
+            "view": view or "default", "spec": payload["spec"], "stats": payload["stats"],
+            "width": payload["width"], "height": payload["height"],
+            "label_on": payload["label_on"], "arrow_size": payload["arrow_size"],
+            "sides": payload.get("sides", []),          # 上游/下游侧标注（自查用）
+            "bands": payload["bands"], "columns": payload["columns"],
+            "legend": payload["legend"],
+            "nodes": [{k: v for k, v in n.items() if k != "card"}
+                      for n in payload["nodes"]],
+            "links": payload["links"],
+        })
 
     @app.get("/graph/go/{arxiv_id}")
     def graph_node_go(arxiv_id: str):
@@ -381,11 +328,19 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
 
     @app.post("/settings/graph")
     def save_graph(max_label_len: int = Form(18), layer_gap: int = Form(130),
-                   node_gap: int = Form(90), max_nodes: int = Form(40),
-                   max_edges: int = Form(220), focus_depth: int = Form(2),
-                   size_by: str = Form("degree"), color_by: str = Form("kind"),
-                   sort_within: str = Form("weight")):
-        """图呈现参数（F5）：不进 gate schema——纯展示项，YAML 即唯一真相。"""
+                   node_gap: int = Form(90), max_nodes: int = Form(90),
+                   max_edges: int = Form(400), focus_depth: int = Form(2),
+                   size_by: str = Form("degree"), color_by: str = Form("auto"),
+                   sort_within: str = Form("weight"), root_default: str = Form(""),
+                   layout: str = Form("layer"), group_by: str = Form("none"),
+                   group_quota: int = Form(0), label_mode: str = Form("auto"),
+                   label_style: str = Form("title"), label_auto_max: int = Form(60),
+                   badge: str = Form("on"), arrow_size: int = Form(13)):
+        """图**缺省**呈现参数（视图未覆盖时生效）：纯展示项，不进 gate schema，YAML 即真相。
+
+        AI 侧发视图走 ``set_graph_view``（落 graph_views 表、即时生效）；本表单管"没有视图时"
+        的缺省，两条路互不覆盖。
+        """
         from ..config import save_settings
         s = container.settings
         try:
@@ -395,14 +350,23 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
             s.graph.max_nodes = max(8, int(max_nodes))
             s.graph.max_edges = max(20, int(max_edges))
             s.graph.focus_depth = min(6, max(1, int(focus_depth)))
+            s.graph.group_quota = max(0, min(50, int(group_quota)))
+            s.graph.label_auto_max = max(0, min(400, int(label_auto_max)))
+            s.graph.arrow_size = max(6, min(40, int(arrow_size)))
         except (TypeError, ValueError):
             return RedirectResponse(_with_msg("/settings", "图参数需为整数"), status_code=303)
         s.graph.size_by = size_by if size_by in ("degree", "weight", "flat") else "degree"
-        s.graph.color_by = (color_by if color_by in ("kind", "in_lib", "weight", "tag")
-                            else "kind")
+        s.graph.color_by = (color_by if color_by in ("auto", "kind", "in_lib", "weight",
+                                                     "tag", "group") else "auto")
         s.graph.sort_within = sort_within if sort_within in ("weight", "year") else "weight"
+        s.graph.root_default = (root_default or "").strip()
+        s.graph.layout = layout if layout in ("layer", "timeline") else "layer"
+        s.graph.group_by = group_by if group_by in ("none", "tag", "group") else "none"
+        s.graph.label_mode = label_mode if label_mode in ("auto", "always", "hover") else "auto"
+        s.graph.label_style = label_style if label_style in ("title", "id") else "title"
+        s.graph.badge = str(badge).lower() not in ("0", "off", "false", "no")
         save_settings(s)
-        return RedirectResponse(_with_msg("/settings", "图参数已存，下次渲染生效（层数不在内：那是拓扑）"),
+        return RedirectResponse(_with_msg("/settings", "图缺省已存（视图优先；层数不在内：那是拓扑）"),
                                 status_code=303)
 
     # ---------------------------------------------------------------- 论文动作

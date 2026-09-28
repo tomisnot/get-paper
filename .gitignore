@@ -34,6 +34,7 @@ dsh/lib/
 .web-port
 
 # 运行时数据（补充：下载 PDF / 生成简报 / 评审中间态 / mecha journal+artifacts）
+data/
 data/pdfs/
 data/briefings/
 data/reviews/
@@ -42,3 +43,5 @@ data/mecha/
 
 # IDE / 工具本地
 .qoder/
+
+tests/
