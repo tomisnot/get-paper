@@ -60,6 +60,9 @@ def test_network_page_shows_ai_research(tmp_path, monkeypatch):
     assert "arxiv.org/abs" not in body                            # 图上绝不外跳（G2）
     assert "ResNet" in body and "画像分" in body                   # 富化卡：标题与事实行
     assert "显示器" in body                                        # 页面自报定位
+    _c.settings.graph.max_edges = 3                          # 边采样：糊屏防复发
+    body3 = client.get("/network").text
+    assert "画 3 条" in body3
 
 
 def test_lab_page_reuses_m4_numbers(tmp_path):

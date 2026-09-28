@@ -266,19 +266,21 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
                           "label": label_for(m.get("title", ""), nid, max_len=int(g.max_label_len)),
                           "fill": fill, "card": _node_hover_card(nid, m)})
         pos = lay["pos"]
+        # 边采样：全画必成蜘蛛网（实测 684 条糊屏）——按权重（S2 被引数）取 top-K。
+        keep_edges = [le for le in lay["edges"] if le["keep"]]
+        if len(keep_edges) > int(g.max_edges):
+            keep_edges = sorted(keep_edges, key=lambda le: -le["weight"])[:int(g.max_edges)]
         links = [{"x1": pos[lnk["src"]]["x"], "y1": pos[lnk["src"]]["y"],
                   "x2": pos[lnk["dst"]]["x"], "y2": pos[lnk["dst"]]["y"],
                   "op": (0.75 if (not focus) or focus in (lnk["src"], lnk["dst"]) else 0.12),
                   "infl": lnk["kind"] == "infl"}
-                 for lnk in lay["edges"]
-                 if lnk["keep"] and lnk["src"] in pos and lnk["dst"] in pos]
-        height = 150 + max(0, lay["layers"] - 1) * int(g.layer_gap)
+                 for lnk in keep_edges]
         return render(request, "network.html", nodes=nodes, links=links,
                       focus=focus, msg=request.query_params.get("msg", ""),   # 跳转带话要接得住
-                      width=980, height=height,
+                      width=lay["width"], height=lay["height"],
                       stats={"edges": len(edges), "src": len(src_out),
                              "dst": len(dst_info), "shown": len(nodes),
-                             "layers": lay["layers"]})
+                             "layers": lay["layers"], "edges_shown": len(links)})
 
     def _node_hover_card(nid: str, m: dict) -> dict:
         """F4 富化协议：图不生产内容——文字从卡片系统（summary/score）与消费方 meta 拉。"""
@@ -335,8 +337,9 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         return render(request, "lab.html", cov=cov, st=st, bars=bars, msg="")
 
     @app.post("/settings/graph")
-    def save_graph(max_label_len: int = Form(18), layer_gap: int = Form(110),
-                   node_gap: int = Form(90), max_nodes: int = Form(60),
+    def save_graph(max_label_len: int = Form(18), layer_gap: int = Form(130),
+                   node_gap: int = Form(90), max_nodes: int = Form(40),
+                   max_edges: int = Form(220),
                    size_by: str = Form("degree"), color_by: str = Form("kind"),
                    sort_within: str = Form("weight")):
         """图呈现参数（F5）：不进 gate schema——纯展示项，YAML 即唯一真相。"""
@@ -347,6 +350,7 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
             s.graph.layer_gap = max(40, int(layer_gap))
             s.graph.node_gap = max(24, int(node_gap))
             s.graph.max_nodes = max(8, int(max_nodes))
+            s.graph.max_edges = max(20, int(max_edges))
         except (TypeError, ValueError):
             return RedirectResponse(_with_msg("/settings", "图参数需为整数"), status_code=303)
         s.graph.size_by = size_by if size_by in ("degree", "weight", "flat") else "degree"

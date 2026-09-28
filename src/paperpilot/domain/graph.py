@@ -57,14 +57,16 @@ def layer_depths(nodes: list[Node], edges: list[Edge],
 
 
 def layered_layout(nodes: list[Node], edges: list[Edge], *, sources: set[str],
-                   width: int = 980, layer_gap: int = 110, node_gap: int = 90,
-                   max_nodes: int = 60, sort_within: str = "weight",
+                   layer_gap: int = 130, node_gap: int = 90,
+                   max_nodes: int = 40, sort_within: str = "weight",
                    size_by: str = "degree") -> dict:
-    """确定性分层坐标。返回 {pos:{id:{x,y,layer,r,in_deg}}, layers, edges:[{...,keep}]}。
+    """确定性分层坐标，**画布跟着内容长**。
 
-    - 源层在底部，深度越大越靠上；层内按 sort_within 排序、等距散布；
-    - 总节点数超 max_nodes ⇒ 每层按入度/权重截 top-K（tie 按 id，可复算）；
-    - 层数 >6 ⇒ 只画相邻层边（防蜘蛛网），跨层边在渲染层折叠。
+    实测教训（用户截图）：固定 980px 宽 + 固定小高 ⇒ 一层三十个节点叠成饼、
+    标签糊成一团。现在：每层间距 ≥ 该层最大直径+余量（几何上永不重叠），总宽取
+    最挤层所需；层内标签奇偶错峰（stag）；返回 width/height 供消费方直接开画。
+    超 max_nodes ⇒ 每层按入度/权重截 top-K（tie 按 id）；层数 >6 只留相邻层边。
+    确定性：同输入（含乱序）同输出。
     """
     inc, outd, _ = _neighbours(edges)
     depth = layer_depths(nodes, edges, sources)
@@ -76,6 +78,13 @@ def layered_layout(nodes: list[Node], edges: list[Edge], *, sources: set[str],
             return (str(meta_of.get(n.id, {}).get("published") or ""),
                     -inc.get(n.id, 0), n.id)
         return (-inc.get(n.id, 0), -weight_of.get(n.id, 0.0), n.id)
+
+    def radius(nid: str) -> int:
+        if size_by == "weight":
+            return min(24, 8 + int(max(0.0, weight_of.get(nid, 0.0)) * 5))
+        if size_by == "flat":
+            return 10
+        return min(24, 8 + inc.get(nid, 0) * 2)
 
     by_layer: dict[int, list[Node]] = {}
     for n in nodes:
@@ -89,10 +98,8 @@ def layered_layout(nodes: list[Node], edges: list[Edge], *, sources: set[str],
         lst = sorted(lst, key=key)
         if sort_within == "year":
             lst = list(reversed(lst))                            # 新→旧
-        take = lst[:per_layer]
-        picked[d] = take
-        total += len(take)
-    # 若仍超预算，从最大层开始砍尾部
+        picked[d] = lst[:per_layer]
+        total += len(picked[d])
     for d in sorted(picked, reverse=True):
         if total <= max_nodes:
             break
@@ -100,39 +107,45 @@ def layered_layout(nodes: list[Node], edges: list[Edge], *, sources: set[str],
         total -= len(cut)
         picked[d] = picked[d][:len(picked[d]) - len(cut)]
     if not picked:
-        return {"pos": {}, "layers": 0, "edges": []}
+        return {"pos": {}, "layers": 0, "edges": [], "width": 980, "height": 460}
+
+    # 自适应宽度：每层间距 ≥ 该层最大直径+18，总宽取最挤层所需（下限 980）
+    spacing: dict[int, int] = {}
+    width = 980
+    for d, lst in picked.items():
+        rmax = max(radius(n.id) for n in lst)
+        spacing[d] = max(int(node_gap), 2 * rmax + 18)
+        need = spacing[d] * (len(lst) - 1) + 2 * rmax + 140
+        width = max(width, need)
     max_d = max(picked)
-    base_y = 60 + max_d * layer_gap                              # 源层（深度0）在底部
+    base_y = 70 + max_d * layer_gap                              # 源层（深度 0）在底部
     pos: dict[str, dict] = {}
     for d, lst in picked.items():
+        sp = spacing[d]
         n = len(lst)
-        span = min(width - 100, max(node_gap, 1) * (n - 1))
-        x0 = (width - span) / 2
+        x0 = (width - sp * (n - 1)) / 2
         y = base_y - d * layer_gap
         for i, nd in enumerate(lst):
-            deg = inc.get(nd.id, 0)
-            if size_by == "degree":
-                r = min(22, 6 + deg * 3)
-            elif size_by == "weight":
-                r = min(22, 7 + int(max(0.0, weight_of.get(nd.id, 0.0)) * 5))
-            else:                                                # flat
-                r = 9
-            pos[nd.id] = {"x": int(x0 + (span * i / max(1, n - 1) if n > 1 else span / 2)),
-                          "y": int(y), "layer": d, "r": r, "in_deg": deg}
-    laid = [(e, pos.get(e.src), pos.get(e.dst)) for e in edges]
+            pos[nd.id] = {"x": int(x0 + i * sp), "y": int(y), "layer": d,
+                          "r": radius(nd.id), "in_deg": inc.get(nd.id, 0),
+                          "stag": 18 if i % 2 else 0}            # 标签错峰防叠字
     out_edges = []
     adjacent_only = layers > 6
-    for e, a, b in laid:
+    for e in edges:
+        a, b = pos.get(e.src), pos.get(e.dst)
         if not (a and b):
             continue
         keep = (abs(a["layer"] - b["layer"]) == 1) if adjacent_only else True
         out_edges.append({"src": e.src, "dst": e.dst, "kind": e.kind,
-                          "weight": e.weight, "keep": keep, "span": abs(a["layer"] - b["layer"])})
-    return {"pos": pos, "layers": layers, "edges": out_edges}
+                          "weight": e.weight, "keep": keep,
+                          "span": abs(a["layer"] - b["layer"])})
+    height = 170 + max_d * layer_gap + 60                        # 上下留标签与错峰
+    return {"pos": pos, "layers": layers, "edges": out_edges,
+            "width": int(width), "height": int(height)}
 
 
 def label_for(title: str, ident: str, *, max_len: int = 18) -> str:
-    """呈现参数，不是页面私货：截断长度由消费配置给（判据 G4），全称留给 tooltip。"""
+    """呈现参数，不是页面私货：截断长度由消费配置给（判据 G4），全称留给 hover 卡。"""
     text = (title or ident).strip()
     if max_len > 3 and len(text) > max_len:
         return text[:max_len - 1] + "…"

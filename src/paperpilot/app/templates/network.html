@@ -2,12 +2,15 @@
 {% block title %}引文网络{% endblock %}
 {% block head_extra %}
 <style>
- .gwrap{position:relative;width:980px;max-width:100%;overflow-x:auto;margin:0 auto;
-        background:var(--card);border:1px solid var(--line);border-radius:12px;}
+ /* 本页让画布说话：解除全局 1080 窄栏，图谱区全宽铺开（仅本页生效）。 */
+ main{max-width:none !important;padding:0 28px 40px;}
+ .gwrap{position:relative;margin:0 auto;
+        background:var(--card);border:1px solid var(--line);border-radius:12px;
+        overflow-x:auto;}
  .gnode{position:absolute;border-radius:50%;display:block;opacity:.9;}
- .gnode:hover{opacity:1;outline:2px solid var(--accent);}
- .gnode .glabel{position:absolute;top:100%;left:50%;transform:translateX(-50%);
-   font-size:10px;color:var(--muted);white-space:nowrap;}
+ .gnode:hover{opacity:1;outline:2px solid var(--accent);z-index:50;}
+ .gnode .glabel{position:absolute;left:50%;transform:translateX(-50%);
+   font-size:10px;color:var(--muted);white-space:nowrap;pointer-events:none;}
  .gnode .gcard{display:none;position:absolute;left:50%;bottom:calc(100% + 10px);
    transform:translateX(-50%);width:290px;background:var(--card);border:1px solid var(--line);
    border-radius:10px;padding:10px 12px;z-index:40;box-shadow:0 8px 24px rgba(0,0,0,.16);
@@ -21,13 +24,14 @@
 {% block content %}
 <h1>🕸 引文网络</h1>
 <div class="muted" style="margin-bottom:10px;">
-  {{ stats.edges }} 条边 · {{ stats.src }} 篇在库出发 · {{ stats.dst }} 个上游节点 ·
-  <b>{{ stats.layers }} 层</b>（层号＝拓扑深度，不是配置） · 本次布点 {{ stats.shown }} 节点
+  {{ stats.edges }} 条边（画 {{ stats.edges_shown }} 条，按权重采样，/settings 可调） ·
+  {{ stats.src }} 篇在库出发 · {{ stats.dst }} 个上游节点（布点 {{ stats.shown }}，按入度取 top） ·
+  <b>{{ stats.layers }} 层</b>（层号＝拓扑深度，不是配置）
   {% if focus %}· 聚焦 <b>{{ focus }}</b>（<a href="/network">清</a>）{% endif %}
 </div>
 {% if msg %}<div class="flash">{{ msg }}</div>{% endif %}
-<div class="gwrap" style="height: {{ height }}px;">
-  <svg width="980" height="{{ height }}" viewBox="0 0 980 {{ height }}"
+<div class="gwrap" style="height: {{ height }}px;width:100%;">
+  <svg width="{{ width }}" height="{{ height }}" viewBox="0 0 {{ width }} {{ height }}"
        style="position:absolute;inset:0;">
     {% for l in links %}
       <line x1="{{ l.x1 }}" y1="{{ l.y1 }}" x2="{{ l.x2 }}" y2="{{ l.y2 }}"
@@ -38,7 +42,7 @@
   {% for n in nodes %}
   <a class="gnode" href="/graph/go/{{ n.id }}" title="{{ n.card.title }}"
      style="left:{{ n.x - n.r }}px;top:{{ n.y - n.r }}px;width:{{ n.r * 2 }}px;height:{{ n.r * 2 }}px;background:{{ n.fill }};">
-    <span class="glabel">{{ n.label }}</span>
+    <span class="glabel" style="top:calc(100% + {{ 2 + n.stag }}px);">{{ n.label }}</span>
     <span class="gcard">
       <b>{{ n.card.title }}</b>
       {% for f in n.card.facts %}<i>{{ f }}</i>{% endfor %}
@@ -48,9 +52,8 @@
   {% endfor %}
 </div>
 <p class="muted">
-  无限分层：从在库论文出发按引用关系逐层向上，图有多深画多深；橙粗线＝高影响引用；
-  大小/颜色/层内排序由 <b>/settings 图谱参数</b>驱动（几何就是几何，不给层起名字）。
-  点节点＝站内闭环（不在库先入库再进管理页，永不外跳）。
+  画布跟着内容长：层距/间距/宽度按节点几何自动撑开，标签奇偶错峰；节点大小＝入度（可切权重/等大）。
+  橙粗线＝高影响引用；点节点＝站内闭环（不在库先入库再进管理页，永不外跳）。
   <br>🖥 本页是 <b>AI 调研成果的显示器</b>：图谱增删由 AI 在 dsh 对话里完成
   （<code>sync_citations</code> / <code>undo_change</code>，走命令面带审计），你只管说话、在这看图。
 </p>

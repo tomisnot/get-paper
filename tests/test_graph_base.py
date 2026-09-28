@@ -32,6 +32,20 @@ def test_g1b_deep_graph_layers_unbounded():
     assert lay["pos"]["n8"]["layer"] == 8
 
 
+def test_layout_grows_and_never_overlaps():
+    """能红（用户截图事故的防复发）：画布跟内容长（一层二十节点⇒宽自动超 980），
+    同层间距 ≥ 直径（几何不重叠），标签奇偶错峰——不再把三十个饼塞进死框。"""
+    wide = [Node(id="s")] + [Node(id=f"d{i}") for i in range(20)]
+    edges = [Edge("s", f"d{i}", weight=float(i)) for i in range(20)]
+    lay = layered_layout(wide, edges, sources={"s"}, max_nodes=40, node_gap=90)
+    assert lay["width"] > 980 and lay["height"] >= 300
+    xs = sorted((p["x"], p["r"]) for k, p in lay["pos"].items() if k != "s")
+    rmax = max(r for _, r in xs)
+    gaps = [xs[i + 1][0] - xs[i][0] for i in range(len(xs) - 1)]
+    assert min(gaps) >= 2 * rmax                          # 同层两圆不相交
+    assert {p["stag"] for p in lay["pos"].values()} == {0, 18}   # 错峰在用
+
+
 # ---------------------------------------------------------------- G4 label 参数
 def test_g4_label_respects_config(tmp_path):
     _c, _reg, _p = _seed(tmp_path)

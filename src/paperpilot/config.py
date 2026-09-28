@@ -48,12 +48,13 @@ class GraphCfg(BaseModel):
     """图底座（F5）呈现参数：所有图实例共用；层数不在此（那是拓扑属性，不是配置）。"""
 
     max_label_len: int = 18
-    layer_gap: int = 110
+    layer_gap: int = 130
     node_gap: int = 90
     size_by: str = "degree"          # degree|weight|flat
     color_by: str = "kind"           # kind|in_lib|weight
     sort_within: str = "weight"      # weight|year（用户：不一定按时间）
-    max_nodes: int = 60
+    max_nodes: int = 40
+    max_edges: int = 220             # 边按权重采样上限（实测 684 条全画=蜘蛛网）
 
 
 class AICfg(BaseModel):
