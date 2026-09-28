@@ -55,6 +55,7 @@ class GraphCfg(BaseModel):
     sort_within: str = "weight"      # weight|year（用户：不一定按时间）
     max_nodes: int = 40
     max_edges: int = 220             # 边按权重采样上限（实测 684 条全画=蜘蛛网）
+    focus_depth: int = 2             # 单根聚焦缺省深度（/network?root=…&depth= 可覆盖）
 
 
 class AICfg(BaseModel):

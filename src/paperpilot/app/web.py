@@ -200,21 +200,27 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         return RedirectResponse(dest, status_code=303)
 
     # ---------------------------------------------------------------- 图底座实例（F1-F5：展示侧；改图的手在 AI）
+    _TAG_COLORS = {"平台源头": "#2563eb", "理论源头": "#7c3aed", "综述枢纽": "#059669",
+                   "实验谱系": "#d97706", "下游扩散": "#dc2626", "动机": "#0891b2"}
+
     @app.get("/network", response_class=HTMLResponse)
-    def network(request: Request, focus: str = ""):
-        """引文网络 = 图底座的第一个实例。层号是拓扑属性（从在库论文出发的最短路径深度），
-        无限层；节点是站内句柄（F3：点击=入库+进管理页，永不外跳）；hover 卡从卡片系统
-        拉内容（F4，图不生产文字）；呈现参数全在 settings.graph（F5）。域层无领域词。"""
+    def network(request: Request, focus: str = "", root: str = "", depth: int = 0):
+        """引文网络 = 图底座实例。**单根聚焦** ?root=&depth= 从根 BFS 真多层
+        （根→它引的→那些引文共引的上游＝思想源头；sync_cited_by 后下游也成层）；
+        无根则全库视角。着色可切 tag 图例（tag_paper 钉标）。"""
         from ..domain.graph import Edge as GEdge
         from ..domain.graph import Node as GNode
-        from ..domain.graph import label_for, layered_layout
+        from ..domain.graph import label_for, layer_depths, layered_layout
         from ..domain.profile import paper_features, score_paper
+        TAG_COLORS = _TAG_COLORS                     # 闭包直接可见，不必绕函数属性
         g = container.settings.graph
         edges = container.repo.citation_edges_all(limit=1500)
         if not edges:
             return render(request, "network.html", nodes=[], links=[], focus=focus,
+                          root="", depth=int(depth or g.focus_depth), legend=[],
                           height=200, width=980,
-                          stats={"edges": 0, "src": 0, "dst": 0, "shown": 0, "layers": 0},
+                          stats={"edges": 0, "src": 0, "dst": 0, "shown": 0,
+                                 "layers": 0, "edges_shown": 0},
                           msg="引文图谱还空着：这页是 AI 调研成果的显示器——"
                               "在 dsh 让 AI 对关键论文 sync_citations，调查完回这里看图")
         dst_info: dict[str, dict] = {}
@@ -230,6 +236,10 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         for sid in src_out:
             p = container.repo.get_paper(sid)
             if p is None:
+                # 库外引用者（sync_cited_by 反查来）也是节点——点击自入库（F3 句柄）
+                nodes_g.append(GNode(id=sid, kind="src", weight=0.0, meta={
+                    "kind": "src", "title": sid, "published": "", "in_lib": False,
+                    "cites": 0, "citations": src_out[sid]}))
                 continue
             feat = paper_features(list(p.categories or []), p.primary_category,
                                   p.title or "", p.abstract or "", list(p.authors or []))
@@ -248,35 +258,68 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         gedges = [GEdge(src=e.src_arxiv_id, dst=e.dst_arxiv_id,
                         weight=float(e.dst_citations or 0),
                         kind="infl" if e.influential else "") for e in edges]
-        lay = layered_layout(nodes_g, gedges, sources=set(src_out),
+        # P0 单根聚焦：从根 BFS 真深度，截到 depth（无根则全库源集）
+        root = (root or "").strip()
+        depth = int(depth or g.focus_depth)
+        if root:
+            if not any(n.id == root for n in nodes_g):
+                return render(request, "network.html", nodes=[], links=[], focus=focus,
+                              root=root, depth=depth, legend=[], height=200, width=980,
+                              stats={"edges": len(edges), "src": len(src_out),
+                                     "dst": len(dst_info), "shown": 0, "layers": 0,
+                                     "edges_shown": 0},
+                              msg=f"根节点 {root} 在图里没有边：先让 AI 对它 sync_citations"
+                                  f"（要下游层再加 sync_cited_by）")
+            depths = layer_depths(nodes_g, gedges, {root})
+            nodes_g = [n for n in nodes_g if n.id in depths and depths[n.id] <= max(1, depth)]
+            keepids = {n.id for n in nodes_g}
+            gedges = [e for e in gedges if e.src in keepids and e.dst in keepids]
+            sources = {root}
+        else:
+            sources = set(src_out)
+        lay = layered_layout(nodes_g, gedges, sources=sources,
                              layer_gap=int(g.layer_gap), node_gap=int(g.node_gap),
                              max_nodes=int(g.max_nodes), sort_within=g.sort_within,
                              size_by=g.size_by)
+        tagmap = container.repo.tag_map() if g.color_by == "tag" else {}
         meta_by = {n.id: n.meta for n in nodes_g}
         nodes: list[dict] = []
         for nid, pt in lay["pos"].items():
             m = meta_by.get(nid) or {}
-            if g.color_by == "in_lib":
+            if g.color_by == "tag":
+                fill = TAG_COLORS.get(tagmap.get(nid, ""), "#94a3b8")
+            elif g.color_by == "in_lib":
                 fill = "var(--accent)" if m.get("in_lib") else "#64748b"
             elif g.color_by == "weight":
                 fill = "var(--accent)" if m.get("in_lib") else "#94a3b8"
             else:
                 fill = "var(--accent)" if m.get("kind") == "src" else "#64748b"
-            nodes.append({**pt, "id": nid,
+            nodes.append({**pt, "id": nid, "is_root": nid == root,
+                          "tag": tagmap.get(nid, ""),
                           "label": label_for(m.get("title", ""), nid, max_len=int(g.max_label_len)),
                           "fill": fill, "card": _node_hover_card(nid, m)})
+        legend: list[dict] = []
+        if g.color_by == "tag":
+            present = {n["tag"] for n in nodes if n["tag"]}
+            legend = [{"tag": t, "color": TAG_COLORS[t],
+                       "count": sum(1 for n in nodes if n["tag"] == t)}
+                      for t in TAG_COLORS if t in present]
         pos = lay["pos"]
         # 边采样：全画必成蜘蛛网（实测 684 条糊屏）——按权重（S2 被引数）取 top-K。
         keep_edges = [le for le in lay["edges"] if le["keep"]]
         if len(keep_edges) > int(g.max_edges):
             keep_edges = sorted(keep_edges, key=lambda le: -le["weight"])[:int(g.max_edges)]
-        links = [{"x1": pos[lnk["src"]]["x"], "y1": pos[lnk["src"]]["y"],
-                  "x2": pos[lnk["dst"]]["x"], "y2": pos[lnk["dst"]]["y"],
-                  "op": (0.75 if (not focus) or focus in (lnk["src"], lnk["dst"]) else 0.12),
-                  "infl": lnk["kind"] == "infl"}
-                 for lnk in keep_edges]
+        links = []
+        for i, lnk in enumerate(keep_edges):
+            a, b = pos[lnk["src"]], pos[lnk["dst"]]
+            bend = ((i % 5) - 2) * 16                       # 二次曲线错开，防重叠成一束
+            mx, my = (a["x"] + b["x"]) / 2 + bend, (a["y"] + b["y"]) / 2
+            links.append({"d": f"M {a['x']} {a['y']} Q {mx:.0f} {my:.0f} {b['x']} {b['y']}",
+                          "op": (0.8 if (not focus) or focus in (lnk["src"], lnk["dst"]) else 0.14),
+                          "infl": lnk["kind"] == "infl"})
         return render(request, "network.html", nodes=nodes, links=links,
                       focus=focus, msg=request.query_params.get("msg", ""),   # 跳转带话要接得住
+                      root=root, depth=depth, legend=legend,
                       width=lay["width"], height=lay["height"],
                       stats={"edges": len(edges), "src": len(src_out),
                              "dst": len(dst_info), "shown": len(nodes),
@@ -339,7 +382,7 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
     @app.post("/settings/graph")
     def save_graph(max_label_len: int = Form(18), layer_gap: int = Form(130),
                    node_gap: int = Form(90), max_nodes: int = Form(40),
-                   max_edges: int = Form(220),
+                   max_edges: int = Form(220), focus_depth: int = Form(2),
                    size_by: str = Form("degree"), color_by: str = Form("kind"),
                    sort_within: str = Form("weight")):
         """图呈现参数（F5）：不进 gate schema——纯展示项，YAML 即唯一真相。"""
@@ -351,10 +394,12 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
             s.graph.node_gap = max(24, int(node_gap))
             s.graph.max_nodes = max(8, int(max_nodes))
             s.graph.max_edges = max(20, int(max_edges))
+            s.graph.focus_depth = min(6, max(1, int(focus_depth)))
         except (TypeError, ValueError):
             return RedirectResponse(_with_msg("/settings", "图参数需为整数"), status_code=303)
         s.graph.size_by = size_by if size_by in ("degree", "weight", "flat") else "degree"
-        s.graph.color_by = color_by if color_by in ("kind", "in_lib", "weight") else "kind"
+        s.graph.color_by = (color_by if color_by in ("kind", "in_lib", "weight", "tag")
+                            else "kind")
         s.graph.sort_within = sort_within if sort_within in ("weight", "year") else "weight"
         save_settings(s)
         return RedirectResponse(_with_msg("/settings", "图参数已存，下次渲染生效（层数不在内：那是拓扑）"),

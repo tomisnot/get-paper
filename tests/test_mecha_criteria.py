@@ -56,10 +56,10 @@ def test_every_capability_projected_exactly_once(tmp_path):
     """
     container, _stack_ = _stack(tmp_path)
     cap_names = set(registry_for(container).names())
-    assert len(cap_names) == 37
+    assert len(cap_names) == 39
     # 人类专属写能力（不投影给 AI，防自改画像锚）：重置画像是当前唯一成员。
     assert set(TOOL_TO_CAPABILITY.values()) == cap_names - {"reset_profile"}
-    assert len(set(TOOL_TO_CAPABILITY)) == len(TOOL_TO_CAPABILITY) == 36
+    assert len(set(TOOL_TO_CAPABILITY)) == len(TOOL_TO_CAPABILITY) == 38
 
 
 def test_tool_parameters_derive_from_capability_no_drift(tmp_path):
@@ -120,7 +120,7 @@ def test_required_projection_not_hollowed_by_kwargs(tmp_path):
 
 
 def test_expected_tools_covers_config_and_authority_surface():
-    """不许误报：模型可见面 = 36 投影能力 + 非能力面 6 = 42 工具（reset_profile 人类专属不投影）。"""
+    """不许误报：模型可见面 = 38 投影能力 + 非能力面 6 = 44 工具（reset_profile 人类专属不投影）。"""
     from .test_mecha_adapter import NON_CAPABILITY_TOOLS
     assert EXPECTED_TOOLS == set(TOOL_TO_CAPABILITY) | NON_CAPABILITY_TOOLS
-    assert len(EXPECTED_TOOLS) == 42
+    assert len(EXPECTED_TOOLS) == 44

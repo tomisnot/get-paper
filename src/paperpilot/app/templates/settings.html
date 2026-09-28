@@ -218,6 +218,7 @@
       <div><label>节点间距 px</label><input type="number" name="node_gap" value="{{ settings.graph.node_gap }}" min="24"></div>
       <div><label>节点上限</label><input type="number" name="max_nodes" value="{{ settings.graph.max_nodes }}" min="8"></div>
       <div><label>边采样上限</label><input type="number" name="max_edges" value="{{ settings.graph.max_edges }}" min="20"></div>
+      <div><label>聚焦缺省深度</label><input type="number" name="focus_depth" value="{{ settings.graph.focus_depth }}" min="1" max="6"></div>
     </div>
     <div class="row" style="margin-top:10px;">
       <div><label>大小依据</label><select name="size_by">
@@ -227,6 +228,7 @@
       <div><label>颜色依据</label><select name="color_by">
         <option value="kind" {% if settings.graph.color_by=='kind' %}selected{% endif %}>分类</option>
         <option value="in_lib" {% if settings.graph.color_by=='in_lib' %}selected{% endif %}>是否入库</option>
+        <option value="tag" {% if settings.graph.color_by=='tag' %}selected{% endif %}>图论标签</option>
         <option value="weight" {% if settings.graph.color_by=='weight' %}selected{% endif %}>权重</option></select></div>
       <div><label>层内排序</label><select name="sort_within">
         <option value="weight" {% if settings.graph.sort_within=='weight' %}selected{% endif %}>权重</option>

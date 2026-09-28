@@ -12,6 +12,11 @@ from paperpilot.domain.graph import Edge, Node, label_for, layered_layout
 from .test_web_research import _FakeScholar, _seed
 
 
+def _scholar_patch(monkeypatch):
+    import paperpilot.capabilities.tools as tools_mod
+    monkeypatch.setattr(tools_mod, "SemanticScholarClient", _FakeScholar)
+
+
 # ---------------------------------------------------------------- G1 层数=拓扑
 def test_g1_layers_are_topology_and_deterministic():
     ns = [Node(id=c) for c in "abcd"]
@@ -112,15 +117,65 @@ class _FakeArxivFor:
 def test_g3_hover_card_comes_from_card_system(tmp_path, monkeypatch):
     """能红（F4）：有 summary 的库内节点 hover 卡带五段文字；无卡给补卡指路；
     未入库节点给“点击入库”——图页面自己不生产任何正文。"""
-    import paperpilot.capabilities.tools as tools_mod
+    _scholar_patch(monkeypatch)
+    import paperpilot.capabilities.tools as tools_mod  # noqa: F401  (补丁目标存在性)
     _c, reg, papers = _seed(tmp_path)
-    monkeypatch.setattr(tools_mod, "SemanticScholarClient", _FakeScholar)
     client = TestClient(create_app(_c, None))
     reg.invoke("sync_citations", arxiv_id=papers[0].arxiv_id)
     body = client.get("/network").text
     assert "还没卡" in body                                 # 库内有篇无卡 ⇒ 指路
+    assert "wheel" in body                                  # P3：缩放平移已在线
     reg.invoke("write_summary", arxiv_id=papers[0].arxiv_id, tldr="图卡可见的一句话",
                reason="测富化")
     body2 = client.get("/network").text
     assert "TL;DR：图卡可见的一句话" in body2               # 五段直进 hover 卡
     assert "点击＝拉进入库并进管理页" in body2              # 未入库节点的降级文案
+
+
+# ---------------------------------------------------------------- P0/P2/P4
+def test_p0_root_focus_true_layers(tmp_path, monkeypatch):
+    """能红（P0 单根聚焦）：根→它引的 X/Y（层1）→与 X/Y 相连的另一篇在库论文（层2）；
+    depth=1 砍掉层2；无边之根响亮指路不白画。"""
+    _scholar_patch(monkeypatch)
+    _c, reg, papers = _seed(tmp_path)
+    for i in (0, 1):
+        assert reg.invoke("sync_citations", arxiv_id=papers[i].arxiv_id)["ok"]
+    root = papers[0].arxiv_id
+    client = TestClient(create_app(_c, None))
+    p1_link = f'href="/graph/go/{papers[1].arxiv_id}"'
+    body2 = client.get(f"/network?root={root}&depth=2").text
+    assert "单根聚焦" in body2 and p1_link in body2         # 真多层：p1 经共引升到层 2
+    body1 = client.get(f"/network?root={root}&depth=1").text
+    assert p1_link not in body1                             # depth 截断真实生效
+    lonely = client.get("/network?root=nope.99999").text
+    assert "在图里没有边" in lonely                          # 响亮指路，不空转
+
+
+def test_p2_tag_colors_legend_undo(tmp_path, monkeypatch):
+    """能红（P2）：野标签响亮拒（枚举随错给出）；钉标后 color_by=tag 出图例与色；
+    undo 还原（删行）。"""
+    _scholar_patch(monkeypatch)
+    _c, reg, papers = _seed(tmp_path)
+    bad = reg.invoke("tag_paper", arxiv_id=papers[0].arxiv_id, tag="瞎猜")
+    assert bad["ok"] is False and "综述枢纽" in bad["error"]["hint"]
+    reg.invoke("sync_citations", arxiv_id=papers[0].arxiv_id)
+    r = reg.invoke("tag_paper", arxiv_id=papers[0].arxiv_id, tag="理论源头", reason="测")
+    assert r["ok"] and r["replaced"] is False
+    _c.settings.graph.color_by = "tag"
+    body = TestClient(create_app(_c, None)).get("/network").text
+    assert "理论源头×1" in body and "#7c3aed" in body       # 图例：名×数 + 色板
+    u = reg.invoke("undo", seq=0)                           # 最后一条可逆=tag_paper
+    assert u["ok"] and u["op"] == "tag_paper"
+    assert _c.repo.tag_map() == {}                          # 撤销归零
+
+
+def test_p4_sync_cited_by_downstream(tmp_path, monkeypatch):
+    """能红（P4）：反查引用者入图（幂等），以根看时下游独立成层。"""
+    _scholar_patch(monkeypatch)
+    _c, reg, papers = _seed(tmp_path)
+    r = reg.invoke("sync_cited_by", arxiv_id=papers[0].arxiv_id, reason="测下游")
+    assert r["ok"] and r["added"] == 1
+    assert reg.invoke("sync_cited_by", arxiv_id=papers[0].arxiv_id)["added"] == 0  # 幂等
+    body = TestClient(create_app(_c, None)).get(
+        f"/network?root={papers[0].arxiv_id}&depth=1").text
+    assert "2609.01111" in body                             # 引用者成层可见

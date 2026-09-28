@@ -34,6 +34,11 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "review_status": {"date": "日期 ISO 格式（省略=今天）"},
     "sync_citations": {"arxiv_id": "在库论文 arXiv 编号", "limit": "取多少条引用（≤100，默认 40）",
                        "reason": "一句话中文说明为何落库"},
+    "sync_cited_by": {"arxiv_id": "在库论文 arXiv 编号", "limit": "取多少条反引（≤100，默认 40）",
+                      "reason": "一句话中文说明"},
+    "tag_paper": {"arxiv_id": "在库论文 arXiv 编号",
+                  "tag": "平台源头|理论源头|综述枢纽|实验谱系|下游扩散|动机（一论文一枚）",
+                  "reason": "一句话中文说明为何这么标"},
     "upstream_clusters": {"min_count": "至少几篇库内论文同引（默认 2）", "limit": "最多返回簇数"},
     "related_papers": {"arxiv_id": "基准论文（需已 sync_citations）", "limit": "返回相似篇数"},
     "coverage_report": {"sample_missing": "缺卡清单长度（1-50，默认 15）"},
@@ -302,6 +307,49 @@ def build_registry(container) -> Registry:
                                           reason=reason or f"落库引文边 {arxiv_id}")
         return ok(arxiv_id=arxiv_id, edges=out["added"], replaced=out["replaced"],
                   hint="本地图谱已更新；upstream_clusters 聚合簇、related_papers 找同伙")
+
+    @reg.tool(name="sync_cited_by", kind="write",
+              description="反查'谁引用了这篇'入图（S2 citations → 反向边）：下游扩散在 /network 独立成层；"
+                          "引用者可未入库（节点点击自动入库）。增量幂等加边，不可 undo（重建用 sync_citations）。")
+    def sync_cited_by(arxiv_id: str, limit: int = 40,
+                      actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        if repo.get_paper(arxiv_id) is None:
+            return err("not_found", f"库里没有 {arxiv_id}",
+                       hint="先 fetch_paper_by_id 拉进入库")
+        client = _scholar()
+        try:
+            items = client.citations(arxiv_ext_id(arxiv_id), limit=min(int(limit), 100))
+        finally:
+            client.close()
+        rows = []
+        for it in items:
+            p = it.get("citingPaper") or {}
+            ext = p.get("externalIds") or {}
+            aid = (ext.get("ArXiv") or "").strip()
+            if aid and aid != arxiv_id:
+                rows.append({"src": aid, "dst": arxiv_id, "title": p.get("title") or aid,
+                             "citations": p.get("citationCount") or 0,
+                             "influential": bool(it.get("isInfluential"))})
+        added = repo.add_citation_edges(rows, actor=actor,
+                                        reason=reason or f"反查 {arxiv_id} 的下游扩散",
+                                        target=arxiv_id)
+        return ok(arxiv_id=arxiv_id, added=added,
+                  hint=f"/network?root={arxiv_id} 刷新即可见下游层（引用者可未入库）")
+
+    @reg.tool(name="tag_paper", kind="write", reversible=True,
+              description="给在库论文钉一枚图论标签（六色：平台源头/理论源头/综述枢纽/"
+                          "实验谱系/下游扩散/动机），一论文一枚、重跑替换；/network 图例即按此着色。")
+    def tag_paper(arxiv_id: str, tag: str, actor: str = ACTOR_DEFAULT,
+                  reason: str = "") -> dict:
+        if repo.get_paper(arxiv_id) is None:
+            return err("not_found", f"库里没有 {arxiv_id}",
+                       hint="先 fetch_paper_by_id 拉进入库")
+        if tag not in repo.TAGS:
+            return err("bad_params", f"未知标签 {tag!r}",
+                       hint="六色枚举：" + "/".join(repo.TAGS), suggest=list(repo.TAGS))
+        out = repo.set_tag(arxiv_id, tag, actor=actor, reason=reason)
+        return ok(arxiv_id=arxiv_id, tag=tag, replaced=out["replaced"],
+                  hint="/network 把颜色依据切到 tag 即看图例；标错了 undo_change 还原旧标")
 
     @reg.tool(name="upstream_clusters", kind="read",
               description="关键上游簇：库内多篇反复引同一文献⇒该领域的思想源头；按入组数降序。")

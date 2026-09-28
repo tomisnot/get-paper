@@ -22,6 +22,11 @@ class _FakeScholar:
                             "citationCount": 80000}, "isInfluential": False},
         ]
 
+    def citations(self, ext_id, *, limit=100):
+        return [{"citingPaper": {"externalIds": {"ArXiv": "2609.01111"},
+                                 "title": "Downstream Follower",
+                                 "citationCount": 3}, "isInfluential": False}]
+
     def close(self):
         pass
 

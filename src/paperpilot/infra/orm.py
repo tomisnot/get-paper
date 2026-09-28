@@ -203,6 +203,16 @@ class ProfileWeight(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class PaperTag(Base):
+    """一论文一枚图论标签（六色图例）：重跑替换，undo 还原旧标。"""
+    __tablename__ = "paper_tags"
+
+    arxiv_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tag: Mapped[str] = mapped_column(String(32), default="")
+    actor: Mapped[str] = mapped_column(String(32), default="")
+    ts: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class CitationEdge(Base):
     """库内引文边：src（在库论文）引用 dst（S2 文献）。重跑全量替换，幂等。"""
     __tablename__ = "citation_edges"

@@ -30,7 +30,9 @@ authors | `read_config` / `review_status` 评审进度 | `read_activity` 事件+
 
 **引文与计量**（S2 实时，缓存过）：`paper_metrics` 一篇的影响力度量 | `read_references` 向前追溯
 （按被引排序=奠基候选，带 intents）| `read_citations` 向后看扩散 | `sync_citations` 把引用边落本地
-图谱（幂等、可撤）| `upstream_clusters` 库内多篇同引=思想源头 | `related_papers` 共引相似。
+图谱（幂等、可撤）| `sync_cited_by` 反查“谁引了它”入图（下游独立成层，幂等不可撤）|
+`tag_paper` 钉六色图论标签（平台源头/理论源头/综述枢纽/实验谱系/下游扩散/动机，可撤）|
+`upstream_clusters` 库内多篇同引=思想源头 | `related_papers` 共引相似。
 
 **盘点与统计**：`coverage_report` 有卡/读过/收藏+缺卡工单 | `stats_timeseries` 每日入库/信号漏斗/
 简报节奏/token 按用途 | `watch_authors` 作者雷达（主题 authors ∪ 画像作者，只读；入库逐篇
@@ -94,10 +96,11 @@ authority_locked⇒`read_authority` 看开闸 · 不确定用法⇒`paperpilot t
 
 ## Web 配套面（你干的活在哪被看见）
 
-- **/network 引文网络 = AI 调研成果的显示器**：你用 `sync_citations` 落边，用户回这看图
-  （无限分层=拓扑深度；大小/颜色/排序归 /settings 图谱参数，层数不可配）。节点是站内句柄：
-  点击=未入库先 `fetch_paper_by_id` 入库再进管理页；图上永不外跳（出站点只剩详情页原文/PDF，
-  那是有意的 outbound 漏斗）。**调查完吱声**：“图谱已更新，去 /network 看”。
+- **/network 引文网络 = AI 调研成果的显示器**：你用 `sync_citations`/`sync_cited_by` 落边、
+  `tag_paper` 钉色，用户回这看图。**单根聚焦 ?root=&depth= 是你该主动用的玩法**：用户说
+  “以某篇为中心看图”→ 先 sync 它再给链接（根→它引的→共引上游；反查后下游成层）。
+  图例着色靠 `tag_paper`（color_by=tag 在 /settings 切）。节点是站内句柄：
+  点击=未入库先 `fetch_paper_by_id` 入库再进管理页；图上永不外跳。**调查完吱声**：“图谱已更新，去 /network 看”。
 - **/feed 面板**只读你 `publish_feed` 发的最新一期，无刷新按钮——换页/口味全在你手里。
 - **/lab 仪表盘 + /activity 记录仪**：覆盖率/趋势/成本与行为审计的展示面；报数与它同口径，
   同一数字两处真相会被判据拒绝。

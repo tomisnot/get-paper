@@ -4,57 +4,91 @@
 <style>
  /* 本页让画布说话：解除全局 1080 窄栏，图谱区全宽铺开（仅本页生效）。 */
  main{max-width:none !important;padding:0 28px 40px;}
- .gwrap{position:relative;margin:0 auto;
-        background:var(--card);border:1px solid var(--line);border-radius:12px;
-        overflow-x:auto;}
- .gnode{position:absolute;border-radius:50%;display:block;opacity:.9;}
- .gnode:hover{opacity:1;outline:2px solid var(--accent);z-index:50;}
- .gnode .glabel{position:absolute;left:50%;transform:translateX(-50%);
-   font-size:10px;color:var(--muted);white-space:nowrap;pointer-events:none;}
+ #gwrap{position:relative;width:100%;height:{{ height }}px;overflow:hidden;cursor:grab;
+        background:var(--card);border:1px solid var(--line);border-radius:12px;}
+ #gwrap.drag{cursor:grabbing;}
+ #gl{position:absolute;inset:0;transform-origin:0 0;}
+ .gnode{position:absolute;border-radius:50%;display:block;opacity:.92;}
+ .gnode:hover{opacity:1;z-index:50;}
+ .gnode.root{outline:3px solid #0f172a;outline-offset:2px;}
+ .gnode .glabel{display:none;position:absolute;left:50%;transform:translateX(-50%);
+   top:calc(100% + {{ 2 }}px);font-size:11px;color:var(--ink);white-space:nowrap;
+   background:rgba(255,255,255,.86);padding:0 4px;border-radius:4px;pointer-events:none;}
+ .gnode:hover .glabel{display:block;}
  .gnode .gcard{display:none;position:absolute;left:50%;bottom:calc(100% + 10px);
    transform:translateX(-50%);width:290px;background:var(--card);border:1px solid var(--line);
-   border-radius:10px;padding:10px 12px;z-index:40;box-shadow:0 8px 24px rgba(0,0,0,.16);
+   border-radius:10px;padding:10px 12px;z-index:60;box-shadow:0 8px 24px rgba(0,0,0,.16);
    white-space:normal;text-align:left;color:var(--ink);}
  .gnode:hover .gcard{display:block;}
  .gcard b{display:block;margin-bottom:4px;font-size:13px;}
  .gcard i{font-style:normal;color:var(--accent);font-size:12px;margin-right:8px;}
  .gcard span{display:block;font-size:12px;color:var(--muted);margin-top:3px;}
+ .chipdot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;}
 </style>
 {% endblock %}
 {% block content %}
 <h1>🕸 引文网络</h1>
 <div class="muted" style="margin-bottom:10px;">
-  {{ stats.edges }} 条边（画 {{ stats.edges_shown }} 条，按权重采样，/settings 可调） ·
-  {{ stats.src }} 篇在库出发 · {{ stats.dst }} 个上游节点（布点 {{ stats.shown }}，按入度取 top） ·
-  <b>{{ stats.layers }} 层</b>（层号＝拓扑深度，不是配置）
-  {% if focus %}· 聚焦 <b>{{ focus }}</b>（<a href="/network">清</a>）{% endif %}
+  {% if root %}<b>单根聚焦：{{ root }}</b>（深度 {{ depth }} 层） · {% endif %}
+  {{ stats.edges }} 条边（画 {{ stats.edges_shown }} 条，按权重采样） ·
+  {{ stats.src }} 篇在库出发 · {{ stats.dst }} 个上游节点（布点 {{ stats.shown }}） ·
+  <b>{{ stats.layers }} 层</b>（层号＝从根的拓扑深度）
+  {% if focus %} · 高亮 <b>{{ focus }}</b>{% endif %}
+  {% for lg in legend %} · <span class="chipdot" style="background:{{ lg.color }}"></span>{{ lg.tag }}×{{ lg.count }}{% endfor %}
+  {% if root %} · <a href="/network">回全库视角</a>{% endif %}
 </div>
 {% if msg %}<div class="flash">{{ msg }}</div>{% endif %}
-<div class="gwrap" style="height: {{ height }}px;width:100%;">
-  <svg width="{{ width }}" height="{{ height }}" viewBox="0 0 {{ width }} {{ height }}"
-       style="position:absolute;inset:0;">
-    {% for l in links %}
-      <line x1="{{ l.x1 }}" y1="{{ l.y1 }}" x2="{{ l.x2 }}" y2="{{ l.y2 }}"
-            stroke="{% if l.infl %}#d97706{% else %}#94a3b8{% endif %}"
-            stroke-width="{% if l.infl %}2{% else %}1{% endif %}" stroke-opacity="{{ l.op }}"/>
+<div id="gwrap">
+  <div id="gl">
+    <svg width="{{ width }}" height="{{ height }}" viewBox="0 0 {{ width }} {{ height }}"
+         style="position:absolute;inset:0;">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6"
+                orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/></marker>
+        <marker id="arhi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6"
+                orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#d97706"/></marker>
+      </defs>
+      {% for l in links %}
+        <path d="{{ l.d }}" fill="none"
+              stroke="{% if l.infl %}#d97706{% else %}#94a3b8{% endif %}"
+              stroke-width="{% if l.infl %}2{% else %}1.2{% endif %}"
+              stroke-opacity="{{ l.op }}"
+              marker-end="url({% if l.infl %}#arhi{% else %}#ar{% endif %})"/>
+      {% endfor %}
+    </svg>
+    {% for n in nodes %}
+    <a class="gnode{% if n.is_root %} root{% endif %}" href="/graph/go/{{ n.id }}"
+       title="{{ n.card.title }}"
+       style="left:{{ n.x - n.r }}px;top:{{ n.y - n.r }}px;width:{{ n.r * 2 }}px;height:{{ n.r * 2 }}px;background:{{ n.fill }};">
+      <span class="glabel">{{ n.label }}</span>
+      <span class="gcard">
+        <b>{{ n.card.title }}</b>
+        {% if n.tag %}<i>#{{ n.tag }}</i>{% endif %}
+        {% for f in n.card.facts %}<i>{{ f }}</i>{% endfor %}
+        {% for line in n.card.lines %}<span>{{ line }}</span>{% endfor %}
+      </span>
+    </a>
     {% endfor %}
-  </svg>
-  {% for n in nodes %}
-  <a class="gnode" href="/graph/go/{{ n.id }}" title="{{ n.card.title }}"
-     style="left:{{ n.x - n.r }}px;top:{{ n.y - n.r }}px;width:{{ n.r * 2 }}px;height:{{ n.r * 2 }}px;background:{{ n.fill }};">
-    <span class="glabel" style="top:calc(100% + {{ 2 + n.stag }}px);">{{ n.label }}</span>
-    <span class="gcard">
-      <b>{{ n.card.title }}</b>
-      {% for f in n.card.facts %}<i>{{ f }}</i>{% endfor %}
-      {% for line in n.card.lines %}<span>{{ line }}</span>{% endfor %}
-    </span>
-  </a>
-  {% endfor %}
+  </div>
 </div>
+<script>
+/* 滚轮缩放、拖拽平移：约十行原生 JS，零外部依赖（用户点名要的可读性，覆盖旧"不做"条款）。 */
+(function(){var w=document.getElementById('gwrap'),g=document.getElementById('gl'),
+ s=1,x=0,y=0,dr=null;
+ function ap(){g.style.transform='translate('+x+'px,'+y+'px) scale('+s+')';}
+ w.addEventListener('wheel',function(e){e.preventDefault();
+   s=Math.min(3,Math.max(.35,s*(e.deltaY<0?1.12:0.89)));ap();},{passive:false});
+ w.addEventListener('mousedown',function(e){if(e.target.closest('a.gnode'))return;
+   dr={x:e.clientX-x,y:e.clientY-y};w.classList.add('drag');});
+ window.addEventListener('mousemove',function(e){if(dr){x=e.clientX-dr.x;y=e.clientY-dr.y;ap();}});
+ window.addEventListener('mouseup',function(){dr=null;w.classList.remove('drag');});
+})();
+</script>
 <p class="muted">
-  画布跟着内容长：层距/间距/宽度按节点几何自动撑开，标签奇偶错峰；节点大小＝入度（可切权重/等大）。
-  橙粗线＝高影响引用；点节点＝站内闭环（不在库先入库再进管理页，永不外跳）。
-  <br>🖥 本页是 <b>AI 调研成果的显示器</b>：图谱增删由 AI 在 dsh 对话里完成
-  （<code>sync_citations</code> / <code>undo_change</code>，走命令面带审计），你只管说话、在这看图。
+  箭头＝引用方向（ citing → cited，自下而上溯源）；曲线错开防重叠；<b>标签悬停才显示</b>；
+  滚轮缩放、拖拽平移；黑描边＝根节点。点节点＝站内闭环（不在库先入库再进管理页，永不外跳）。
+  {% if not root %}想顺一条线挖到底：地址栏加 <code>?root=某篇编号&depth=3</code>，或在 dsh 说"以某篇为中心看图"。{% endif %}
+  <br>🖥 本页是 <b>AI 调研成果的显示器</b>：图谱增删（sync_citations / sync_cited_by / tag_paper /
+  undo_change）全由 AI 在 dsh 对话里完成，走命令面带审计，你只管说话、在这看图。
 </p>
 {% endblock %}

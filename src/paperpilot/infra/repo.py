@@ -248,6 +248,18 @@ class PaperRepository:
                 s.delete(row)
             return {"removed_feed_issue": iid}
 
+        if op == "tag_paper":
+            from .orm import PaperTag
+            tid = event.target or ""
+            row = s.get(PaperTag, tid) if tid else None
+            old = (event.before or {}).get("tag") or ""
+            if row is not None:
+                if old:
+                    row.tag = old
+                else:
+                    s.delete(row)
+            return {"restored_tag": old or "(removed)"}
+
         if op == "sync_citations":
             # 回滚引文边：先把 src 现边清空，再按 before 快照重建（忠实回上一轮）
             from .orm import CitationEdge
@@ -774,6 +786,57 @@ class PaperRepository:
         scored = sorted(((len(mine & dsts), src) for src, dsts in inter.items() if mine & dsts),
                         key=lambda x: (-x[0], x[1]))
         return [{"arxiv_id": src, "shared_references": n} for n, src in scored[:limit]]
+
+    # ---------------------------------------------------------------- 图论标签与反向边（P2/P4）
+    TAGS = ("平台源头", "理论源头", "综述枢纽", "实验谱系", "下游扩散", "动机")
+
+    def set_tag(self, arxiv_id: str, tag: str, *, actor: str = "ai",
+                reason: str = "") -> dict:
+        """一论文一枚标签；重跑替换。before=旧标 ⇒ undo 还原旧标或删行。"""
+        from .orm import PaperTag
+        with self.sf() as s:
+            old = s.get(PaperTag, arxiv_id)
+            snap = old.tag if old is not None else ""
+            if old is not None:
+                old.tag, old.actor, old.ts = tag, actor, utcnow()
+            else:
+                s.add(PaperTag(arxiv_id=arxiv_id, tag=tag, actor=actor))
+            self._event(s, op="tag_paper", actor=actor,
+                        reason=reason or f"给 {arxiv_id} 标 {tag}", target=arxiv_id,
+                        before={"tag": snap}, after={"tag": tag}, reversible=1)
+            s.commit()
+            return {"tag": tag, "replaced": bool(snap)}
+
+    def tag_map(self) -> dict[str, str]:
+        from .orm import PaperTag
+        with self.sf() as s:
+            return {t.arxiv_id: t.tag for t in s.scalars(select(PaperTag)).all()}
+
+    def add_citation_edges(self, rows: list[dict], *, actor: str = "ai",
+                           reason: str = "", target: str = "") -> int:
+        """增量幂等加边（P4 反向边用）：已存在的 (src,dst) 跳过。
+        增量加边标 reversible=0——整篇出边重建用 sync_citations（快照替换语义）。"""
+        from .orm import CitationEdge
+        with self.sf() as s:
+            have = {(e.src_arxiv_id, e.dst_arxiv_id)
+                    for e in s.scalars(select(CitationEdge)).all()}
+            added = 0
+            for r in rows:
+                src = (r.get("src") or "").strip()
+                dst = (r.get("dst") or "").strip()
+                if not src or not dst or src == dst or (src, dst) in have:
+                    continue
+                s.add(CitationEdge(src_arxiv_id=src, dst_arxiv_id=dst,
+                                   dst_title=r.get("title") or dst,
+                                   dst_citations=int(r.get("citations") or 0),
+                                   influential=bool(r.get("influential"))))
+                have.add((src, dst))
+                added += 1
+            self._event(s, op="sync_cited_by", actor=actor,
+                        reason=reason or f"反向补边 {added} 条", target=target,
+                        after={"added": added}, reversible=0)
+            s.commit()
+            return added
 
     def coverage_report(self, *, sample_missing: int = 15) -> dict:
         """调研资产覆盖率：多少篇有卡/读过/收藏，最新的无卡清单（AI 补卡工单）。"""

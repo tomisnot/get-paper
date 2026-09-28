@@ -75,6 +75,13 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
     ToolDecl("sync_citations", "sync_citations", "write",
              "把一篇在库论文的引用边落库成本地图谱（重跑幂等）；之后上游簇/共引相似本地免费查。",
              omit=("actor",)),
+    ToolDecl("sync_cited_by", "sync_cited_by", "write",
+             "反查'谁引用了这篇'入图（下游扩散独立成层）；引用者可未入库，增量幂等不可 undo。",
+             omit=("actor",)),
+    ToolDecl("tag_paper", "tag_paper", "write",
+             "给在库论文钉图论标签（平台源头/理论源头/综述枢纽/实验谱系/下游扩散/动机），"
+             "一论文一枚；/network 图例着色靠它；可撤销。",
+             omit=("actor",)),
     ToolDecl("upstream_clusters", "upstream_clusters", "read",
              "关键上游簇：库内多篇反复引同一文献⇒领域思想源头。"),
     ToolDecl("related_papers", "related_papers", "read",
