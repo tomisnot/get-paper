@@ -1,34 +1,57 @@
 {% extends "base.html" %}
 {% block title %}引文网络{% endblock %}
+{% block head_extra %}
+<style>
+ .gwrap{position:relative;width:980px;max-width:100%;overflow-x:auto;margin:0 auto;
+        background:var(--card);border:1px solid var(--line);border-radius:12px;}
+ .gnode{position:absolute;border-radius:50%;display:block;opacity:.9;}
+ .gnode:hover{opacity:1;outline:2px solid var(--accent);}
+ .gnode .glabel{position:absolute;top:100%;left:50%;transform:translateX(-50%);
+   font-size:10px;color:var(--muted);white-space:nowrap;}
+ .gnode .gcard{display:none;position:absolute;left:50%;bottom:calc(100% + 10px);
+   transform:translateX(-50%);width:290px;background:var(--card);border:1px solid var(--line);
+   border-radius:10px;padding:10px 12px;z-index:40;box-shadow:0 8px 24px rgba(0,0,0,.16);
+   white-space:normal;text-align:left;color:var(--ink);}
+ .gnode:hover .gcard{display:block;}
+ .gcard b{display:block;margin-bottom:4px;font-size:13px;}
+ .gcard i{font-style:normal;color:var(--accent);font-size:12px;margin-right:8px;}
+ .gcard span{display:block;font-size:12px;color:var(--muted);margin-top:3px;}
+</style>
+{% endblock %}
 {% block content %}
 <h1>🕸 引文网络</h1>
 <div class="muted" style="margin-bottom:10px;">
-  {{ stats.edges }} 条边 · {{ stats.src }} 篇在库论文出边 · {{ stats.dst }} 篇上游文献 ·
-  本次显示 {{ stats.shown }} 个节点（各排取前 16）
-  {% if focus %}· 聚焦 <b>{{ focus }}</b>{% endif %}
+  {{ stats.edges }} 条边 · {{ stats.src }} 篇在库出发 · {{ stats.dst }} 个上游节点 ·
+  <b>{{ stats.layers }} 层</b>（层号＝拓扑深度，不是配置） · 本次布点 {{ stats.shown }} 节点
+  {% if focus %}· 聚焦 <b>{{ focus }}</b>（<a href="/network">清</a>）{% endif %}
 </div>
 {% if msg %}<div class="flash">{{ msg }}</div>{% endif %}
-<svg viewBox="0 0 980 420" style="width:100%;background:var(--card);border:1px solid var(--line);border-radius:12px;">
-  {% for l in links %}
-    <line x1="{{ l.x1 }}" y1="{{ l.y1 }}" x2="{{ l.x2 }}" y2="{{ l.y2 }}"
-          stroke="{% if l.infl %}#d97706{% else %}#94a3b8{% endif %}"
-          stroke-width="{% if l.infl %}2{% else %}1{% endif %}" stroke-opacity="{{ l.op }}"/>
-  {% endfor %}
+<div class="gwrap" style="height: {{ height }}px;">
+  <svg width="980" height="{{ height }}" viewBox="0 0 980 {{ height }}"
+       style="position:absolute;inset:0;">
+    {% for l in links %}
+      <line x1="{{ l.x1 }}" y1="{{ l.y1 }}" x2="{{ l.x2 }}" y2="{{ l.y2 }}"
+            stroke="{% if l.infl %}#d97706{% else %}#94a3b8{% endif %}"
+            stroke-width="{% if l.infl %}2{% else %}1{% endif %}" stroke-opacity="{{ l.op }}"/>
+    {% endfor %}
+  </svg>
   {% for n in nodes %}
-    <a href="{{ n.url }}" {% if n.kind == 'dst' %}target="_blank" rel="noopener"{% endif %}>
-      <circle cx="{{ n.x }}" cy="{{ n.y }}" r="{{ n.r }}"
-              fill="{% if n.kind == 'dst' %}#64748b{% else %}var(--accent){% endif %}"
-              fill-opacity="0.88"><title>{{ n.tip }}</title></circle>
-      <text x="{{ n.x }}" y="{{ n.y + n.r + 13 }}" font-size="10" text-anchor="middle"
-            fill="var(--muted)">{{ n.label }}</text>
-    </a>
+  <a class="gnode" href="/graph/go/{{ n.id }}" title="{{ n.card.title }}"
+     style="left:{{ n.x - n.r }}px;top:{{ n.y - n.r }}px;width:{{ n.r * 2 }}px;height:{{ n.r * 2 }}px;background:{{ n.fill }};">
+    <span class="glabel">{{ n.label }}</span>
+    <span class="gcard">
+      <b>{{ n.card.title }}</b>
+      {% for f in n.card.facts %}<i>{{ f }}</i>{% endfor %}
+      {% for line in n.card.lines %}<span>{{ line }}</span>{% endfor %}
+    </span>
+  </a>
   {% endfor %}
-</svg>
+</div>
 <p class="muted">
-  上排＝<b>上游文献</b>（大小＝库内同引数；未入库者点开去 arXiv，已入库者进管理页）；
-  下排＝<b>在库论文</b>（大小＝兴趣画像分，鼠标悬停看画像理由），点节点进常规论文管理页。
-  橙粗线＝高影响引用。聚焦某篇：地址栏加 <code>?focus=arxiv_id</code>。
-  <br>🖥 本页是 <b>AI 调研成果的显示器</b>：图谱的增删由 AI 在 dsh 对话里完成
+  无限分层：从在库论文出发按引用关系逐层向上，图有多深画多深；橙粗线＝高影响引用；
+  大小/颜色/层内排序由 <b>/settings 图谱参数</b>驱动（几何就是几何，不给层起名字）。
+  点节点＝站内闭环（不在库先入库再进管理页，永不外跳）。
+  <br>🖥 本页是 <b>AI 调研成果的显示器</b>：图谱增删由 AI 在 dsh 对话里完成
   （<code>sync_citations</code> / <code>undo_change</code>，走命令面带审计），你只管说话、在这看图。
 </p>
 {% endblock %}

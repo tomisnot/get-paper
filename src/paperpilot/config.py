@@ -44,6 +44,18 @@ class ScoringCfg(BaseModel):
     review_floor: float = 0.4
 
 
+class GraphCfg(BaseModel):
+    """图底座（F5）呈现参数：所有图实例共用；层数不在此（那是拓扑属性，不是配置）。"""
+
+    max_label_len: int = 18
+    layer_gap: int = 110
+    node_gap: int = 90
+    size_by: str = "degree"          # degree|weight|flat
+    color_by: str = "kind"           # kind|in_lib|weight
+    sort_within: str = "weight"      # weight|year（用户：不一定按时间）
+    max_nodes: int = 60
+
+
 class AICfg(BaseModel):
     """AI 档位。
 
@@ -98,6 +110,7 @@ class Settings(BaseModel):
     # 关掉（False）则退回"分类 OR 取最新"的宽进模式（也可靠 topic 查询兼容主题无 keywords）。
     fetch_global_fallback: bool = True
     scoring: ScoringCfg = Field(default_factory=ScoringCfg)
+    graph: GraphCfg = Field(default_factory=GraphCfg)
     ai: AICfg = Field(default_factory=AICfg)
     notify: NotifyCfg = Field(default_factory=NotifyCfg)
     web: WebCfg = Field(default_factory=WebCfg)

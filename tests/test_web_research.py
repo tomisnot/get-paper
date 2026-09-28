@@ -55,9 +55,10 @@ def test_network_page_shows_ai_research(tmp_path, monkeypatch):
 
     body = client.get("/network").text
     assert "<svg" in body and "引文网络" in body
-    assert f'href="/papers/{papers[0].arxiv_id}"' in body          # 在库节点→管理页
-    assert "https://arxiv.org/abs/1512.03385" in body              # 未入库上游→arXiv
-    assert "ResNet" in body and "画像分" in body                   # 权重与 tooltip 在用
+    assert f'href="/graph/go/{papers[0].arxiv_id}"' in body        # 在库节点→站内句柄
+    assert 'href="/graph/go/1512.03385"' in body                  # 未入库上游也是句柄，不外跳
+    assert "arxiv.org/abs" not in body                            # 图上绝不外跳（G2）
+    assert "ResNet" in body and "画像分" in body                   # 富化卡：标题与事实行
     assert "显示器" in body                                        # 页面自报定位
 
 

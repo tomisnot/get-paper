@@ -199,19 +199,22 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         dest = next_url if next_url.startswith("/") else _back(arxiv_id)   # 只允站内路径，防开放重定向
         return RedirectResponse(dest, status_code=303)
 
-    # ---------------------------------------------------------------- 调研网络与仪表盘（M4 配套：展示面；改图谱走命令面）
+    # ---------------------------------------------------------------- 图底座实例（F1-F5：展示侧；改图的手在 AI）
     @app.get("/network", response_class=HTMLResponse)
     def network(request: Request, focus: str = ""):
-        """引文网络（服务端 SVG 布局，零 JS 零依赖）：上行=上游文献，下行=在库论文。
-
-        节点大小带权重：下排用**兴趣画像分**（复用 score_paper），上排用库内同引数；
-        节点可点：在库篇进常规管理页，未入库的上游去 arXiv。改图谱：AI 的
-        sync_citations（命令面，可 undo）或详情页人类同步按钮，同源同审计。"""
+        """引文网络 = 图底座的第一个实例。层号是拓扑属性（从在库论文出发的最短路径深度），
+        无限层；节点是站内句柄（F3：点击=入库+进管理页，永不外跳）；hover 卡从卡片系统
+        拉内容（F4，图不生产文字）；呈现参数全在 settings.graph（F5）。域层无领域词。"""
+        from ..domain.graph import Edge as GEdge
+        from ..domain.graph import Node as GNode
+        from ..domain.graph import label_for, layered_layout
         from ..domain.profile import paper_features, score_paper
+        g = container.settings.graph
         edges = container.repo.citation_edges_all(limit=1500)
         if not edges:
             return render(request, "network.html", nodes=[], links=[], focus=focus,
-                          stats={"edges": 0, "src": 0, "dst": 0, "shown": 0},
+                          height=200, width=980,
+                          stats={"edges": 0, "src": 0, "dst": 0, "shown": 0, "layers": 0},
                           msg="引文图谱还空着：这页是 AI 调研成果的显示器——"
                               "在 dsh 让 AI 对关键论文 sync_citations，调查完回这里看图")
         dst_info: dict[str, dict] = {}
@@ -222,52 +225,103 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
             d["cites"] += 1
             src_out[e.src_arxiv_id] = src_out.get(e.src_arxiv_id, 0) + 1
         weights = container.repo.profile_weights_map()
-        top_dst = sorted(dst_info.items(),
-                         key=lambda kv: (-kv[1]["cites"], -kv[1]["citations"]))[:16]
-        top_src = sorted(src_out.items(), key=lambda kv: -kv[1])[:16]
-        W = 980
-
-        def _x(i: int, n: int) -> int:
-            return 60 + int(i * (W - 120) / max(1, n - 1)) if n > 1 else W // 2
-
-        nodes: list[dict] = []
-        for i, (did, info) in enumerate(top_dst):
-            in_lib = container.repo.get_paper(did) is not None
-            nodes.append({
-                "kind": "dst", "id": did, "x": _x(i, len(top_dst)), "y": 84,
-                "r": min(22, 6 + info["cites"] * 3),
-                "label": (info["title"] or did)[:26],
-                "url": f"/papers/{did}" if in_lib else f"https://arxiv.org/abs/{did}",
-                "tip": f"上游：被库内 {info['cites']} 篇同引 · S2 被引 {info['citations']}"
-                       + ("" if in_lib else "（未入库）"),
-            })
-        for i, (sid, cnt) in enumerate(top_src):
+        # 消费方适配器：CitationEdge → Node/Edge（F1；域层不认识“引用”）
+        nodes_g: list[GNode] = []
+        for sid in src_out:
             p = container.repo.get_paper(sid)
             if p is None:
                 continue
             feat = paper_features(list(p.categories or []), p.primary_category,
                                   p.title or "", p.abstract or "", list(p.authors or []))
             sc, why = score_paper(feat, weights)
-            nodes.append({
-                "kind": "src", "id": sid, "x": _x(i, len(top_src)), "y": 330,
-                "r": min(22, 7 + int(max(0.0, sc) * 5)),
-                "label": (p.title or sid)[:26], "url": f"/papers/{sid}",
-                "tip": f"画像分 {sc:.2f} · 出 {cnt} 条边 · "
-                       + (why[0] if why else "画像无命中（新拓领域？）"),
-            })
-        pos = {n["id"]: n for n in nodes}
-        links = []
-        for e in edges:
-            a, b = pos.get(e.src_arxiv_id), pos.get(e.dst_arxiv_id)
-            if not (a and b):
-                continue
-            hot = (not focus) or focus in (e.src_arxiv_id, e.dst_arxiv_id)
-            links.append({"x1": a["x"], "y1": a["y"], "x2": b["x"], "y2": b["y"],
-                          "op": 0.75 if hot else 0.12, "infl": e.influential})
+            nodes_g.append(GNode(id=sid, kind="src", weight=sc, meta={
+                "kind": "src", "title": p.title or sid,
+                "published": p.published_at.date().isoformat() if p.published_at else "",
+                "in_lib": True, "sc": sc, "why0": why[0] if why else ""}))
+        for did, info in dst_info.items():
+            if did in src_out:
+                continue                                   # 在库身份优先（同人去重）
+            nodes_g.append(GNode(id=did, kind="dst",
+                                 weight=float(info["citations"]) / 1000.0, meta={
+                "kind": "dst", "title": info["title"] or did, "published": "",
+                "in_lib": False, "cites": info["cites"], "citations": info["citations"]}))
+        gedges = [GEdge(src=e.src_arxiv_id, dst=e.dst_arxiv_id,
+                        weight=float(e.dst_citations or 0),
+                        kind="infl" if e.influential else "") for e in edges]
+        lay = layered_layout(nodes_g, gedges, sources=set(src_out),
+                             layer_gap=int(g.layer_gap), node_gap=int(g.node_gap),
+                             max_nodes=int(g.max_nodes), sort_within=g.sort_within,
+                             size_by=g.size_by)
+        meta_by = {n.id: n.meta for n in nodes_g}
+        nodes: list[dict] = []
+        for nid, pt in lay["pos"].items():
+            m = meta_by.get(nid) or {}
+            if g.color_by == "in_lib":
+                fill = "var(--accent)" if m.get("in_lib") else "#64748b"
+            elif g.color_by == "weight":
+                fill = "var(--accent)" if m.get("in_lib") else "#94a3b8"
+            else:
+                fill = "var(--accent)" if m.get("kind") == "src" else "#64748b"
+            nodes.append({**pt, "id": nid,
+                          "label": label_for(m.get("title", ""), nid, max_len=int(g.max_label_len)),
+                          "fill": fill, "card": _node_hover_card(nid, m)})
+        pos = lay["pos"]
+        links = [{"x1": pos[lnk["src"]]["x"], "y1": pos[lnk["src"]]["y"],
+                  "x2": pos[lnk["dst"]]["x"], "y2": pos[lnk["dst"]]["y"],
+                  "op": (0.75 if (not focus) or focus in (lnk["src"], lnk["dst"]) else 0.12),
+                  "infl": lnk["kind"] == "infl"}
+                 for lnk in lay["edges"]
+                 if lnk["keep"] and lnk["src"] in pos and lnk["dst"] in pos]
+        height = 150 + max(0, lay["layers"] - 1) * int(g.layer_gap)
         return render(request, "network.html", nodes=nodes, links=links,
-                      focus=focus, msg="",
+                      focus=focus, msg=request.query_params.get("msg", ""),   # 跳转带话要接得住
+                      width=980, height=height,
                       stats={"edges": len(edges), "src": len(src_out),
-                             "dst": len(dst_info), "shown": len(nodes)})
+                             "dst": len(dst_info), "shown": len(nodes),
+                             "layers": lay["layers"]})
+
+    def _node_hover_card(nid: str, m: dict) -> dict:
+        """F4 富化协议：图不生产内容——文字从卡片系统（summary/score）与消费方 meta 拉。"""
+        facts: list[str] = []
+        if m.get("in_lib"):
+            facts.append(f"画像分 {m.get('sc', 0.0):.2f}")
+            detail = container.retrieval.detail(nid)
+            s = detail["summary"] if detail else None
+            lines = []
+            if s:
+                for tag, val in (("TL;DR", s.tldr), ("问题", s.problem), ("方法", s.method),
+                                 ("结论", s.results), ("贡献", s.novelty)):
+                    if val:
+                        lines.append(f"{tag}：{val}")
+            else:
+                lines = ["还没卡：在 dsh 让 AI write_summary 补一张"]
+        else:
+            facts += [f"库内同引 {m.get('cites', 0)} 篇", f"S2 被引 {m.get('citations', 0)}"]
+            lines = ["未入库：点击＝拉进入库并进管理页，卡由 AI 按需补"]
+        return {"title": m.get("title") or nid, "facts": facts, "lines": lines}
+
+    @app.get("/graph/go/{arxiv_id}")
+    def graph_node_go(arxiv_id: str):
+        """F3 节点句柄：点击=站内闭环——不在库先 fetch_paper_by_id（走命令面、留痕），
+        再进本站论文面。**永不外跳**（出站点只在详情页的原文/PDF，那是有意漏斗）。"""
+        if container.repo.get_paper(arxiv_id) is None:
+            if stack is None:
+                res = registry_for(container).invoke(
+                    "fetch_paper_by_id", arxiv_id=arxiv_id, actor="human",
+                    reason=f"图节点点击入库 {arxiv_id}")
+            else:
+                from ..mecha_adapter.hub import human_write
+                r = human_write(stack, "fetch_paper_by_id", arxiv_id=arxiv_id,
+                                reason=f"图节点点击入库 {arxiv_id}")
+                res = ({"ok": True} if not r.get("is_error")
+                       else {"ok": False,
+                             "error": {"message": r.get("error", {}).get("message", "")}})
+            if not res.get("ok"):
+                return RedirectResponse(
+                    _with_msg("/network",
+                              f"入库失败：{res.get('error', {}).get('message', '未知原因')}"
+                              "——已回图谱，节点没丢，可再点重试"), status_code=303)
+        return RedirectResponse(f"/papers/{arxiv_id}", status_code=303)
 
     @app.get("/lab", response_class=HTMLResponse)
     def lab(request: Request):
@@ -279,6 +333,28 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         bars = [{"d": k, "n": v, "pct": max(2, round(100 * v / mx))}
                 for k, v in sorted(dn.items())][-14:]
         return render(request, "lab.html", cov=cov, st=st, bars=bars, msg="")
+
+    @app.post("/settings/graph")
+    def save_graph(max_label_len: int = Form(18), layer_gap: int = Form(110),
+                   node_gap: int = Form(90), max_nodes: int = Form(60),
+                   size_by: str = Form("degree"), color_by: str = Form("kind"),
+                   sort_within: str = Form("weight")):
+        """图呈现参数（F5）：不进 gate schema——纯展示项，YAML 即唯一真相。"""
+        from ..config import save_settings
+        s = container.settings
+        try:
+            s.graph.max_label_len = max(6, int(max_label_len))
+            s.graph.layer_gap = max(40, int(layer_gap))
+            s.graph.node_gap = max(24, int(node_gap))
+            s.graph.max_nodes = max(8, int(max_nodes))
+        except (TypeError, ValueError):
+            return RedirectResponse(_with_msg("/settings", "图参数需为整数"), status_code=303)
+        s.graph.size_by = size_by if size_by in ("degree", "weight", "flat") else "degree"
+        s.graph.color_by = color_by if color_by in ("kind", "in_lib", "weight") else "kind"
+        s.graph.sort_within = sort_within if sort_within in ("weight", "year") else "weight"
+        save_settings(s)
+        return RedirectResponse(_with_msg("/settings", "图参数已存，下次渲染生效（层数不在内：那是拓扑）"),
+                                status_code=303)
 
     # ---------------------------------------------------------------- 论文动作
     # 有 stack（统一启动）→ 经 mecha 命令面（human 通道 + 写权门 + 审计）；否则直调（向后兼容）。

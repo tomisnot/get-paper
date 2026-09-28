@@ -209,4 +209,29 @@
   <div class="muted">还没有简报——先跑一次上面“立即生成今日日报”，或走 dsh 三段评审协议。</div>
   {% endif %}
 </div>
+<div class="card" style="margin-top:14px;">
+  <h2 style="margin-top:0;">🕸 图谱呈现参数（图底座 F5：层数不在内，那是拓扑）</h2>
+  <form method="post" action="/settings/graph">
+    <div class="row" style="margin-top:10px;">
+      <div><label>标签截断长度</label><input type="number" name="max_label_len" value="{{ settings.graph.max_label_len }}" min="6"></div>
+      <div><label>层间距 px</label><input type="number" name="layer_gap" value="{{ settings.graph.layer_gap }}" min="40"></div>
+      <div><label>节点间距 px</label><input type="number" name="node_gap" value="{{ settings.graph.node_gap }}" min="24"></div>
+      <div><label>节点上限</label><input type="number" name="max_nodes" value="{{ settings.graph.max_nodes }}" min="8"></div>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <div><label>大小依据</label><select name="size_by">
+        <option value="degree" {% if settings.graph.size_by=='degree' %}selected{% endif %}>入度</option>
+        <option value="weight" {% if settings.graph.size_by=='weight' %}selected{% endif %}>权重</option>
+        <option value="flat" {% if settings.graph.size_by=='flat' %}selected{% endif %}>等大</option></select></div>
+      <div><label>颜色依据</label><select name="color_by">
+        <option value="kind" {% if settings.graph.color_by=='kind' %}selected{% endif %}>分类</option>
+        <option value="in_lib" {% if settings.graph.color_by=='in_lib' %}selected{% endif %}>是否入库</option>
+        <option value="weight" {% if settings.graph.color_by=='weight' %}selected{% endif %}>权重</option></select></div>
+      <div><label>层内排序</label><select name="sort_within">
+        <option value="weight" {% if settings.graph.sort_within=='weight' %}selected{% endif %}>权重</option>
+        <option value="year" {% if settings.graph.sort_within=='year' %}selected{% endif %}>时间</option></select></div>
+    </div>
+    <div style="margin-top:10px;"><button>保存图参数</button></div>
+  </form>
+</div>
 {% endblock %}
