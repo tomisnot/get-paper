@@ -33,7 +33,7 @@ dev = [
 #   · 放 extra ⇒ 本机 `pip install -e .` / `.[dev]` **不解析它**（裸名需求是
 #     `Requirement already satisfied`、不触发 clone）⇒ 本机零影响；他机用 `.[dev,mecha]` 一条命令装全。
 #   ⇒ 等上游仓建好、tag 可解析后，把它提进 core 只是"删两行加一行"（**可逆**）。
-# 本机开发（两仓是同级目录，例如 D:\code-nosync\mecha 与同级的本仓）：editable 装一次即可，
+# 本机开发（两仓是同级目录，例如框架仓与本仓并排放）：editable 装一次即可，
 #   例：pip install -e "../mecha[mcp]"（**不要**把这个本机路径写进本文件：会污染发布物）。
 # ⚠ extra 只列 mecha 0.2.0 **实际提供**的 `mcp`（`mcp`/`uvicorn` 都挂在它下面）。
 #   `cockpit` 曾经写在这里，但它**不是** mecha 的 extra（pip 只警告 `does not provide the extra
