@@ -732,6 +732,14 @@ class PaperRepository:
             s.commit()
             return {"added": added, "replaced": len(old)}
 
+    def citation_edges_all(self, *, limit: int = 1500) -> list:
+        """全边列表（web 网络页数据源；项目已有先例：briefings 返离 session 实体）。"""
+        from .orm import CitationEdge
+        with self.sf() as s:
+            return list(s.scalars(select(CitationEdge)
+                                  .order_by(CitationEdge.dst_citations.desc())
+                                  .limit(int(limit))).all())
+
     def upstream_clusters(self, *, min_count: int = 2, limit: int = 20) -> list[dict]:
         """关键上游簇：库内多篇反复引用的同一文献（入组数≥min_count），按组数降序。"""
         from .orm import CitationEdge

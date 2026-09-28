@@ -199,6 +199,101 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         dest = next_url if next_url.startswith("/") else _back(arxiv_id)   # 只允站内路径，防开放重定向
         return RedirectResponse(dest, status_code=303)
 
+    # ---------------------------------------------------------------- 调研网络与仪表盘（M4 配套：展示面；改图谱走命令面）
+    @app.get("/network", response_class=HTMLResponse)
+    def network(request: Request, focus: str = ""):
+        """引文网络（服务端 SVG 布局，零 JS 零依赖）：上行=上游文献，下行=在库论文。
+
+        节点大小带权重：下排用**兴趣画像分**（复用 score_paper），上排用库内同引数；
+        节点可点：在库篇进常规管理页，未入库的上游去 arXiv。改图谱：AI 的
+        sync_citations（命令面，可 undo）或详情页人类同步按钮，同源同审计。"""
+        from ..domain.profile import paper_features, score_paper
+        edges = container.repo.citation_edges_all(limit=1500)
+        if not edges:
+            return render(request, "network.html", nodes=[], links=[], focus=focus,
+                          stats={"edges": 0, "src": 0, "dst": 0, "shown": 0},
+                          msg="引文图谱还空着：在 dsh 让 AI 对关键论文 sync_citations，"
+                              "或进任意论文详情页点「🔄 同步引用」")
+        dst_info: dict[str, dict] = {}
+        src_out: dict[str, int] = {}
+        for e in edges:
+            d = dst_info.setdefault(e.dst_arxiv_id, {"title": e.dst_title, "cites": 0,
+                                                     "citations": e.dst_citations})
+            d["cites"] += 1
+            src_out[e.src_arxiv_id] = src_out.get(e.src_arxiv_id, 0) + 1
+        weights = container.repo.profile_weights_map()
+        top_dst = sorted(dst_info.items(),
+                         key=lambda kv: (-kv[1]["cites"], -kv[1]["citations"]))[:16]
+        top_src = sorted(src_out.items(), key=lambda kv: -kv[1])[:16]
+        W = 980
+
+        def _x(i: int, n: int) -> int:
+            return 60 + int(i * (W - 120) / max(1, n - 1)) if n > 1 else W // 2
+
+        nodes: list[dict] = []
+        for i, (did, info) in enumerate(top_dst):
+            in_lib = container.repo.get_paper(did) is not None
+            nodes.append({
+                "kind": "dst", "id": did, "x": _x(i, len(top_dst)), "y": 84,
+                "r": min(22, 6 + info["cites"] * 3),
+                "label": (info["title"] or did)[:26],
+                "url": f"/papers/{did}" if in_lib else f"https://arxiv.org/abs/{did}",
+                "tip": f"上游：被库内 {info['cites']} 篇同引 · S2 被引 {info['citations']}"
+                       + ("" if in_lib else "（未入库）"),
+            })
+        for i, (sid, cnt) in enumerate(top_src):
+            p = container.repo.get_paper(sid)
+            if p is None:
+                continue
+            feat = paper_features(list(p.categories or []), p.primary_category,
+                                  p.title or "", p.abstract or "", list(p.authors or []))
+            sc, why = score_paper(feat, weights)
+            nodes.append({
+                "kind": "src", "id": sid, "x": _x(i, len(top_src)), "y": 330,
+                "r": min(22, 7 + int(max(0.0, sc) * 5)),
+                "label": (p.title or sid)[:26], "url": f"/papers/{sid}",
+                "tip": f"画像分 {sc:.2f} · 出 {cnt} 条边 · "
+                       + (why[0] if why else "画像无命中（新拓领域？）"),
+            })
+        pos = {n["id"]: n for n in nodes}
+        links = []
+        for e in edges:
+            a, b = pos.get(e.src_arxiv_id), pos.get(e.dst_arxiv_id)
+            if not (a and b):
+                continue
+            hot = (not focus) or focus in (e.src_arxiv_id, e.dst_arxiv_id)
+            links.append({"x1": a["x"], "y1": a["y"], "x2": b["x"], "y2": b["y"],
+                          "op": 0.75 if hot else 0.12, "infl": e.influential})
+        return render(request, "network.html", nodes=nodes, links=links,
+                      focus=focus, msg="",
+                      stats={"edges": len(edges), "src": len(src_out),
+                             "dst": len(dst_info), "shown": len(nodes)})
+
+    @app.get("/lab", response_class=HTMLResponse)
+    def lab(request: Request):
+        """调研仪表盘：覆盖率 + 缺卡工单 + 30 天趋势/漏斗/AI 成本（纯展示，数字全复用 M4）。"""
+        cov = container.repo.coverage_report(sample_missing=12)
+        st = container.repo.stats_timeseries(days=30)
+        dn = st["daily_new"]
+        mx = max(dn.values()) if dn else 1
+        bars = [{"d": k, "n": v, "pct": max(2, round(100 * v / mx))}
+                for k, v in sorted(dn.items())][-14:]
+        return render(request, "lab.html", cov=cov, st=st, bars=bars, msg="")
+
+    @app.post("/papers/{arxiv_id}/sync_citations")
+    def sync_citations_btn(arxiv_id: str):
+        """人类侧同步按钮：与 AI 的 sync_citations 同一能力、同一审计道（有栈走命令面）。"""
+        if stack is None:
+            res = registry_for(container).invoke(
+                "sync_citations", arxiv_id=arxiv_id, actor="human",
+                reason="Web 详情页同步引用")
+            msg = (f"引用边已更新（+{res['edges']} 条）" if res.get("ok")
+                   else f"同步失败：{res.get('error', {}).get('message', '')}")
+            return RedirectResponse(_with_msg(_back(arxiv_id), msg), status_code=303)
+        msg = _gated("sync_citations", arxiv_id=arxiv_id, reason="Web 详情页同步引用")
+        return RedirectResponse(_with_msg(_back(arxiv_id), msg or "引用边已更新"),
+                                status_code=303)
+
     # ---------------------------------------------------------------- 论文动作
     # 有 stack（统一启动）→ 经 mecha 命令面（human 通道 + 写权门 + 审计）；否则直调（向后兼容）。
     @app.post("/papers/{arxiv_id}/read")

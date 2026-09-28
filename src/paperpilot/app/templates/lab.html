@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}调研仪表盘{% endblock %}
+{% block content %}
+<h1>📊 调研仪表盘</h1>
+<p class="muted">纯展示：所有数字与 AI 工具面（coverage_report / stats_timeseries）同源，一处真相。</p>
+
+<div class="card" style="margin-bottom:14px;">
+  <h2 style="margin-top:0;">资产覆盖率</h2>
+  <div>{{ cov.with_summary }} / {{ cov.total }} 篇有 TL;DR 卡（{{ cov.coverage_pct }}%）
+    · 读过 {{ cov.read }} · 收藏 {{ cov.starred }} · 在简报 {{ cov.in_briefing }}</div>
+  <div style="height:10px;background:var(--accent-soft);border-radius:6px;margin:8px 0;">
+    <div style="height:10px;width:{{ cov.coverage_pct }}%;background:var(--accent);border-radius:6px;"></div>
+  </div>
+  <h2>缺卡工单（最新 {{ cov.missing_sample | length }} 篇）</h2>
+  {% for m in cov.missing_sample %}
+    <div class="kv"><b>缺卡</b><a href="/papers/{{ m.arxiv_id }}">{{ m.title }}</a></div>
+  {% else %}
+    <div class="muted">全库都有卡了。</div>
+  {% endfor %}
+  <div class="muted" style="font-size:13px;">补卡走对话：让 AI 挑要紧的 write_summary，缺卡≠都要补。</div>
+</div>
+
+<div class="card" style="margin-bottom:14px;">
+  <h2 style="margin-top:0;">近 {{ st.days }} 天节奏</h2>
+  {% for b in bars %}
+    <div class="kv"><b>{{ b.d[5:] }}</b>
+      <div style="display:inline-block;height:9px;width:{{ b.pct }}%;background:var(--accent);border-radius:5px;vertical-align:middle;"></div>
+      <span class="muted"> {{ b.n }}</span>
+    </div>
+  {% else %}<div class="muted">窗口内无入库。</div>{% endfor %}
+</div>
+
+<div style="display:flex;gap:14px;flex-wrap:wrap;">
+  <div class="card" style="flex:1;min-width:300px;">
+    <h2 style="margin-top:0;">行为漏斗（信号计数）</h2>
+    {% for op, n in st.signals.items() %}
+      <div class="kv"><b>{{ op.replace('signal:', '') }}</b> {{ n }}</div>
+    {% else %}<div class="muted">还没有信号。</div>{% endfor %}
+    <div class="muted" style="font-size:13px;">简报节奏：{{ st.briefings.total }} 期 /
+      {{ st.briefings.days_with_briefing }} 天有报。</div>
+  </div>
+  <div class="card" style="flex:1;min-width:300px;">
+    <h2 style="margin-top:0;">AI 成本按用途</h2>
+    {% for purpose, a in st.ai_by_purpose.items() %}
+      <div class="kv"><b>{{ purpose }}</b> {{ a.calls }} 次 · 成 {{ a.ok }} ·
+        {{ a.tokens }} tok · 均 {{ a.avg_latency_ms }}ms</div>
+    {% else %}<div class="muted">窗口内无 AI 调用（DSH 外部评审不计此处）。</div>{% endfor %}
+  </div>
+</div>
+{% endblock %}
