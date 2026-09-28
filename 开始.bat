@@ -22,7 +22,7 @@ if errorlevel 1 goto venvfail
 if not errorlevel 1 goto plugindeps
 
 echo [2/3] 安装 Python 依赖（首次约 1-3 分钟，使用清华镜像加速）...
-.venv\Scripts\python.exe -m pip install -e ".[dev]" -i https://pypi.tuna.tsinghua.edu.cn/simple --no-cache-dir --disable-pip-version-check --timeout 60
+.venv\Scripts\python.exe -m pip install -e ".[dev,mecha]" -i https://pypi.tuna.tsinghua.edu.cn/simple --no-cache-dir --disable-pip-version-check --timeout 60
 if errorlevel 1 goto pipfail
 
 :plugindeps

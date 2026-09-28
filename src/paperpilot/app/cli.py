@@ -27,7 +27,24 @@ from pathlib import Path
 import typer
 
 from ..infra.arxiv import parse_atom
-from ..mecha_adapter.hub import BOOT_MODE_DEFAULT
+
+try:
+    from ..mecha_adapter.hub import BOOT_MODE_DEFAULT
+except ImportError as _exc:                      # 只拦"缺 mecha"这一种（别的原样抛）
+    # ⭐ **可教学错误**（本仓给陌生人用：一条看不懂的 traceback 就是门槛）。
+    # ⚠ 只对"缺 mecha（框架）"给教学信息；**别的 ImportError 原样抛**（别掩盖真错误）。
+    #    判据口径：`ModuleNotFoundError.name` 是 `mecha` 或 `mecha.*` ⇒ 才算"缺框架"。
+    if getattr(_exc, "name", "") != "mecha" and not str(getattr(_exc, "name", "")).startswith("mecha."):
+        raise
+    raise ImportError(
+        "本入口需要 mecha（AI 接入框架），但当前环境没有装它。\n"
+        "  装法：pip install -e '.[dev,mecha]'\n"
+        "    · 他机/发布：走 GitHub 直接 URL（钉 v0.2.0 tag）；\n"
+        "    · 本机开发：先 editable 装**兄弟目录**里的 mecha（两仓同级），再装本仓。\n"
+        "  ⚠ 只想跑纯 Web 界面（无 AI/监控/写权门）时，**本入口仍会 import mecha** ⇒ 也得装上；\n"
+        "    （`create_app(container)` 的无栈形态本身不依赖 mecha，见 tests/test_config_fallback.py 一带的实测口径。）\n"
+        "  详见 README「怎么装」。"
+    ) from _exc
 
 #: `--mode` 的帮助文案（四个值逐一说清；尤其 `ai` = **只有 AI 能写**，别让名字猜）。
 _MODE_HELP = ("起步写权模式：open=两侧都能写（默认，不卡写权）、locked=谁都不能写（维护/急停）、"

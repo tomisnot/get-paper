@@ -23,10 +23,23 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.4",
 ]
-# mecha v2 接入（src/paperpilot/mecha_adapter/）：本地可编辑框架，非 PyPI 包。
-# 装法：pip install -e "D:\code-nosync\mecha[mcp,cockpit]"（见 .qoder/plans 交接文档 Phase 0）。
+# mecha v2 接入（src/paperpilot/mecha_adapter/）：**框架不进 PyPI** ⇒ 走直接 URL（钉 v0.2.0 tag）。
+# ⚠ 为什么放 extra 而不是核心 dependencies（**实测决定的**，不是偏好）：
+#   · 统一入口（`paperpilot` / `paperpilot ai`）**需要** mecha —— `cli.py` 在模块级 import 它；
+#     而**纯 Web 的 GUI 本体不依赖** mecha（`app.web` 能 import、无栈 `GET /` = 200、写路径 = 303）。
+#   · 但如果把 URL 写进**核心** dependencies：pip **不认为**本机那份 editable 满足该 URL 需求
+#     ⇒ `pip install -e .` 会**直接去 clone**（实测：今天该 URL 只能 clone 到**空仓**、找不到
+#     `v0.2.0` tag ⇒ exit 1）⇒ **会破坏本机开发**（本机开发走 editable 兄弟目录）。
+#   · 放 extra ⇒ 本机 `pip install -e .` / `.[dev]` **不解析它**（裸名需求是
+#     `Requirement already satisfied`、不触发 clone）⇒ 本机零影响；他机用 `.[dev,mecha]` 一条命令装全。
+#   ⇒ 等上游仓建好、tag 可解析后，把它提进 core 只是"删两行加一行"（**可逆**）。
+# 本机开发（两仓是同级目录，例如 D:\code-nosync\mecha 与同级的本仓）：editable 装一次即可，
+#   例：pip install -e "../mecha[mcp]"（**不要**把这个本机路径写进本文件：会污染发布物）。
+# ⚠ extra 只列 mecha 0.2.0 **实际提供**的 `mcp`（`mcp`/`uvicorn` 都挂在它下面）。
+#   `cockpit` 曾经写在这里，但它**不是** mecha 的 extra（pip 只警告 `does not provide the extra
+#   'cockpit'`）——`mecha.cockpit` 是**核心模块**、不是 extra ⇒ **已删**（"声明了却没人消费"正是本仓在治的病）。
 mecha = [
-    "mecha[mcp,cockpit]",
+    "mecha[mcp] @ git+https://github.com/tomisnot/mecha@v0.2.0",
 ]
 
 [project.scripts]
