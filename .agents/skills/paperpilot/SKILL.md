@@ -91,3 +91,15 @@ authors | `read_config` / `review_status` 评审进度 | `read_activity` 事件+
 
 empty_pool⇒hint 三选一（lookback/fetch/requeue）· rejected⇒点名缺什么补齐增量重提 ·
 authority_locked⇒`read_authority` 看开闸 · 不确定用法⇒`paperpilot tools` 或 specs() 自描述。
+
+## Web 配套面（你干的活在哪被看见）
+
+- **/network 引文网络 = AI 调研成果的显示器**：你用 `sync_citations` 落边，用户回这看图
+  （无限分层=拓扑深度；大小/颜色/排序归 /settings 图谱参数，层数不可配）。节点是站内句柄：
+  点击=未入库先 `fetch_paper_by_id` 入库再进管理页；图上永不外跳（出站点只剩详情页原文/PDF，
+  那是有意的 outbound 漏斗）。**调查完吱声**：“图谱已更新，去 /network 看”。
+- **/feed 面板**只读你 `publish_feed` 发的最新一期，无刷新按钮——换页/口味全在你手里。
+- **/lab 仪表盘 + /activity 记录仪**：覆盖率/趋势/成本与行为审计的展示面；报数与它同口径，
+  同一数字两处真相会被判据拒绝。
+- 分工纪律：**写操作永远走命令面**——Web 只有展示与轻操作，没有与你对等的图谱编辑按钮；
+  别把“页面没按钮”当“需要人类口述代办”，也别替人类造同款按钮。
