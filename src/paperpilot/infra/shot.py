@@ -62,11 +62,19 @@ def _base_args(binary: str, width: int, height: int) -> list[str]:
 
 def probe_height(binary: str, url: str, *, width: int = DEFAULT_WIDTH,
                  fallback: int = 1600) -> int:
-    """第一趟：问页面自己有多高（阅读页在 ``?shot=1`` 时会把高度写进 ``<html>``）。"""
+    """第一趟：问页面自己有多高（阅读页在 ``?shot=1`` 时会把高度写进 ``<html>``）。
+
+    ⚠ 必须带 ``--virtual-time-budget``：页面是在 iframe 的 load 回调里（定时器里）写高度的，
+    而 ``--dump-dom`` 默认可能在定时器之前就倒 DOM ⇒ 退回固定高度、底部留一大片空白
+    （实测踩过）。给它一点虚拟时间，定时器先跑完再倒。
+    """
     sep = "&" if "?" in url else "?"
+    args = _base_args(binary, width, MIN_HEIGHT) + [
+        "--virtual-time-budget=2500",
+        "--dump-dom", f"{url}{sep}shot=1",
+    ]
     try:
-        proc = subprocess.run(_base_args(binary, width, MIN_HEIGHT) + ["--dump-dom", f"{url}{sep}shot=1"],
-                              capture_output=True, text=True, encoding="utf-8",
+        proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
                               errors="replace", timeout=_LAUNCH_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         return fallback
@@ -89,6 +97,9 @@ def capture(url: str, out_path: Path, *, width: int = DEFAULT_WIDTH,
     binary = find_browser()
     if not binary:
         raise ShotError("本机没找到 Edge/Chrome（Chromium 内核）⇒ 服务端截图不可用")
+    # ⚠ **必须绝对路径**：Chromium 的 `--screenshot=` 不认相对路径，会以
+    # "Failed to write file … 系统找不到指定的路径 (0x3)" 失败（实测踩过）。
+    out_path = Path(out_path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     h = int(height) if height else (probe_height(binary, url, width=width) if full_page
                                     else DEFAULT_WIDTH * 9 // 16)
