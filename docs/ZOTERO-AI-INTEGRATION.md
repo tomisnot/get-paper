@@ -117,6 +117,49 @@
 官方也有人提过 [希望开放程序化批注创建](https://forums.zotero.org/discussion/comment/517989/)，
 说明这块官方接口一直不够顺手。
 
+### 2.5 代码构成与"搬过来魔改"的代价
+
+**语言（GitHub languages 接口的实际字节数，非印象）**
+
+| 仓库 | 构成 |
+| --- | --- |
+| `zotero/zotero`（客户端） | **JavaScript 10.7 MB**、Fluent 4.7 MB（⚠ 那是本地化 .ftl 文本，不是代码）、C++ 0.5 MB、HTML 0.32 MB、SCSS 0.29 MB、NSIS 0.28 MB（Windows 安装器）、Shell 0.20 MB、TypeScript 0.20 MB、Python 86 KB、Perl 54 KB（遗留）、C 28 KB、XSLT 20 KB、Java 14 KB… 合计约 **18.6 MB 源码** |
+| `zotero/reader`（PDF/EPUB 阅读器） | JS 1.17 MB + TS 0.51 MB + SCSS 86 KB ≈ **1.8 MB**（很小） |
+| `zotero/translators`（网页抓取器） | **JS 10.1 MB**（每站点一个文件：量大在数量，不在复杂度） |
+
+要点：
+- **Zotero 绝大部分是 JavaScript**（客户端里 JS ≈ 58%；算上本地化文本 ≈ 83%）。
+- **那"很重的 C++/Rust"是 Mozilla/Firefox 平台，不是 Zotero 的代码**：你不是编译浏览器，
+  而是把 Zotero 的 JS/XUL 装到**预编译的 Firefox ESR** 上（standalone build）。
+- **阅读器本体很小（1.8 MB）**；Zotero 的体积在"文献管理器"（条目模型/同步/引用），不在阅读。
+
+**"搬过来魔改"的三种深度**
+
+| 深度 | 做法 | 代价 | 授权 |
+| --- | --- | --- | --- |
+| **不搬（插件）** | 全 XPCOM 权限 + 官方注册点 + 可注入 DOM/加面板/挂阅读器/在 23119 上加端点 | 低。每个大版本跟一次（7→8 强制所有插件改写，但那是**一次性改写**，不是持续分叉） | 自己那部分可另定授权（社区惯例，**需法务确认**） |
+| **轻度 fork** | 改客户端细节、自己发版 | 中高：接手**构建链 + DB schema + 同步协议兼容 + 更新器**，且每次 Firefox ESR / Zotero 大版本升级都要 rebase | 分发即触发 **AGPL 义务**（提供对应源码）+ 商标限制 |
+| **深度接管** | 换 UI、把 AI 当一等公民 | 高且**持续**：官方自己为 FF115 做过 "massive rewrite"；你得长期跟 | 同上 |
+
+**现实证据（说明构建不是 `npm install` 的量级）**：官方有
+[构建文档](https://www.zotero.org/support/dev/client_coding/building_the_desktop_app)（含
+[Windows 注意事项](https://www.zotero.org/support/dev/client_coding/building_the_desktop_app_windows_notes)），
+但 Debian 长期只到 RFP/ITP，清华 OSPP 曾把"Zotero 6 的可复现构建"当成**研究课题**；
+仓库约 236 MB、18 年积累、1605 个未关 issue。
+
+**真正值得"用"而不必"搬"的东西**（关键判据：收益 vs 维护义务）
+- **本地 API 调用** —— 零授权牵连（最干净的姿势）
+- **pdf.js**（Apache-2.0，宽松）—— Zotero 阅读器的渲染内核其实是 **Mozilla 的**，不是 Zotero 的
+  ⇒ **想自己造 PDF 阅读层，起点应是 pdf.js，而不是 fork Zotero（AGPL）**
+- `zotero/reader` —— Debian 正在按"**Zotero 的 PDF/EPUB 阅读器模块**"打包（[ITP #1149159](https://lists.debian.org/debian-wnpp/2026/09/msg00878.html)），
+  说明它架构上可分离；但仍是 AGPL 系
+- `zotero/translators` 与 `citeproc-js` —— 授权**未逐一核实**，要用先单独确认
+
+**结论**：技术上可行，**工程上不建议整体搬**。Zotero 的价值在条目模型/同步/抓取/引用/批注模型，
+这些**大多能"用"不必"搬"**；而我们的差异化（AI 纪律层）**根本不需要 fork**。
+若确实要深改：插件能拿到全权限，成本比 fork 低一个数量级；
+代价是**必须接受在 JS/XUL + Mozilla 惯用法里工作**（与我们的 Python 栈是两套心智）。
+
 ---
 
 ## 三、可行性结论
