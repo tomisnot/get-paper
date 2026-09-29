@@ -52,7 +52,7 @@
 | 客户端授权 | **AGPLv3**。原文（[COPYING](https://raw.githubusercontent.com/zotero/zotero/main/COPYING)）："The Corporation for Digital Scholarship distributes the Zotero source code under the GNU Affero General Public License, version 3 (AGPLv3)"。GitHub API 报 `spdx_id: NOASSERTION`——因为该文件在 AGPL 正文前加了版权与**商标**声明，GitHub 无法自动分类，**不是**"非标准授权" |
 | 商标 | "The Zotero name is a registered trademark"（[trademark 政策](http://zotero.org/trademark)）——**改代码可以，叫自己 Zotero 不行** |
 | 治理 | 非营利 **Digital Scholar** 主导 + 全球社区；仓库活跃（15.4k star、1605 open issues、2026-09 仍在推提交） |
-| 当前版本 | **Zotero 8**（[发布博客](https://www.zotero.org/blog/zotero-8/)、[8.0 changelog](https://www.zotero.org/support/8.0_changelog)） |
+| 当前版本 | ⚠ **更正：Zotero 10**（[发布博客](https://www.zotero.org/blog/zotero-10/)，2026-08-17；另有 [Zotero 9](https://www.zotero.org/blog/zotero-9/)、[8](https://www.zotero.org/blog/zotero-8/)）。本文初稿曾写"8.x"，是照过时搜索结果下的结论——**已更正** |
 | AGPL 对插件的影响 | 社区有专门讨论（[论坛](https://forums.zotero.org/discussion/comment/495195/)）：插件通常被视为**独立作品**，但这是**工程惯例而非法律意见**，商业分发前应自行确认 |
 
 **一句话**：客户端是**真开源**（AGPLv3 全源码 + 活跃社区 + 官方插件体系），代价是**传染性授权 + 商标约束**。
@@ -64,7 +64,8 @@
 
 - 语义 = **官方 Web API v3**，但服务本地数据库：离线可用、无限速、比 Web API 快得多
 - **读：免鉴权**（只需在 设置→高级 勾选"允许本机其他程序与 Zotero 通信"；未勾选返回 403）
-- **写：Zotero 10+** 才支持，且要**运行时申请本地密钥**：
+- **写：Zotero 10 起支持**——⚠ **更正：Zotero 10 已发布（2026-08），所以这条今天就能用**，
+  不必"等"。要有**运行时申请本地密钥**：
   `POST /api/local/authorize` → Zotero 弹框（Allow / Always Allow / Deny）→ 返回 key；
   非"Always Allow"的 key **一次性**（首次写入成功即消耗）；5 次/分钟限流防弹框骚扰
 - `Zotero-Server-ID` 标识实例（写请求必须带，缺失 428、不匹配 412）
@@ -93,12 +94,12 @@
 | L1-2 两个门面 | 有 HTTP（本地/远程）；无 CLI（要自带） | ✅ 够用 |
 | L1-3 投影即权限 | **无此概念**：key 不分区、不看调用方是谁；读接口把整个库摊开 | ❌ **要自己包一层** |
 | L1-4 回程浓缩 | 本地 API **默认不分页**（一次返回全部命中）——对 AI 上下文**不友好** | ❌ **要自己加闸** |
-| L2-5 写权门 | **厂商内建**：`POST /api/local/authorize` → 人点确认框 → 一次性 key；限流；可一键撤销全部授权 | ✅✅ **与我们的信条 4 天然对齐**（但仅 Zotero 10+） |
+| L2-5 写权门 | **厂商内建**：`POST /api/local/authorize` → 人点确认框 → 一次性 key；限流；可一键撤销全部授权 | ✅✅ **与我们的信条 4 天然对齐**，且 **Zotero 10 已发布 ⇒ 今天可用**（独立佐证：社区 MCP 的代码注释写着"Zotero older than 10（no local write endpoints）"） |
 | L2-6 人类专属能力 | 无。谁都拦不住一个拿到 key 的程序 | ❌ 要自己造 |
-| L2-7 审计 / undo | 只有**版本号**（乐观并发）与同步历史；**没有** append-only 事件流、没有 `before/after`、没有 undo，**也看不到"谁改的"** | ❌ **最大缺口** |
-| L2-8 可教学错误 | 标准 HTTP 码（403/412/428/429）；无 `kind/hint/suggest` | ⚠️ 要自己映射 |
-| L2-9 几何归代码 | **反例**：批注模型是 `{pageIndex, rects:[[x1,y1,x2,y2]], sortIndex, pageLabel}`——**坐标**。已有 MCP 插件正是要求 AI 自己给 `rects` | ❌ **要害**：必须自己写"原文→坐标"解析层 |
-| L3-10 人机共享 + 看得见 | 现成阅读器极强（PDF 渲染、highlight/underline/note/ink/image 批注、侧栏、标签、集合、同步、Word 集成）；但**没有"AI 操作可见"的语义**，也无推送（要自己轮询/广播） | ✅ 呈现面白送 / ⚠️ 纪律面要自己补 |
+| L2-7 审计 / undo | 只有**版本号**（乐观并发）与同步历史；Zotero 10 加了 UI 级 **Undo/Redo**（覆盖部分操作，官方明说"删除批注"不在内）。仍**没有** append-only 事件流、没有 `before/after`、**看不到"谁改的"**；批注删除是**永久**的（社区实现原话："This cannot be undone"） | ❌ **最大缺口** |
+| L2-8 可教学错误 | 标准 HTTP 码（403/412/428/429）；无 `kind/hint/suggest`。社区 MCP 自己补了一部分（"DID YOU MEAN" 近似匹配、`dry_run`） | ⚠️ 要自己映射（有先例可参考） |
+| L2-9 几何归代码 | **因格式而异**：PDF = `pageIndex + rects`（坐标）；EPUB = `annotationSortIndex = "spine\|char_offset"`；**HTML 快照没有公开的位置格式**。社区的解法是加一个 `get_page_layout` **几何检测**步骤给 AI 参考框 | ❌ 要害：HTML 的"原文→锚点"解析层是**空白**，正是我们的强项 |
+| L3-10 人机共享 + 看得见 | 现成阅读器极强：PDF/EPUB/**网页快照（HTML）**三类都能**阅读并批注**（高亮/下划线/便签/文字/图形/图片）；Zotero 10 还有 **PDF Reading Mode（可重排、可批注）** 与一套**文档结构分析器**；批注是**一等可搜对象**（高级搜索能按"批注颜色"、以"批注"为结果层级检索）。但**没有"AI 操作可见"的语义**，也无推送 | ✅ 呈现面白送 / ⚠️ 纪律面要自己补 |
 
 ### 2.4 已有 AI 接入先例（说明"能接"，也说明"缺纪律"）
 
@@ -160,6 +161,46 @@
 若确实要深改：插件能拿到全权限，成本比 fork 低一个数量级；
 代价是**必须接受在 JS/XUL + Mozilla 惯用法里工作**（与我们的 Python 栈是两套心智）。
 
+### 2.6 关于"HTML 为根基 + 做 Zotero 的 HTML 阅读器插件"
+
+⚠ **先纠正一个前提**：**Zotero 已经有 HTML（网页快照）阅读器，而且能批注**。
+官方博客原文：*"Zotero 7 added the ability to view and annotate EPUBs and webpage snapshots"*
+（[Zotero for iOS 公告](https://www.zotero.org/blog/ios-epub-snapshot-annotation-and-pdf-metadata-retrieval/)）。
+所以"Zotero 没有 HTML 阅读器"**不成立**——我们要做的不是"造阅读器"。
+
+**三类可批注格式与各自的锚定方式**（以社区最完整的
+[zotero-mcp 源码](https://github.com/54yyyu/zotero-mcp)为证）：
+
+| contentType | 能读批注 | 能**程序化创建**批注 | 锚定方式 |
+| --- | --- | --- | --- |
+| `application/pdf` | ✅ | ✅ | `annotationPosition = {pageIndex, rects}` —— **坐标** |
+| `application/epub+zip` | ✅ | ✅ | `annotationSortIndex = "spine索引\|字符偏移"` |
+| **`text/html`（网页快照）** | ✅ | ❌ **未见实现** | **没有公开的位置格式** |
+
+证据：该项目把可批注类型写成 `{"application/pdf", "application/epub+zip", "text/html"}`，
+但创建批注的代码只有 PDF 与 EPUB 两条分支；EPUB 的排序键是 `f"{chapter:05d}|{char_position:08d}"`。
+
+**这就是真正的缺口，也正是我们的强项**：HTML 的"原文 → 锚点"（我们是
+`块 id + 字符区间 + quote/prefix/suffix 重锚`）在 Zotero 生态里**是空白**。
+
+**另外两条重要事实**：
+- **Zotero 10 自己也在往"HTML 化"走**：新增 **PDF Reading Mode**（可重排、可批注、可调字号行距），
+  由一个"识别 PDF/EPUB/快照中不同元素"的**文档结构分析器**驱动。⇒ 用户"HTML 才是 AI 时代格式"
+  的判断，**Zotero 的路线图本身就投了赞成票**，只是它把这层做在内部、没有开放成 AI 接口。
+- **插件在阅读器里只能注入三处**（官方 `Zotero.Reader.registerEventListener`）：
+  `renderTextSelectionPopup`（划词弹窗）、`renderToolbar`（工具栏）、
+  `renderSidebarAnnotationHeader`（侧栏批注头）。**不能自由叠加 AI 图层**——想要更多就得
+  monkey-patch 内部，那是拿稳定性换的（Zotero 7→8 已强制所有插件改写）。
+
+**结论：不该做"HTML 阅读器插件"，该做"HTML 供给 + AI 层 + HTML 锚点层"。**
+
+```
+HTML 从哪来        → ① arXiv 直接有 HTML；② 无 HTML 的用 PDF→结构化 HTML 转换补上（覆盖率的关键）
+谁负责读与标        → Zotero（快照阅读器 + 批注 + 同步 + 搜索，白送）
+谁负责 AI 与纪律    → 我们（本地 API 之上的能力层 + 投影 + 写权门 + 审计 + 体积闸）
+谁负责锚定          → 我们（quote→DOM 区间；PDF/EPUB 交给 Zotero 自己的几何）
+```
+
 ---
 
 ## 三、可行性结论
@@ -175,32 +216,38 @@
 
 | 方案 | 做法 | 今天能做吗 | 代价 |
 | --- | --- | --- | --- |
-| **A. 纯外挂（推荐先做）** | 我们的能力层读 Local API（免鉴权读）；写暂缓或走 Web API | ✅ **今天就能跑** | 写受限；无本地批注 |
-| **B. 插件 + 我们的纪律层** | 写 Zotero 插件补"写/本地锚定/端点"，我们仍管投影与审计 | ✅（插件全权限） | 要跟 Zotero 大版本走（7→8 已要求所有插件重写） |
-| **C. 仅数据互通** | 把 Zotero 当**信号源**（已读/收藏/人工批注）与条目同步；阅读仍在我们的 `/read` | ✅ 最省 | 不共享阅读器 |
+| **A. 纯外挂（推荐）** | 我们的能力层调 Local API：读免鉴权；**写用 Zotero 10 的本地写 API**（人点确认框） | ✅ **读写今天都能跑** | HTML 快照的写入锚点格式待实测；无审计/投影（我们自己补） |
+| **B. 插件补三处注入** | 在 `renderTextSelectionPopup` / `renderToolbar` / `renderSidebarAnnotationHeader` 加入口 | ✅（插件全权限） | 只有三个官方注入点，做不了 AI 图层；跟大版本走 |
+| **C. 仅数据互通** | 把 Zotero 当**信号源**（已读/收藏/**人工批注**）与条目同步；阅读仍在我们的 `/read` | ✅ 最省 | 不共享阅读器；但**人工批注是最强兴趣信号**，性价比最高 |
 
-### 3.3 建议路线
+### 3.3 建议路线（⚠ 已按"Zotero 10 已发布、快照可批注"更正）
 
-1. **先做 C 的一半（立刻见效）**：把 Zotero 的**人工批注**当作**最强兴趣信号**喂画像与推荐
-   ——人自己划的句子比"点开过"可信得多。这正是我们的画像/推荐流体系最缺的高质量标签。
-2. **再做 A 的读通道**：`zotero_*` 能力（查条目/取批注/取全文/按保存搜索）接进中性能力层 +
-   投影白名单，AI 就能"顺藤摸瓜"。**注意加体积闸与 `kind/hint/suggest` 包装**（Zotero 不提供）。
-3. **写通道等 Zotero 10 的本地写 API**：届时它的 `authorize` 弹框与我们的"写权门"天然对齐，
-   比现在绕 Web API 干净。**在那之前，写批注要么走插件（B），要么不做**。
-4. **绝不自建阅读器**：我们的 `/read`（arXiv HTML）保留为"无 PDF / 需 HTML 锚点"时的补充，
-   但 PDF 阅读这件事交给 Zotero。
+1. **先做一次 30 分钟的实测（所有后续决策的前提）**：拿一篇 arXiv HTML → 存成 Zotero 快照 →
+   在 Zotero 里**手动**批注一条 → 用本地 API 读回那条批注的 `annotationPosition`。
+   **这一步会直接告诉我们 HTML 快照的锚点格式**（有没有 text-quote/selector），
+   从而决定：对接它的格式，还是我们自建锚点（塞进 annotationPosition 或退化为 comment）。
+   同一趟顺手验 `POST /api/local/authorize` 是否弹框（确认本地写可用）。
+2. **HTML 供给**：arXiv HTML 直接另存快照；**无 HTML 的论文用 PDF→结构化 HTML 转换补上**
+   —— 这是"HTML 根基"能否普及的**唯一瓶颈**（只有 arXiv 覆盖不了全部文献）。
+3. **AI 能力层**：`zotero_*` 能力（查条目/取批注/取全文/按保存搜索/写批注）接进中性能力层 +
+   投影白名单；**自带体积闸与 `kind/hint/suggest`**（Zotero 默认不分页、错误码不可教学）。
+4. **纪律层照旧由我们兜**：批注删除是**永久**的、且**看不到谁改的** ⇒ 我们的
+   append-only + actor/reason + 可撤销在这里比在自己仓里更值钱。
+5. **绝不自建 PDF 阅读器**：我们的 `/read`（arXiv HTML）保留为"需 HTML 锚点 / 无快照"时的补充。
 
 ### 3.4 未核实 / 风险
 
-- **本地 API 写能力的实际可用版本**：官方文档三处标注 "Zotero 10+"，而当前稳定版是 8.x
-  ⇒ **今天大概率只能用插件或 Web API 写**。落地前应在装了 Zotero 的机器上实测
-  `POST /api/local/authorize`（未支持会 404/405）。
+- ✅ **已解决**：本地 API 写能力——Zotero 10 已发布（2026-08），写通道**今天可用**；
+  社区实现也以此为分界（"Zotero older than 10（no local write endpoints）"）。
+- ❓ **仍待实测**：**HTML 快照批注的位置格式**。PDF 是 rects、EPUB 是 spine|char，
+  HTML 未见于任何实现 ⇒ 上述 3.3-1 的实测就是这个问题的答案。
+- ❓ **Zotero 会不会接受"我们自造的 HTML 锚点"**：写一条 `contentType=text/html` 附件上的
+  自定义 position 批注，官方客户端能否正常渲染/同步/搜索——需实测（风险：被同步服务拒绝或显示异常）。
 - **AGPL 边界**：仅"调用本地 HTTP API"通常不构成派生作品（最干净的姿势）；
   一旦分发**改过的 Zotero** 或**链接其源码的插件**，就要按 AGPL 提供对应源码，并遵守商标政策。
   **正式分发前请找法务确认**，本文不构成法律意见。
 - **插件兼容成本**：Zotero 7→8 已要求**所有插件**改写；把重要功能压在插件上要预留维护预算。
-- **坐标锚定**：Zotero 批注靠 `pageIndex + rects`，PDF 一换版就失效（我们的 HTML 方案靠
-  `quote + prefix/suffix` 重锚）。若走 B，应把"原文→坐标"做成**代码层解析**（我们已有等价经验）。
+  且阅读器只有三处官方注入点，做不了"AI 图层"。
 - **上下文成本**：Local API 默认不分页、`/fulltext` 能返回整篇正文 ⇒ 直接接给 AI 会**吃爆上下文**，
   必须复用我们的体积闸与"分块读 + 续读游标"。
 
