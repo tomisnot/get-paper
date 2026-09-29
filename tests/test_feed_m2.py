@@ -12,7 +12,7 @@ from paperpilot.domain.feed import (
     resolve_quotas,
 )
 
-from .test_ai_experience import _reg
+from check.test_ai_experience import _reg
 
 
 def _item(i: str, cat: str, score: float, authors=("A",)) -> dict:

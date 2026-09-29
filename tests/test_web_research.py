@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from paperpilot.app.web import create_app
 
 from .conftest import SAMPLE_XML
-from .test_ai_experience import _reg
+from check.test_ai_experience import _reg
 
 
 class _FakeScholar:

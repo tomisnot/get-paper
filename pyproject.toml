@@ -60,7 +60,8 @@ where = ["src"]
 paperpilot = ["app/templates/*.html", "data/*.xml"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# check/ = 必要判据（不许烂的守卫，随仓发布）；tests/ = 普通测试（单元/契约/回放，本地）。
+testpaths = ["check", "tests"]
 addopts = "-q"
 
 [tool.ruff]

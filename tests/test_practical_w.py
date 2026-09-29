@@ -11,7 +11,7 @@ import importlib.util
 
 import pytest
 
-from .test_ai_experience import _drain_pool, _reg
+from check.test_ai_experience import _drain_pool, _reg
 
 
 # ---------------------------------------------------------------- W4 评审 floor

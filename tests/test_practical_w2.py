@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from .test_ai_experience import _reg
+from check.test_ai_experience import _reg
 from .test_mecha_adapter import _call, _stack
 
 

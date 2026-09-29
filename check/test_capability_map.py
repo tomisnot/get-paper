@@ -10,7 +10,7 @@ from paperpilot.app.container import build_container
 from paperpilot.capabilities import registry_for
 
 from .conftest import make_settings
-from .test_mecha_adapter import (
+from tests.test_mecha_adapter import (
     EXPECTED_TOOLS,
     NON_CAPABILITY_TOOLS,
     TOOL_TO_CAPABILITY,

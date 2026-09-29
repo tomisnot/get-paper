@@ -12,7 +12,7 @@ import pytest
 from paperpilot.domain.profile import paper_features, score_paper, title_terms
 from paperpilot.infra import arxiv_taxonomy as tax
 
-from .test_ai_experience import _reg
+from check.test_ai_experience import _reg
 
 
 # ---------------------------------------------------------------- taxonomy / 特征（纯函数）

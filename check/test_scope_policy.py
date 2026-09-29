@@ -21,7 +21,7 @@ from mecha.scopes import ScopePolicy
 
 from paperpilot.mecha_adapter.commands import invoke_command
 
-from .test_mecha_adapter import _stack
+from tests.test_mecha_adapter import _stack
 
 
 def _ai_call(stack, cmd: str, **args):
@@ -133,8 +133,8 @@ def test_bound_policy_does_not_break_the_paths_users_actually_take(tmp_path):
     from paperpilot.app.container import build_container
     from paperpilot.app.web import create_app
 
-    from .conftest import make_settings
-    from .test_web_mecha import _gated
+    from tests.conftest import make_settings
+    from tests.test_web_mecha import _gated
 
     client, _container, _stack_ = _gated(tmp_path)
     assert client.post("/papers/2608.01101/star",

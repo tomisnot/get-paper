@@ -19,7 +19,7 @@ from paperpilot.capabilities import registry_for
 from paperpilot.mecha_adapter.hub import INSTRUCTIONS, MCP_SERVER_NAME
 from paperpilot.mecha_adapter.tools import TOOL_DECLS, TOOL_TO_CAPABILITY
 
-from .test_mecha_adapter import EXPECTED_TOOLS, _stack
+from tests.test_mecha_adapter import EXPECTED_TOOLS, _stack
 
 
 # ---------------------------------------------------------------- ① 命名守卫
@@ -126,6 +126,6 @@ def test_expected_tools_covers_config_and_authority_surface():
 
     （三个能力人类专属、刻意不投影：reset_profile / delete_graph_view / delete_mark。）
     """
-    from .test_mecha_adapter import NON_CAPABILITY_TOOLS
+    from tests.test_mecha_adapter import NON_CAPABILITY_TOOLS
     assert EXPECTED_TOOLS == set(TOOL_TO_CAPABILITY) | NON_CAPABILITY_TOOLS
     assert len(EXPECTED_TOOLS) == 60
