@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import html as _html
 import os
 import re
 import shutil
@@ -37,6 +38,34 @@ MIN_HEIGHT = 720
 MAX_HEIGHT = 8000
 _HEIGHT_RE = re.compile(r'data-pp-height="(\d+)"')
 _LAUNCH_TIMEOUT = 90
+
+
+def dump_attr(url: str, attr: str, *, width: int = DEFAULT_WIDTH,
+              budget_ms: int = 2500) -> str:
+    """跑一趟无头浏览器、把页面写在 ``<html {attr}=…>`` 里的值取出来（**自证通道**）。
+
+    页面在截图模式下会把自己"实际渲染成什么样"写进属性（如 ``data-pp-height``、
+    ``data-pp-marks`` 里的计算样式与包围盒）⇒ AI 拿它当**机读证据**，
+    不必靠盯着截图猜"这算不算标出来了"。
+    """
+    binary = find_browser()
+    if not binary:
+        raise ShotError("本机没找到 Edge/Chrome（Chromium 内核）⇒ 无头自查不可用")
+    sep = "&" if "?" in url else "?"
+    args = _base_args(binary, width, MIN_HEIGHT) + [
+        f"--virtual-time-budget={int(budget_ms)}",
+        "--dump-dom", f"{url}{sep}shot=1",
+    ]
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=_LAUNCH_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ShotError(f"启动无头浏览器失败：{exc}") from exc
+    dom = proc.stdout or ""
+    m = re.search(re.escape(attr) + r'="([^"]*)"', dom)
+    # ⚠ 必须**反转义**：`--dump-dom` 是 HTML 序列化，属性里的引号会变成 `&quot;`
+    # ⇒ 直接 json.loads 会炸（实测 "Expecting property name enclosed in double quotes"）。
+    return _html.unescape(m.group(1)) if m else ""
 
 
 class ShotError(RuntimeError):

@@ -105,7 +105,9 @@
   const AID = {{ arxiv_id|tojson }};
   const FOCUS = {{ focus|int }};
   const SHOT = {{ shot|int }};
-  const COLORS = {highlight: "#fde68a", note: "#bfdbfe", section: "#e9d5ff", figure: "#bbf7d0"};
+  // note 从 #bfdbfe 加深到 #93c5fd：原色在缩略图/缩放视图下几乎与白底同化（**实测**：
+  // 机读 diag 显示颜色是对的，但我在缩略截图上误判成"没标出来"）⇒ 加深一档，肉眼与截图都稳。
+  const COLORS = {highlight: "#fde68a", note: "#93c5fd", section: "#e9d5ff", figure: "#bbf7d0"};
   const EDGE = {highlight: "#f59e0b", note: "#3b82f6", section: "#a855f7", figure: "#22c55e"};
   let maxId = {{ (marks|map(attribute="id")|max) if marks else 0 }};
   const frame = document.getElementById("paper");
@@ -145,11 +147,12 @@
     const doc = frame.contentDocument;
     if (!doc || !doc.body) return 0;
     clearMarks(doc);
+    const diag = [];
     let ok = 0;
     marks.forEach(function (m) {
       if (!m.anchor || !m.anchor.block) return;
       const r = rangeFor(doc, m.anchor.block, m.anchor.start || 0, m.anchor.end || 0);
-      if (!r) { markStale(m.id); return; }
+      if (!r) { markStale(m.id); diag.push({id: m.id, error: "range_not_found"}); return; }
       const el = doc.createElement("mark");
       el.className = "pp-mark";
       el.id = "m" + m.id;
@@ -165,8 +168,22 @@
       el.style.borderBottom = "2px solid " + (m.color || EDGE[m.kind] || EDGE.highlight);
       el.style.cursor = "pointer";
       el.addEventListener("click", function () { hiliteSidebar(m.id); });
-      try { r.surroundContents(el); ok++; } catch (e) { markStale(m.id); }
+      try {
+        r.surroundContents(el);
+        ok++;
+        // **自证**：把"实际渲染成什么样"记下来（计算样式 + 包围盒）——AI 拿它当机读证据，
+        // 不必靠盯着截图猜"这算不算高亮出来了"。
+        const cs = frame.contentWindow.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        diag.push({id: m.id, block: m.anchor.block, bg: cs.backgroundColor,
+                   edge: cs.borderBottomColor, h: Math.round(rect.height),
+                   w: Math.round(rect.width)});
+      } catch (e) {
+        markStale(m.id);
+        diag.push({id: m.id, error: "surround_failed"});
+      }
     });
+    if (SHOT) document.documentElement.dataset.ppMarks = JSON.stringify(diag);
     if (SHOT && doc.documentElement) {           // 截图模式：把真实高度报给外层（无头截图两趟法）
       const h = Math.max(doc.body.scrollHeight, doc.documentElement.scrollHeight);
       frame.style.height = (h + 20) + "px";

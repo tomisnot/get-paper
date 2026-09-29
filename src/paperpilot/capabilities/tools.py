@@ -8,6 +8,7 @@ docs/PRINCIPLES.md §9）。读写分类与归因纪律见 docs/SPEC.md §3、§
 
 from __future__ import annotations
 
+import json
 from datetime import date as date_cls
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -32,6 +33,7 @@ from ..infra.paperhtml import (
 from ..infra.scholar import SemanticScholarClient, arxiv_ext_id
 from ..infra.shot import ShotError
 from ..infra.shot import capture as shot_capture
+from ..infra.shot import dump_attr as shot_dump_attr
 from .base import Registry, err, ok
 
 # 外部调用方未表明身份时的默认归因（CLI/人可显式传 actor="human"）
@@ -1609,17 +1611,25 @@ def build_registry(container) -> Registry:
         name = f"{stamp}-m{int(mark_id)}.png" if mark_id else f"{stamp}-full.png"
         out = shot_root / arxiv_id / name
         try:
+            # **自证**：先问页面"标记实际渲染成什么样"（计算样式 + 包围盒），再拍照。
+            # 这是"效果对不对"的机读证据——不靠人（或 AI）盯着截图猜。
+            raw = shot_dump_attr(url, "data-pp-marks")
+            rendered = json.loads(raw) if raw.strip().startswith("[") else []
             info = shot_capture(url, out, width=max(600, min(2400, int(width or 1440))),
                                 full_page=not bool(mark_id))
         except ShotError as exc:
             return err("shot_unavailable", str(exc),
                        hint="装 Edge 或 Chrome 任一即可（Chromium 内核）——本机零新依赖方案")
+        bad = [d for d in rendered if d.get("error") or not d.get("h")]
         return ok(arxiv_id=arxiv_id, path=info["path"], width=info["width"],
                   height=info["height"], bytes=info["bytes"], page=url,
                   too_tall=info["height"] >= 8000,
+                  marks_rendered=len(rendered), marks_broken=[d.get("id") for d in bad],
+                  render_diag=rendered[:8],
                   hint=("这篇太长，整页图到了 8000px 上限——**多模态读图读不了这么高的图**；"
                         "改拍局部：capture_paper_shot(mark_id=…) 或调小 width" if info["height"] >= 8000
-                        else "用 read_image 打开这个 path——你看到的就是用户看到的"))
+                        else "用 read_image 打开这个 path 看观感；render_diag 是每个标记的"
+                             "实际底色/边框/尺寸（机读证据，比目测靠得住）"))
 
     @reg.tool(name="read_paper_shots", kind="read",
               description="列出这篇论文已拍过的截图（最近优先），回本地路径——交给 read_image 看。")
