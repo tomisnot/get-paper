@@ -16,6 +16,10 @@ dependencies = [
     "typer>=0.12",
     "python-multipart>=0.0.9",
     "mcp>=2,<3",
+    # 精读体系（infra/paperhtml.py）：arXiv HTML 正文的解析与锚定。
+    # 为什么进**核心**而不是 extra：它是"精读"这条主线的地基（读块、算字符区间、消毒改写），
+    # 纯 wheel、4MB、无编译；与 mecha 那种"URL 解析不了、必须可选"的情形不同。
+    "lxml>=5.0",
 ]
 
 [project.optional-dependencies]

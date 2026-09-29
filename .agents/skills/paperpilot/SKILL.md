@@ -3,13 +3,14 @@ name: paperpilot
 description: >-
   PaperPilot 论文情报系统的操作纪律（DSH 对话驱动）。当抓取 arXiv、评审候选、
   生成日报或月度合集、刷推荐流（feed）、查引文脉络/文献计量、画引文网络视图、
-  做资产盘点与趋势统计、调主题/配额/画像参数时必读。含「怎么干活」三大工作流
-  （日报 / 推荐流 / 引文网络）与项目信条；50 个工具全部入册；AI 面唯一禁忌是 reset_profile。
+  陪用户精读 HTML 正文并加批注、做资产盘点与趋势统计、调主题/配额/画像参数时必读。
+  含「怎么干活」四大工作流（日报 / 推荐流 / 引文网络 / 精读）与项目信条；
+  60 个工具全部入册；AI 面唯一禁忌是 reset_profile。
 ---
 
 # PaperPilot 操作纪律（AI 面）
 
-> 本文件与工具注册表由判据强制同步（tests/test_skill_sync.py：50 工具漏一个就红）。
+> 本文件与工具注册表由判据强制同步（tests/test_skill_sync.py：60 工具漏一个就红）。
 > 改工具的人必须同时改这里，否则 CI 不答应。
 >
 > **本文只讲两件事：我们怎么想（§1）、活怎么干（§3）。§4 工具表是查表用的，不是读物。**
@@ -232,12 +233,56 @@ gate 值（`set_config`）直通全段但被显式参数再覆盖。**用户点�
 - 视图发错 ⇒ `undo_change(seq=0)` 撤这一版；多张视图用 `query_graph_views` / `set_default_view` 切。
 - 节点是**站内句柄**：点击＝未入库先入库再进管理页，**图上永不外跳**。
 
-## 4. 工具全表（50；反引号内＝真实工具名，这是查表不是读物）
+### 3.4 精读（HTML 正文 + 在原文上批注）★ 你和人一起读一篇
+
+**触发**："陪我读这篇""这段什么意思""把这句话标出来解释一下"。
+
+**先认这件事：正文是基底，批注钉在它上面**
+
+> 精读只收 **arXiv 提供了 HTML** 的论文（HTML 有稳定 id：`S3.p2` 段落、`S3.F1` 图、`S3.E1` 公式
+> ⇒ 能渲染、能锚定、能分节喂你）。**没有 HTML 的论文不进这套体系**——如实报 `no_html`，
+> **不回落 PDF**（PDF 没有锚点，标不住）。这是明说的取舍，不是失败。
+
+**步骤（取正文 → 读 → 标 → 自查）**
+1. **取正文**：`fetch_paper_html`（剥脚本、**全量离线**抓样式与图片；无 HTML 则如实报）。
+2. **看地图**：`read_paper_outline` —— 章节树 + 每节块数与类型 + 块 id 样例。
+   **别一上来就读全文**：先看结构，再按需取。
+3. **读**：`read_paper_text`（按 `section`/`block` 取，或从头顺读；截断会给 `next_offset`）；
+   找不到确切位置就用 `search_paper_text` 拿块 id。
+4. **标**：`annotate_paper` —— 给**原句**（`quote`）或块 id，后端解析成精确区间后落库。
+   段落/句子/公式/图表都能标；多处命中会回候选，用 `block` 指定。
+5. **改 / 收尾**：`update_mark`（改正文或颜色）、`resolve_mark`（处理完了，痕迹留着）。
+6. **自查**：`verify_marks` 看回执（重锚结果 + 命中的原句 + 前后文）；
+   要看**观感**就 `capture_paper_shot`（服务端无头截图），再用 `read_image` 打开那个路径——
+   你看到的就是用户看到的。历史截图用 `read_paper_shots`。
+
+**判断点**
+- **只给原句，不给偏移**：几何由代码算（`quote`→字符区间）。你手算字符偏移必然错。
+- **批注写什么归你**：不是复述原文，而是"这句在论证里干什么、和哪一节呼应、有什么可疑"。
+- **整块 vs 一句**：解释一段用整块（只给 `block`）；指出关键句就 quote。
+- 图/表/公式：`annotate_paper(block="S3.F1", kind="figure")` —— 锚在元素上，不锚在文字上。
+- **卡的升级**：有正文时，`write_summary` 之前先 `read_paper_text` —— 依据原文写出来的卡
+  比依据摘要强一个量级（原文并排可核对，这是信条 7 的幻觉防线）。
+
+**翻车点**
+- **别用 read_paper_text 一把梭**：回程有体积闸，截断了就顺着 `next_offset` 续读，别重复整段。
+- 标完不看 `verify_marks` ⇒ 可能标到了同名的另一处（"这句话"在论文里常出现多次）。
+- **删除批注不归你**：`delete_mark` **不投影给你**（作用域也只给人）——精读痕迹的处置权归人。
+  你写错了就用 `undo_change(seq=0)` 撤掉自己刚写的那条。
+- 截图拍的是**真实页面**，所以 Web 必须在跑；没跑就如实报 `web_not_running`，别假装拍到了。
+
+## 4. 工具全表（60；反引号内＝真实工具名，这是查表不是读物）
 
 **读·认知**：`read_paper` 详情+总结+打分史+笔记 | `search_papers` 库内检索(FTS5,offset 分页) |
 `read_digest` 简报全文/纯统计 | `query_briefings` 历史简报清单(管理面) | `query_topics` 主题含
 authors | `read_config` / `review_status` 评审进度 | `read_activity` 事件+运行+AI 成本 |
 `query_profile` 画像 top 权重+分类熵 | `read_authority` 写权现状。
+
+**精读（HTML 正文 + 批注）**：`fetch_paper_html` 归档正文（全量离线）|
+`read_paper_outline` 章节树+锚点地图 | `read_paper_text` 分块读正文 | `search_paper_text` 篇内检索 |
+`annotate_paper` 在原文上加批注（quote→精确区间）| `update_mark` / `resolve_mark` 改/收尾 |
+`verify_marks` 批注回执（标完先看它）| `capture_paper_shot` 服务端无头截图（配 `read_image` 看）|
+`read_paper_shots` 列历史截图。**`delete_mark` 人类专属、不投影给你。**
 
 **引文与计量**（外部源实时，缓存过）：`paper_metrics` 一篇的影响力度量 | `read_references` 向前追溯
 （按被引排序=奠基候选，带 intents）| `read_citations` 向后看扩散 | `sync_citations` 把引用边落本地

@@ -303,6 +303,33 @@ class PaperRepository:
                 v.is_default = bool(prev) and v.name == prev
             return {"restored_default": prev or "(none)"}
 
+        if op == "mark_paper":
+            # 批注三态统一：加（before 空）/ 改（before+after）/ 删（after.deleted）。
+            # 撤销语义：原本没有就删掉、原本有就按 before 快照回写（必要时重建整行）。
+            from .orm import PaperMark
+            before = event.before or {}
+            after = event.after or {}
+            mid = int(before.get("id") or after.get("id") or 0)
+            row = s.get(PaperMark, mid) if mid else None
+            if not before:
+                if row is not None:
+                    s.delete(row)
+                return {"removed_mark": mid}
+            if row is None:
+                row = PaperMark(id=mid)
+                s.add(row)
+            row.arxiv_id = str(before.get("arxiv_id") or "")
+            row.html_sha256 = str(before.get("html_sha256") or "")
+            row.kind = str(before.get("kind") or "highlight")
+            row.anchor = dict(before.get("anchor") or {})
+            row.quote = str(before.get("quote") or "")
+            row.body = str(before.get("body") or "")
+            row.color = str(before.get("color") or "")
+            row.status = str(before.get("status") or "active")
+            row.actor = str(before.get("actor") or "")
+            row.reason = str(before.get("reason") or "")
+            return {"restored_mark": mid}
+
         if op == "sync_citations":
             # 回滚引文边：先把 src 现边清空，再按 before 快照重建（忠实回上一轮）
             from .orm import CitationEdge
@@ -1609,6 +1636,174 @@ class PaperRepository:
                     .order_by(Note.id.desc())
                 )
             )
+
+    # ---------------------------------------------------------------- 精读：HTML 正文归档
+
+    def save_paper_html(self, arxiv_id: str, **f: object) -> dict:
+        """落 HTML 归档的元数据（正文文件在 data/paper_html 下，这里只记"身份"）。
+
+        ⚠ **不可 undo**：重抓幂等，要回到旧正文就重抓（与 sync_cited_by 同族）。
+        ``status=no_html`` 也照记——它是一等结果（这篇不进精读体系），不是待重试的失败。
+        """
+        from .orm import PaperHtml
+
+        with self.sf() as s:
+            row = s.get(PaperHtml, arxiv_id)
+            before = None
+            if row is not None:
+                before = {"status": row.status, "sha256": row.sha256, "version": row.version}
+            if row is None:
+                row = PaperHtml(arxiv_id=arxiv_id)
+                s.add(row)
+            row.version = int(f.get("version") or 0)
+            row.source = str(f.get("source") or "")
+            row.source_url = str(f.get("source_url") or "")
+            row.status = str(f.get("status") or "ok")
+            row.detail = str(f.get("detail") or "")
+            row.sha256 = str(f.get("sha256") or "")
+            row.bytes = int(f.get("bytes") or 0)
+            row.assets = int(f.get("assets") or 0)
+            row.asset_bytes = int(f.get("asset_bytes") or 0)
+            row.blocks = int(f.get("blocks") or 0)
+            row.chars = int(f.get("chars") or 0)
+            self._event(s, op="fetch_paper_html", actor=str(f.get("actor") or "system"),
+                        reason=str(f.get("reason") or f"归档 HTML 正文 {arxiv_id}"),
+                        target=arxiv_id, before=before,
+                        after={"status": row.status, "sha256": row.sha256,
+                               "version": row.version, "blocks": row.blocks},
+                        reversible=0)
+            s.commit()
+            return {"arxiv_id": arxiv_id, "status": row.status, "version": row.version,
+                    "blocks": row.blocks, "chars": row.chars,
+                    "assets": row.assets, "asset_bytes": row.asset_bytes,
+                    "sha256": row.sha256}
+
+    def get_paper_html(self, arxiv_id: str) -> dict | None:
+        from .orm import PaperHtml
+
+        with self.sf() as s:
+            row = s.get(PaperHtml, arxiv_id)
+            return self._html_dict(row) if row is not None else None
+
+    def paper_html_map(self) -> dict[str, dict]:
+        """全部归档状态（覆盖统计与列表页用）：arxiv_id → 元数据。"""
+        from .orm import PaperHtml
+
+        with self.sf() as s:
+            return {r.arxiv_id: self._html_dict(r) for r in s.scalars(select(PaperHtml)).all()}
+
+    @staticmethod
+    def _html_dict(row) -> dict:
+        return {"arxiv_id": row.arxiv_id, "version": row.version, "source": row.source,
+                "source_url": row.source_url, "status": row.status, "detail": row.detail,
+                "sha256": row.sha256, "bytes": row.bytes, "assets": row.assets,
+                "asset_bytes": row.asset_bytes, "blocks": row.blocks, "chars": row.chars,
+                "fetched_at": row.fetched_at.isoformat() if row.fetched_at else ""}
+
+    def html_coverage(self) -> dict:
+        """精读体系覆盖面：多少篇有正文 / 多少篇明确没有 / 多少篇还没试过。"""
+        from .orm import Paper, PaperHtml
+
+        with self.sf() as s:
+            total = s.scalar(select(func.count()).select_from(Paper)) or 0
+            rows = list(s.scalars(select(PaperHtml)).all())
+        ok = [r for r in rows if r.status == "ok"]
+        no = [r for r in rows if r.status == "no_html"]
+        return {"papers": int(total), "ok": len(ok), "no_html": len(no),
+                "untried": max(0, int(total) - len(rows)),
+                "bytes": sum(r.bytes + r.asset_bytes for r in ok)}
+
+    # ---------------------------------------------------------------- 精读：批注（带位置）
+
+    def add_mark(self, arxiv_id: str, *, anchor: dict, quote: str = "", body: str = "",
+                 kind: str = "highlight", color: str = "", html_sha256: str = "",
+                 actor: str = "system", reason: str = "") -> dict:
+        """落一条带位置的批注。锚点先按 quote 由**调用方解析成精确区间**再传进来。"""
+        from .orm import PaperMark
+
+        with self.sf() as s:
+            row = PaperMark(arxiv_id=arxiv_id, html_sha256=html_sha256, kind=kind,
+                            anchor=dict(anchor or {}), quote=quote, body=body, color=color,
+                            actor=actor, reason=reason)
+            s.add(row)
+            s.flush()
+            snap = self._mark_snapshot(row)
+            self._event(s, op="mark_paper", actor=actor, reason=reason or "加批注",
+                        target=f"{arxiv_id}#{row.id}", after=snap, reversible=1)
+            s.commit()
+            return snap
+
+    def update_mark(self, mark_id: int, *, body: str | None = None,
+                    status: str | None = None, color: str | None = None,
+                    anchor: dict | None = None, quote: str | None = None,
+                    actor: str = "system", reason: str = "") -> dict | None:
+        from .orm import PaperMark
+
+        with self.sf() as s:
+            row = s.get(PaperMark, mark_id)
+            if row is None:
+                return None
+            before = self._mark_snapshot(row)
+            if body is not None:
+                row.body = body
+            if status is not None:
+                row.status = status
+            if color is not None:
+                row.color = color
+            if anchor is not None:
+                row.anchor = dict(anchor)
+            if quote is not None:
+                row.quote = quote
+            self._event(s, op="mark_paper", actor=actor, reason=reason or "改批注",
+                        target=f"{row.arxiv_id}#{mark_id}", before=before,
+                        after=self._mark_snapshot(row), reversible=1)
+            s.commit()
+            return self._mark_snapshot(row)
+
+    def delete_mark(self, mark_id: int, *, actor: str = "system", reason: str = "") -> dict | None:
+        from .orm import PaperMark
+
+        with self.sf() as s:
+            row = s.get(PaperMark, mark_id)
+            if row is None:
+                return None
+            snap = self._mark_snapshot(row)
+            s.delete(row)
+            self._event(s, op="mark_paper", actor=actor, reason=reason or "删批注",
+                        target=f"{snap['arxiv_id']}#{mark_id}", before=snap,
+                        after={"id": mark_id, "deleted": True}, reversible=1)
+            s.commit()
+            return snap
+
+    @staticmethod
+    def _mark_snapshot(row) -> dict:
+        return {"id": row.id, "arxiv_id": row.arxiv_id, "html_sha256": row.html_sha256,
+                "kind": row.kind, "anchor": dict(row.anchor or {}), "quote": row.quote,
+                "body": row.body, "color": row.color, "status": row.status,
+                "actor": row.actor, "reason": row.reason}
+
+    def marks_for(self, arxiv_id: str, *, since_id: int = 0, status: str = "") -> list[dict]:
+        """一篇的批注（按位置排序：块 + 起始偏移）；``since_id`` 供页面轮询增量取。"""
+        from .orm import PaperMark
+
+        with self.sf() as s:
+            stmt = select(PaperMark).where(PaperMark.arxiv_id == arxiv_id)
+            if since_id:
+                stmt = stmt.where(PaperMark.id > int(since_id))
+            if status:
+                stmt = stmt.where(PaperMark.status == status)
+            rows = list(s.scalars(stmt).all())
+        snaps = [self._mark_snapshot(r) for r in rows]
+        snaps.sort(key=lambda m: (str((m["anchor"] or {}).get("block") or ""),
+                                  int((m["anchor"] or {}).get("start") or 0), m["id"]))
+        return snaps
+
+    def get_mark(self, mark_id: int) -> dict | None:
+        from .orm import PaperMark
+
+        with self.sf() as s:
+            row = s.get(PaperMark, mark_id)
+            return self._mark_snapshot(row) if row is not None else None
 
 
 def _topics_to_dicts(topics) -> list[dict]:

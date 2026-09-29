@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+{% block title %}{{ paper_title or arxiv_id }} · 精读{% endblock %}
+
+{% block head_extra %}
+<style>
+  /* 阅读页要整幅宽度：正文 + 侧栏 */
+  main.read { max-width: 1600px; padding: 0 16px 40px; }
+  .read-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 14px 0 10px; }
+  .read-head h1 { font-size: 19px; margin: 0; }
+  .read-grid { display: grid; grid-template-columns: 1fr 320px; gap: 16px; align-items: start; }
+  @media (max-width: 1100px) { .read-grid { grid-template-columns: 1fr; } }
+  .paper-frame { background: #fff; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .paper-frame iframe { width: 100%; border: 0; height: 78vh; display: block; background: #fff; }
+  body.shot .paper-frame iframe { height: auto; min-height: 400px; }
+  body.shot nav, body.shot footer, body.shot .side { display: none; }
+  body.shot main.read { padding: 0; }
+  .side-box { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+              padding: 12px 14px; margin-bottom: 12px; }
+  .mark-item { border-left: 3px solid var(--accent); padding: 6px 0 6px 9px; margin: 8px 0;
+               font-size: 13px; cursor: pointer; }
+  .mark-item:hover { background: var(--accent-soft); }
+  .mark-item .q { color: var(--ink); }
+  .mark-item .b { color: var(--muted); margin-top: 3px; }
+  .mark-item .meta { color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .mark-item.resolved { border-left-color: var(--ok); opacity: .75; }
+  .mark-item.stale { border-left-color: var(--warn); }
+  .mark-item form { display: inline; }
+  .mark-item button { padding: 1px 8px; font-size: 11px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="read-head">
+  <h1>{{ paper_title or arxiv_id }}</h1>
+  <span class="chip">{{ arxiv_id }}</span>
+  {% if meta %}
+    <span class="chip">{{ meta.source }} v{{ meta.version }}</span>
+    <span class="chip">{{ meta.blocks }} 块 · {{ meta.chars }} 字</span>
+  {% endif %}
+  <span class="spacer" style="flex:1"></span>
+  <span class="muted" id="live-hint">批注每 4 秒自动刷新</span>
+  <a class="btn ghost" href="/papers/{{ arxiv_id }}">论文详情</a>
+  <a class="btn ghost" href="/paper/{{ arxiv_id }}/html" target="_blank">原文</a>
+</div>
+
+{% if not meta or meta.status != "ok" %}
+  <div class="card">
+    <h3>这篇还没有可用的 HTML 正文</h3>
+    <p class="muted">
+      {% if meta %}归档状态：{{ meta.status }}{% if meta.detail %}（{{ meta.detail }}）{% endif %}{% else %}
+      还没归档过。{% endif %}
+      精读体系只收 **arXiv 提供了 HTML** 的论文——没有 HTML 就没法在原文上锚定批注，
+      所以这类论文不进精读体系（不是失败，是取舍）。
+    </p>
+    {% if not meta %}
+    <p class="muted">在 dsh 里说一句「把 {{ arxiv_id }} 的正文抓下来」，AI 会调
+      <code>fetch_paper_html</code> 归档。</p>
+    {% endif %}
+  </div>
+{% else %}
+<div class="read-grid">
+  <div class="paper-frame">
+    <iframe id="paper" src="/paper/{{ arxiv_id }}/html"
+            sandbox="allow-same-origin" referrerpolicy="no-referrer"></iframe>
+  </div>
+
+  <div class="side">
+    <div class="side-box">
+      <h3 style="margin:0 0 6px;">批注 <span class="muted" id="mark-count">（{{ marks|length }}）</span></h3>
+      <p class="muted" style="margin:0 0 8px;">
+        人在 dsh 里和 AI 聊这篇论文，AI 的批注会**落在原文上**并出现在这里。
+        <strong>删除归人</strong>（AI 没有删除批注的工具）。
+      </p>
+      <div id="mark-list">
+        {% for m in marks %}
+        <div class="mark-item {{ m.status }}" id="mi{{ m.id }}" data-mark-id="{{ m.id }}">
+          <div class="q">「{{ (m.quote or m.body or "整块")[:80] }}」</div>
+          {% if m.body and m.quote %}<div class="b">{{ m.body[:120] }}</div>{% endif %}
+          <div class="meta">
+            <code>{{ m.anchor.block }}</code> · {{ m.kind }} · {{ m.actor }}
+            <form method="post" action="/read/{{ arxiv_id }}/marks/{{ m.id }}/delete"
+                  onsubmit="return confirm('删掉这条批注？可在 /activity 页 undo。')">
+              <button class="ghost" type="submit">删除</button>
+            </form>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% if not marks %}<div class="muted" id="no-marks">还没有批注。</div>{% endif %}
+    </div>
+
+    <div class="side-box">
+      <h3 style="margin:0 0 6px;">怎么让 AI 标</h3>
+      <p class="muted" style="margin:0;">
+        在 dsh 里说：「这篇的第 3 节那段关于 X 的话，标出来并解释」。
+        AI 会先 <code>read_paper_outline</code> 看结构、用 <code>search_paper_text</code> 定位，
+        再 <code>annotate_paper</code> 落批注——位置由后端算，不靠 AI 猜。
+      </p>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const AID = {{ arxiv_id|tojson }};
+  const FOCUS = {{ focus|int }};
+  const SHOT = {{ shot|int }};
+  const COLORS = {highlight: "#fde68a", note: "#bfdbfe", section: "#e9d5ff", figure: "#bbf7d0"};
+  let maxId = {{ (marks|map(attribute="id")|max) if marks else 0 }};
+  const frame = document.getElementById("paper");
+
+  if (SHOT) document.body.classList.add("shot");
+
+  async function loadMarks(sinceId) {
+    const r = await fetch(`/read/${AID}/marks.json?since_id=${sinceId}`, {cache: "no-store"});
+    return r.ok ? (await r.json()).marks : [];
+  }
+
+  function rangeFor(doc, blockId, start, end) {
+    const el = doc.getElementById(blockId);
+    if (!el) return null;
+    const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+    const range = doc.createRange();
+    let pos = 0, started = false, last = null;
+    while (walker.nextNode()) {
+      const node = walker.currentNode, len = node.nodeValue.length;
+      if (!started && pos + len > start) { range.setStart(node, Math.max(0, start - pos)); started = true; }
+      if (started) { last = node; if (pos + len >= end) { range.setEnd(node, end - pos); return range; } }
+      pos += len;
+    }
+    if (started && last) { try { range.setEnd(last, last.nodeValue.length); return range; } catch (e) { return null; } }
+    return null;
+  }
+
+  function clearMarks(doc) {
+    doc.querySelectorAll("mark.pp-mark").forEach(function (el) {
+      const parent = el.parentNode;
+      while (el.firstChild) parent.insertBefore(el.firstChild, el);
+      parent.removeChild(el);
+    });
+  }
+
+  function applyMarks(marks) {
+    const doc = frame.contentDocument;
+    if (!doc || !doc.body) return 0;
+    clearMarks(doc);
+    let ok = 0;
+    marks.forEach(function (m) {
+      if (!m.anchor || !m.anchor.block) return;
+      const r = rangeFor(doc, m.anchor.block, m.anchor.start || 0, m.anchor.end || 0);
+      if (!r) { markStale(m.id); return; }
+      const el = doc.createElement("mark");
+      el.className = "pp-mark";
+      el.id = "m" + m.id;
+      el.dataset.markId = m.id;
+      el.title = (m.body || m.quote || "").slice(0, 300);
+      el.style.background = m.color || COLORS[m.kind] || COLORS.highlight;
+      el.style.borderRadius = "2px";
+      el.style.cursor = "pointer";
+      el.addEventListener("click", function () { hiliteSidebar(m.id); });
+      try { r.surroundContents(el); ok++; } catch (e) { markStale(m.id); }
+    });
+    if (SHOT && doc.documentElement) {           // 截图模式：把真实高度报给外层（无头截图两趟法）
+      const h = Math.max(doc.body.scrollHeight, doc.documentElement.scrollHeight);
+      frame.style.height = (h + 20) + "px";
+    }
+    return ok;
+  }
+
+  function markStale(id) {
+    const el = document.getElementById("mi" + id);
+    if (el) el.classList.add("stale");
+  }
+  function hiliteSidebar(id) {
+    const el = document.getElementById("mi" + id);
+    if (el) { el.scrollIntoView({block: "center"}); el.style.background = "var(--accent-soft)";
+              setTimeout(function () { el.style.background = ""; }, 900); }
+  }
+
+  function addSidebar(m) {
+    const list = document.getElementById("mark-list");
+    if (!list) return;
+    const no = document.getElementById("no-marks"); if (no) no.remove();
+    const d = document.createElement("div");
+    d.className = "mark-item " + m.status;
+    d.id = "mi" + m.id;
+    d.innerHTML = '<div class="q">「' + ((m.quote || m.body || "整块").slice(0, 80)) + '」</div>' +
+      (m.body && m.quote ? '<div class="b">' + m.body.slice(0, 120) + '</div>' : '') +
+      '<div class="meta"><code>' + (m.anchor.block || "") + '</code> · ' + m.kind + ' · ' + (m.actor || "") +
+      ' <form method="post" action="/read/' + AID + '/marks/' + m.id +
+      '/delete" onsubmit="return confirm(\'删掉这条批注？可在 /activity 页 undo。\')">' +
+      '<button class="ghost" type="submit">删除</button></form></div>';
+    list.appendChild(d);
+  }
+
+  let all = [];
+  async function refresh(first) {
+    const fresh = await loadMarks(first ? 0 : maxId);
+    if (first) all = fresh; else all = all.concat(fresh);
+    fresh.forEach(function (m) { if (m.id > maxId) maxId = m.id; if (!first) addSidebar(m); });
+    const n = document.getElementById("mark-count");
+    if (n) n.textContent = "（" + all.length + "）";
+    const applied = applyMarks(all);
+    if (FOCUS) {
+      const doc = frame.contentDocument, el = doc && doc.getElementById("m" + FOCUS);
+      if (el) el.scrollIntoView({block: "center"});
+    }
+    const hint = document.getElementById("live-hint");
+    if (hint) hint.textContent = "已应用 " + applied + "/" + all.length + " 条批注";
+  }
+
+  frame.addEventListener("load", function () {
+    if (SHOT) {                                  // 无头截图第一趟要读的高度写在这里
+      const doc = frame.contentDocument;
+      setTimeout(function () {
+        if (!doc || !doc.body) return;
+        const h = Math.max(doc.body.scrollHeight, doc.documentElement.scrollHeight) + 120;
+        document.documentElement.dataset.ppHeight = String(h);
+      }, 300);
+    }
+    refresh(true);
+  });
+
+  setInterval(function () { refresh(false); }, 4000);
+})();
+</script>
+{% endif %}
+{% endblock %}

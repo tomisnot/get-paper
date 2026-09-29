@@ -16,6 +16,11 @@
 <div class="actions">
   <a class="btn" href="/papers/{{ p.arxiv_id }}/go" target="_blank" rel="noopener">arXiv 原文</a>
   <a class="btn ghost" href="/papers/{{ p.arxiv_id }}/pdf" target="_blank" rel="noopener">⬇ 直下 PDF</a>
+  {% if paper_html and paper_html.status == "ok" %}
+    <a class="btn" href="/read/{{ p.arxiv_id }}">📖 精读正文{% if mark_count %}（{{ mark_count }} 条批注）{% endif %}</a>
+  {% elif paper_html %}
+    <span class="chip" title="{{ paper_html.detail }}">无 HTML 正文（不进精读）</span>
+  {% endif %}
   <form method="post" action="/papers/{{ p.arxiv_id }}/read">
     <button class="ghost">{{ "标记未读" if detail.reading and detail.reading.read else "标记已读" }}</button>
   </form>

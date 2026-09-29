@@ -135,7 +135,9 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         except Exception:  # noqa: BLE001
             import logging
             logging.getLogger("paperpilot.web").exception("view 信号记账失败（页面照常）")
-        return render(request, "paper_detail.html", detail=detail, arxiv_id=arxiv_id)
+        return render(request, "paper_detail.html", detail=detail, arxiv_id=arxiv_id,
+                      paper_html=container.repo.get_paper_html(arxiv_id),
+                      mark_count=len(container.repo.marks_for(arxiv_id)))
 
     # ---------------------------------------------------------------- 推荐流面板（期票模型：只读最新期，不现场重算）
     _LANE_LABEL = {"primary": "主兴趣", "adjacent": "邻接", "hot": "热点", "explore": "探索"}
@@ -314,6 +316,79 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
                               f"入库失败：{res.get('error', {}).get('message', '未知原因')}"
                               "——已回图谱，节点没丢，可再点重试"), status_code=303)
         return RedirectResponse(f"/papers/{arxiv_id}", status_code=303)
+
+    # ---------------------------------------------------------------- 精读（HTML 正文 + 批注）
+    # 定位：界面② 的"精读现场"。正文由**本站同源**提供（不直嵌 arXiv），三个理由：
+    # ① 跨域 iframe 会让 canvas 变脏 ⇒ 无头截图与 DOM 标注都做不了；
+    # ② 我们能剥脚本（外部内容按敌意内容处理）；③ 资源已离线，断网也能读。
+    def _paper_html_base(arxiv_id: str):
+        meta = container.repo.get_paper_html(arxiv_id)
+        if not meta or meta.get("status") != "ok":
+            return None, meta
+        base = (Path(container.settings.data_dir) / "paper_html" / arxiv_id
+                / f"v{int(meta.get('version') or 0)}")
+        return (base if (base / "index.html").exists() else None), meta
+
+    @app.get("/paper/{arxiv_id}/html", response_class=HTMLResponse)
+    def paper_html(arxiv_id: str):
+        """改写并离线化之后的正文本身（同源提供 ⇒ 父页面可以标注它、也可以截图）。"""
+        base, _meta = _paper_html_base(arxiv_id)
+        if base is None:
+            return HTMLResponse(
+                "<p style='font:15px system-ui;padding:24px;color:#66708a'>"
+                "这篇论文还没归档 HTML 正文（arXiv 未提供 HTML 的论文不进精读体系）。</p>",
+                status_code=404)
+        return HTMLResponse((base / "index.html").read_text(encoding="utf-8"))
+
+    @app.get("/paper/{arxiv_id}/assets/{name}")
+    def paper_asset(arxiv_id: str, name: str):
+        """离线资源（CSS/图片）。只认归档目录里的文件——不做任意路径读取（防穿越）。"""
+        from fastapi.responses import FileResponse
+
+        base, _meta = _paper_html_base(arxiv_id)
+        if base is None:
+            return HTMLResponse("没有归档正文", status_code=404)
+        assets = (base / "assets").resolve()
+        target = (assets / name).resolve()
+        if assets != target.parent or not target.is_file():
+            return HTMLResponse("没有这个资源", status_code=404)
+        return FileResponse(target)
+
+    @app.get("/read/{arxiv_id}", response_class=HTMLResponse)
+    def read_paper(request: Request, arxiv_id: str, focus: int = 0, shot: int = 0):
+        """精读页：正文（同源 iframe）+ 批注层 + 侧栏。AI 的批注经轮询实时上屏。"""
+        meta = container.repo.get_paper_html(arxiv_id)
+        p = container.repo.get_paper(arxiv_id)
+        return render(request, "read.html", arxiv_id=arxiv_id, meta=meta,
+                      paper_title=(p.title if p is not None else ""),
+                      marks=container.repo.marks_for(arxiv_id),
+                      focus=int(focus or 0), shot=int(shot or 0))
+
+    @app.get("/read/{arxiv_id}/marks.json")
+    def read_marks(arxiv_id: str, since_id: int = 0):
+        """批注增量接口：页面每 4 秒问一次 ⇒ AI 落一条就上一次屏（"实时"靠它兑现）。"""
+        from fastapi.responses import JSONResponse
+
+        marks = container.repo.marks_for(arxiv_id, since_id=int(since_id or 0))
+        return JSONResponse({"marks": marks, "count": len(marks)})
+
+    @app.post("/read/{arxiv_id}/marks/{mark_id}/delete")
+    def delete_mark_row(arxiv_id: str, mark_id: int):
+        """**删批注（人类专属）**：AI 工具面里没有这一项——精读痕迹的处置权归人。
+
+        与 `/settings/briefings/delete` 同款：有栈走命令面（写权门 + 审计），无栈回退能力层。
+        """
+        from urllib.parse import quote as _q
+
+        if stack is None:
+            res = registry_for(container).invoke(
+                "delete_mark", mark_id=int(mark_id), actor="human", reason="阅读页删批注")
+            msg = ("已删除该批注（可 undo 撤销）" if res.get("ok")
+                   else f"删除失败：{res.get('error', {}).get('message', '未知错误')}")
+            return RedirectResponse(f"/read/{arxiv_id}?msg={_q(msg)}", status_code=303)
+        gate_msg = _gated("delete_mark", mark_id=int(mark_id), reason="阅读页删批注")
+        msg = gate_msg or "已删除该批注（/activity 可 undo 撤销）"
+        return RedirectResponse(f"/read/{arxiv_id}?msg={_q(msg)}", status_code=303)
 
     @app.get("/lab", response_class=HTMLResponse)
     def lab(request: Request):

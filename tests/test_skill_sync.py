@@ -36,11 +36,17 @@ def test_every_tool_is_documented_in_skill():
 def test_skill_has_no_ghost_tool_names():
     text = SKILL.read_text(encoding="utf-8")
     tokens = {m for m in re.findall(r"`([a-z][a-z0-9_]{2,})`", text) if "_" in m}
-    real = (_tool_names()                                      # 42 工具
+    real = (_tool_names()                                      # 本项目投影的工具名
             | set(PARAM_DESCRIPTIONS)                          # 能力名
             | {p for d in PARAM_DESCRIPTIONS.values() for p in d}  # 参数名
             | {"reset_profile", "arxiv_id", "read_telemetry", "must_read",
                "next_offset", "review_floor", "max_papers", "max_per_author",
-               "must_read_cap", "quota_per_topic", "in_briefing"})
+               "must_read_cap", "quota_per_topic", "in_briefing",
+               # ⭐ `read_image` 是**外部 harness（dsh）自己的**读图工具，不是本项目能力：
+               # 精读的截图回环要靠它把 PNG 交给 AI 看（本项目只回文件路径）。
+               # 它必须能被 skill 引用——白名单正是为这种"跨面引用"留的口子。
+               "read_image",
+               # 信封错误码：也是契约的一部分（AI 要认得它们才能"第一次错就改对"）。
+               "no_html", "web_not_running"})
     ghosts = sorted(tokens - real)
     assert not ghosts, f"skill 引用了不存在的工具样名字（幽灵/过时）：{ghosts}"

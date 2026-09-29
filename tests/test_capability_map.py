@@ -19,9 +19,10 @@ from .test_mecha_adapter import (
 
 
 def test_declaration_equals_projection(tmp_path):
-    """44 投影能力 + 2 人类专属（不投影）+ 6 非能力面 = 50 投影。两侧逐字对齐。
+    """54 投影能力 + 3 人类专属（不投影）+ 6 非能力面 = **60 投影**。两侧逐字对齐。
 
-    人类专属两名：`reset_profile`（防自改画像锚）、`delete_graph_view`（图是作品、处置权归人）。
+    人类专属三名：`reset_profile`（防自改画像锚）、`delete_graph_view`（图是作品、处置权归人）、
+    `delete_mark`（批注是精读痕迹、处置权归人）。精读批新增 11 个能力，投影其中 10 个。
     M4 调研基建批补 sync/upstream/related/coverage/stats/watch 六工具，图底座 P2/P4 批
     补 tag_paper/sync_cited_by，全部投影。
 
@@ -36,10 +37,11 @@ def test_declaration_equals_projection(tmp_path):
     projected = {s["name"] for s in stack["tools"].schemas()}
     caps = set(registry_for(stack["container"]).names())
 
-    assert caps == set(TOOL_TO_CAPABILITY.values()) | {"reset_profile", "delete_graph_view"}
-    assert len(caps) == 46
+    human_only = {"reset_profile", "delete_graph_view", "delete_mark"}
+    assert caps == set(TOOL_TO_CAPABILITY.values()) | human_only
+    assert len(caps) == 57
     assert projected == set(TOOL_TO_CAPABILITY) | NON_CAPABILITY_TOOLS   # 投影 = mecha 名 + 非能力面
-    assert projected == EXPECTED_TOOLS and len(projected) == 50
+    assert projected == EXPECTED_TOOLS and len(projected) == 60
     for mecha_name, cap in TOOL_TO_CAPABILITY.items():     # 每个 mecha 名 → 存在的能力
         assert cap in caps, f"{mecha_name} 映射到不存在的能力 {cap}"
         assert mecha_name in projected, f"{mecha_name} 未出现在投影面"

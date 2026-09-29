@@ -191,6 +191,40 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
              "删除指定日期的简报（同日多版本一并删）。可撤销——事件里存了 markdown+stats 快照，"
              "undo_change(seq=0) 一键重建。Web 设置页的「删简报」按钮与此同源。",
              omit=("actor",)),
+    # ------------------------------------------------------------ 精读面（10）
+    # arXiv HTML 正文 + 带位置的批注。分工：判断归 AI（读哪节、标哪句、批注写什么），
+    # 几何归代码（原句→精确字符区间、资源离线化、页面渲染、无头截图）。
+    # ⚠ `delete_mark` **不在这里**——批注是精读痕迹，处置权归人（与 delete_graph_view 同款）。
+    ToolDecl("fetch_paper_html", "fetch_paper_html", "write",
+             "下载并归档一篇论文的 HTML 正文（剥脚本、全量离线抓下样式与图片）："
+             "精读体系的地基。arXiv 未提供 HTML 的论文如实报 no_html。",
+             omit=("actor",)),
+    ToolDecl("read_paper_outline", "read_paper_outline", "read",
+             "一篇论文的章节树 + 锚点地图：每节的块数与类型分布、块 id 样例。"
+             "进正文前先看它——后面的读/检索/批注都吃这些块 id。"),
+    ToolDecl("read_paper_text", "read_paper_text", "read",
+             "读论文正文（分块、带块 id）：可按章节/块取，也可从头顺读；截断时回 next_offset。"),
+    ToolDecl("search_paper_text", "search_paper_text", "read",
+             "在单篇论文正文里检索：命中带块 id 与前后文——用它定位'这句话在哪一块'。"),
+    ToolDecl("annotate_paper", "annotate_paper", "write",
+             "在论文原文上加带位置的批注：给原句（quote）或块 id，由后端解析成精确区间再落库"
+             "（段落/句子/公式/图表都能标）。回执 snippet 就是'标在哪'的证据。",
+             omit=("actor",)),
+    ToolDecl("update_mark", "update_mark", "write",
+             "改一条批注（正文/状态/颜色）。",
+             omit=("actor",)),
+    ToolDecl("resolve_mark", "resolve_mark", "write",
+             "把一条批注标为已解决（痕迹留着，问题算处理完）。",
+             omit=("actor",)),
+    ToolDecl("verify_marks", "verify_marks", "read",
+             "批注回执：逐条报「重锚结果 + 命中的原句 + 前后文」——标完先看它，"
+             "位置错了一眼看得出来，不必等人截图。"),
+    ToolDecl("capture_paper_shot", "capture_paper_shot", "write",
+             "服务端无头截图：把真实阅读页拍成 PNG 存本地并回文件路径——"
+             "用 read_image 打开就能看见批注长什么样、挡没挡住正文。",
+             omit=("actor",)),
+    ToolDecl("read_paper_shots", "read_paper_shots", "read",
+             "列出这篇论文已拍过的截图（最近优先），回本地路径交给 read_image。"),
 )
 
 #: mecha 名 → 能力名（判据/宿主自省用的单一来源投影）。

@@ -80,6 +80,17 @@ def test_scope_policy_table_matches_intent(tmp_path):
     assert policy.allows("human", "views") is True, "人当然能删自己画过的图"
     assert policy.allows("ai", "views") is False, (
         "ai 不该能碰 views —— 画出来的图是作品，处置权归人")
+    assert policy.allows("human", "marks") is True, "人当然能删自己精读时的批注"
+    assert policy.allows("ai", "marks") is False, (
+        "ai 不该能碰 marks —— 批注是精读痕迹，处置权归人（撤自己刚写的走 undo）")
+
+
+def test_ai_denied_for_deleting_a_mark(tmp_path):
+    """删批注：**AI 侧被拒**（第二道锁）。第一道锁是不进 TOOL_DECLS，AI 工具面里根本没它。"""
+    _c, stack = _stack(tmp_path)
+    denied = _ai_call(stack, "delete_mark", mark_id=1)
+    assert denied["is_error"] is True, "AI 侧竟然能删批注 ⇒ 作用域没生效"
+    assert denied["error"]["info"]["kind"] == "scope_denied", denied["error"]
 
 
 def test_ai_denied_for_deleting_a_view(tmp_path):

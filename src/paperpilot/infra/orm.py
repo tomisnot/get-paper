@@ -268,6 +268,57 @@ class GraphView(Base):
     ts: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class PaperHtml(Base):
+    """一篇论文的 **HTML 正文归档**（精读体系的地基，长期资产而非缓存）。
+
+    为什么不是缓存：批注的锚点钉在**这一份正文**上（``sha256`` 就是它的身份）。
+    缓存丢了重下无所谓，但"正文变了"必须能被发现 ⇒ 所以记 sha256 + 版本 + 来源。
+
+    ⚠ ``status=no_html`` 是**一等结果**：它决定这篇进不进精读体系，不是"失败待重试"。
+    """
+
+    __tablename__ = "paper_html"
+
+    arxiv_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(16), default="")     # arxiv | ar5iv
+    source_url: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="ok", index=True)  # ok|no_html
+    detail: Mapped[str] = mapped_column(Text, default="")
+    sha256: Mapped[str] = mapped_column(String(64), default="")
+    bytes: Mapped[int] = mapped_column(Integer, default=0)
+    assets: Mapped[int] = mapped_column(Integer, default=0)
+    asset_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    blocks: Mapped[int] = mapped_column(Integer, default=0)
+    chars: Mapped[int] = mapped_column(Integer, default=0)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PaperMark(Base):
+    """**带位置的批注**（高亮 + 批注文字）：精读时人机共写的长期资产。
+
+    与 ``notes`` 的分工：notes 是"不带位置的自由笔记"，本表是"钉在原文某句话上的标记"。
+    锚点用 ``block + 字符区间``（主）+ ``quote/prefix/suffix``（兜底，换版本时可重锚）；
+    **纯文本快照也存一份** ⇒ 即便正文重下、锚点失效，批注内容也不会跟着蒸发。
+    """
+
+    __tablename__ = "paper_marks"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    arxiv_id: Mapped[str] = mapped_column(String(64), index=True)
+    html_sha256: Mapped[str] = mapped_column(String(64), default="")   # 钉在哪一份正文上
+    kind: Mapped[str] = mapped_column(String(16), default="highlight")  # highlight|note|region|section
+    anchor: Mapped[dict] = mapped_column(JSON, default=dict)
+    quote: Mapped[str] = mapped_column(Text, default="")               # 被标的原句（快照）
+    body: Mapped[str] = mapped_column(Text, default="")                # 批注正文（Markdown）
+    color: Mapped[str] = mapped_column(String(16), default="")
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active|stale|resolved
+    actor: Mapped[str] = mapped_column(String(32), default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class Event(Base):
     """append-only 事件（L2 记录仪，docs/GAPS.md §3）。
 

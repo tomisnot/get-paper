@@ -35,12 +35,15 @@ from mecha.scopes import ScopePolicy
 #: ⇒ **默认拒绝**（绑定 = 必须逐块表态，而不是"默认全开再逐个关"）。
 #: 与判据 `test_scope_policy_table_matches_intent` **互为见证**：改这里就要改那条判据。
 _GRANTS: dict[str, tuple[str, ...]] = {
-    "human": ("library", "topics", "review", "pipeline", "config", "undo", "profile", "views"),
+    "human": ("library", "topics", "review", "pipeline", "config", "undo", "profile",
+              "views", "marks"),
     # ⭐ `profile` **只给人**：`reset_profile` 是"改自己的标尺"那类动作，它的声明原文就是
     #    "人类专属：不投影给 AI，防自改锚点" —— 这里把那个**意图落成规则**（而不只是注释）。
     # ⭐ `views` 同样**只给人**：删掉一张辛苦画出来的图是"作品的处置权"，归人
     #    （`delete_graph_view` 也不进 TOOL_DECLS ⇒ AI 工具面里根本没有它；这里是第二道锁）。
     #    切默认视图不必新开作用域：那条命令声明 `library`（AI 也有对应工具）。
+    # ⭐ `marks` 也只给人：**批注是精读痕迹**，删哪条归人（`delete_mark` 同样不投影）；
+    #    AI 想撤掉自己刚写的那条，用 `undo_change`。
     #    其余六块两侧都放行：AI 的本职（library）、有对应工具（topics/review/pipeline/config/undo）。
     "ai": ("library", "topics", "review", "pipeline", "config", "undo"),
 }

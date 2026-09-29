@@ -10,10 +10,28 @@ from __future__ import annotations
 
 from datetime import date as date_cls
 from datetime import datetime, timedelta
+from pathlib import Path
+
+from lxml import html as LH
 
 from ..config import TopicCfg, save_settings
 from ..infra.arxiv import ArxivClient
+from ..infra.paperhtml import (
+    Anchor,
+    Block,
+    LocateResult,
+    PaperHtmlClient,
+    extract_blocks,
+    fetch_html,
+    localize_and_clean,
+    locate_quote,
+    outline as blocks_outline,
+    sha256_text,
+    snippet,
+)
 from ..infra.scholar import SemanticScholarClient, arxiv_ext_id
+from ..infra.shot import ShotError
+from ..infra.shot import capture as shot_capture
 from .base import Registry, err, ok
 
 # 外部调用方未表明身份时的默认归因（CLI/人可显式传 actor="human"）
@@ -82,6 +100,36 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
     "query_graph_views": {},
     "query_graph_views": {"name": "视图名（省略=列出全部；给了就把它整幅拉出来，含完整 spec）"},
     "delete_graph_view": {"name": "要删除的视图名", "reason": "一句话中文说明为什么删"},
+    "fetch_paper_html": {"arxiv_id": "论文 arXiv 编号（需已入库）",
+                         "force": "True 时即使已归档也重抓（换版本/重锚前用）",
+                         "reason": "一句话中文说明为何归档"},
+    "read_paper_outline": {"arxiv_id": "论文 arXiv 编号"},
+    "read_paper_text": {"arxiv_id": "论文 arXiv 编号",
+                        "section": "只读某一节（给节标题包含的字符串，如 'Method'）",
+                        "block": "只读某一块（给块 id，如 S3.p2）",
+                        "offset": "从该块序号/字符偏移开始（省略=从头）",
+                        "limit": "最多返回字符数（默认 6000，上限 20000）"},
+    "search_paper_text": {"arxiv_id": "论文 arXiv 编号", "q": "检索词（原文里的字样）",
+                          "limit": "最多命中条数（默认 8）"},
+    "annotate_paper": {"arxiv_id": "论文 arXiv 编号",
+                       "quote": "要被标注的**原文原句**（推荐；由后端解析成精确区间）",
+                       "block": "块 id（quote 有歧义时用它指定；或整块标注时只给 block）",
+                       "body": "批注正文（Markdown；可留空＝纯高亮）",
+                       "color": "颜色名或色值（省略＝按 kind 取默认）",
+                       "kind": "highlight（默认）| note（带批注气泡）| section（整节）| figure（整图/表）",
+                       "reason": "一句话中文说明这条批注为什么"},
+    "update_mark": {"mark_id": "批注 id", "body": "新的批注正文（省略=不动）",
+                    "status": "active|resolved（省略=不动）", "color": "新颜色（省略=不动）",
+                    "reason": "一句话中文说明改动原因"},
+    "resolve_mark": {"mark_id": "批注 id", "reason": "一句话中文说明为何标为已解决"},
+    "delete_mark": {"mark_id": "要删除的批注 id", "reason": "一句话中文说明为什么删"},
+    "verify_marks": {"arxiv_id": "论文 arXiv 编号",
+                     "since_id": "只看这个 id 之后的批注（省略=全部）"},
+    "capture_paper_shot": {"arxiv_id": "论文 arXiv 编号",
+                           "mark_id": "只拍某条批注附近（省略=整页全图）",
+                           "width": "视口宽度像素（默认 1440）",
+                           "reason": "一句话中文说明为何截图"},
+    "read_paper_shots": {"arxiv_id": "论文 arXiv 编号", "limit": "最多回几条（默认 5）"},
     "set_default_view": {"name": "已发布的视图名", "reason": "一句话中文说明为何切它"},
     "materialize_view": {"name": "视图名（省略=默认视图）",
                          "limit": "本次最多入库几篇（1-40，默认 12；arXiv 限速）",
@@ -1230,6 +1278,344 @@ def build_registry(container) -> Registry:
         if sort_by_citations:
             cits.sort(key=lambda c: -(c.get("citation_count") or 0))
         return ok(arxiv_id=arxiv_id, count=len(cits), citations=cits)
+
+    # ============================ 精读（arXiv HTML 正文 + 带位置的批注）
+    # 这是 docs/SPEC.md N2（全文解析，供精读）的落地，但**改用 HTML 而非 PDF**：HTML 有稳定 id
+    # （S3.p2 / S3.F1 / S3.E1）⇒ 能渲染、能锚定、能分节喂 AI。分工与画图同一套：
+    # **判断归 AI**（读哪节、标哪句、批注写什么），**几何归代码**（quote→字符区间、资源离线化、
+    # 页面渲染、无头截图）。明说的取舍：**arXiv 没提供 HTML 的论文不进这套体系**（如实报
+    # no_html，不回落 PDF——PDF 没有锚点，标不住）。
+    html_root = Path(settings.data_dir) / "paper_html"
+    shot_root = Path(settings.data_dir) / "shots"
+
+    def _html_dir(aid: str, version: int) -> Path:
+        return html_root / aid / f"v{int(version or 0)}"
+
+    def _version_of(url: str, html_text: str = "", aid: str = "") -> int:
+        """认出正文的 arXiv 版本号。
+
+        ⚠ 实测：arXiv 常把 `/html/<id>` 直接 302 到**不带版本号**的地址，而正文里的资源路径
+        写着 `/html/<id>v1/…` ⇒ **只认 URL 会得到 0**，而版本号是"换版本后批注是否失锚"的依据。
+        所以 URL 认不出时**从正文里认**（这才是真的那个版本）。
+        """
+        tail = (url or "").rstrip("/").split("/")[-1]
+        if "v" in tail:
+            num = tail.rsplit("v", 1)[1]
+            if num.isdigit():
+                return int(num)
+        if aid and html_text:
+            for marker in (f"/{aid}v", f"abs/{aid}v"):
+                i = html_text.find(marker)
+                while i >= 0:
+                    j, num = i + len(marker), ""
+                    while j < len(html_text) and html_text[j].isdigit():
+                        num += html_text[j]
+                        j += 1
+                    if num:
+                        return int(num)
+                    i = html_text.find(marker, i + 1)
+        return 0
+
+    def _load_blocks(aid: str) -> tuple[dict | None, list[Block]]:
+        meta = repo.get_paper_html(aid)
+        if not meta or meta.get("status") != "ok":
+            return meta, []
+        index = _html_dir(aid, meta["version"]) / "index.html"
+        if not index.exists():
+            return meta, []
+        return meta, extract_blocks(LH.fromstring(index.read_text(encoding="utf-8")))
+
+    def _need_html(aid: str):
+        """统一前置：没有正文就给出**可教学**的下一步（别让调用方猜）。"""
+        meta = repo.get_paper_html(aid)
+        if meta is None:
+            return None, err("no_html_archived", f"{aid} 还没归档 HTML 正文",
+                             hint="先调 fetch_paper_html 抓一份（arXiv 没 HTML 的抓不到）")
+        if meta.get("status") != "ok":
+            return meta, err(
+                "no_html", f"{aid} 没有可用的 HTML 正文：{meta.get('detail') or 'arXiv 未提供'}",
+                hint="这篇不进精读体系——只有 arXiv 提供 HTML 的论文才有精读页")
+        return meta, None
+
+    def _web_base() -> str:
+        """读项目根 ``.web-port`` 找正在跑的 Web（截图必须拍真实页面，不另起服务）。"""
+        port_file = Path(settings.data_dir).parent / ".web-port"
+        port = port_file.read_text(encoding="utf-8").strip() if port_file.exists() else ""
+        return f"http://127.0.0.1:{port}" if port.isdigit() else ""
+
+    def _section_slice(blocks: list[Block], name: str) -> list[Block]:
+        """按节名取一段（节名**包含匹配**）；摘要/文献表也能这样显式取到。"""
+        kinds = ("section", "bibliography", "abstract")
+        key = (name or "").strip().lower()
+        start = next((i for i, b in enumerate(blocks)
+                      if b.kind in kinds and key in (b.text or "").lower()), None)
+        if start is None:
+            return []
+        end = next((j for j in range(start + 1, len(blocks)) if blocks[j].kind in kinds),
+                   len(blocks))
+        return blocks[start:end]
+
+    @reg.tool(name="fetch_paper_html", kind="write",
+              description="下载并归档一篇论文的 **HTML 正文**（精读体系的地基）：剥脚本与事件属性、"
+                          "**全量离线**抓下样式与图片并改写为站内路径。arXiv 未提供 HTML 的论文"
+                          "如实报 no_html（不进精读体系，不回落 PDF）。重跑幂等、不可 undo。")
+    def fetch_paper_html(arxiv_id: str, force: bool = False,
+                         actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        aid = (arxiv_id or "").strip()
+        if not aid:
+            return err("bad_params", "arxiv_id 为空", hint="给一个 arXiv 编号，如 2508.06639")
+        if repo.get_paper(aid) is None:
+            return err("not_found", f"库里没有 {aid}", hint="先 fetch_paper_by_id 拉进入库")
+        old = repo.get_paper_html(aid)
+        if old and old.get("status") == "ok" and not force:
+            return ok(cached=True, version=old["version"], source=old["source"],
+                      sha256=old["sha256"], bytes=old["bytes"], assets=old["assets"],
+                      asset_bytes=old["asset_bytes"], blocks=old["blocks"], chars=old["chars"],
+                      url=f"/read/{aid}", hint="已归档；要重抓传 force=True")
+        client = PaperHtmlClient()
+        try:
+            res = fetch_html(client, aid)
+            if not res.ok:
+                repo.save_paper_html(aid, status="no_html", detail=res.detail,
+                                     actor=actor, reason=reason or f"归档 HTML 正文 {aid}")
+                return err("no_html", f"{aid} 没有 HTML 正文：{res.detail}",
+                           hint="这篇不进精读体系——arXiv 只为部分论文产出 HTML")
+            version = _version_of(res.url, res.html, aid)
+            dest = _html_dir(aid, version)
+            dest.mkdir(parents=True, exist_ok=True)
+            clean, stats = localize_and_clean(res.html, base_url=res.url, client=client,
+                                             dest=dest, app_prefix=f"/paper/{aid}")
+            (dest / "index.html").write_text(clean, encoding="utf-8")
+        finally:
+            client.close()
+        blocks = extract_blocks(LH.fromstring(clean))
+        meta = repo.save_paper_html(
+            aid, version=version, source=res.source, source_url=res.url, status="ok",
+            detail="", sha256=sha256_text(clean), bytes=len(clean.encode("utf-8")),
+            assets=stats.get("assets", 0), asset_bytes=stats.get("bytes", 0),
+            blocks=len(blocks), chars=sum(len(b.text) for b in blocks),
+            actor=actor, reason=reason or f"归档 HTML 正文 {aid}")
+        return ok(**meta, source_url=res.url, url=f"/read/{aid}", cached=False,
+                  failed_assets=stats.get("failed", [])[:5],
+                  hint="去 /read/{aid} 读；要 AI 看一眼版面就 capture_paper_shot")
+
+    @reg.tool(name="read_paper_outline", kind="read",
+              description="一篇论文的**章节树 + 锚点地图**：每节的块数与类型分布、块 id 样例。"
+                          "进正文前先看它——它告诉你「有什么、每块叫什么 id」，"
+                          "后面 read_paper_text / search_paper_text / annotate_paper 都吃这些 id。")
+    def read_paper_outline(arxiv_id: str) -> dict:
+        meta, e = _need_html(arxiv_id)
+        if e:
+            return e
+        _, blocks = _load_blocks(arxiv_id)
+        return ok(arxiv_id=arxiv_id, version=meta["version"], chars=meta["chars"],
+                  blocks=len(blocks), sections=blocks_outline(blocks),
+                  first_ids=[b.block_id for b in blocks[:8]], url=f"/read/{arxiv_id}",
+                  hint="要正文就 read_paper_text(section=…|block=…)；标哪句用 annotate_paper(quote=…)")
+
+    @reg.tool(name="read_paper_text", kind="read",
+              description="读论文正文（分块、带块 id）：可按 section / block 取，也可从头顺读。"
+                          "回程有体积闸，截断时回 next_offset 告诉你从哪继续（不静默丢内容）。")
+    def read_paper_text(arxiv_id: str, section: str = "", block: str = "",
+                        offset: int = 0, limit: int = 6000) -> dict:
+        meta, e = _need_html(arxiv_id)
+        if e:
+            return e
+        _, blocks = _load_blocks(arxiv_id)
+        if block:
+            picked = [b for b in blocks if b.block_id == block]
+            if not picked:
+                return err("block_not_found", f"没有块 {block}",
+                           hint="先用 read_paper_outline 看有哪些块 id")
+        elif section:
+            picked = _section_slice(blocks, section)
+            if not picked:
+                return err("section_not_found", f"没有匹配「{section}」的章节",
+                           hint="节名按包含匹配；用 read_paper_outline 看现有节名")
+        else:
+            # 顺读时**跳过参考文献整表**：一篇 78 条文献能把体积闸一下占满，
+            # 把真正的正文挤出回程。要读文献表就显式 `section="References"`。
+            picked = [b for b in blocks if b.kind != "bibliography"]
+        start = max(0, int(offset or 0))
+        cap = max(500, min(20000, int(limit or 6000)))
+        window = picked[start:]
+        out: list[dict] = []
+        used = 0
+        for b in window:
+            text = b.text.strip()
+            if out and used + len(text) > cap:
+                break
+            out.append({"id": b.block_id, "kind": b.kind, "section": b.section, "text": text})
+            used += len(text)
+        more = start + len(out)
+        truncated = more < len(picked)
+        return ok(arxiv_id=arxiv_id, blocks=out, truncated=truncated,
+                  total_blocks=len(picked), next_offset=more if truncated else 0,
+                  where=(f"还有 {len(picked) - more} 块没回；再调 offset={more} 续读"
+                         if truncated else ""))
+
+    @reg.tool(name="search_paper_text", kind="read",
+              description="在**一篇论文的正文里**检索：命中带块 id 与前后文——拿它定位"
+                          "「这句话在哪一块」，再用那个 block 去 annotate_paper 就精确了。")
+    def search_paper_text(arxiv_id: str, q: str, limit: int = 8) -> dict:
+        meta, e = _need_html(arxiv_id)
+        if e:
+            return e
+        _, blocks = _load_blocks(arxiv_id)
+        needle = (q or "").strip()
+        if not needle:
+            return err("bad_params", "q 为空", hint="给一个原文里出现过的词或短语")
+        keep = max(1, min(30, int(limit or 8)))
+        hits: list[dict] = []
+        for b in blocks:
+            i = b.text.find(needle)
+            if i >= 0:
+                hits.append({"block": b.block_id, "kind": b.kind, "section": b.section,
+                             "start": i, "snippet": snippet(b.text, i, i + len(needle))})
+                if len(hits) >= keep:
+                    break
+        return ok(arxiv_id=arxiv_id, q=needle, count=len(hits), hits=hits,
+                  hint="annotate_paper(quote=…) 直接给原句也行；多处命中时用 block 指定")
+
+    @reg.tool(name="annotate_paper", kind="write", reversible=True,
+              description="在论文原文上**加带位置的批注**：给一句原文（quote）或一个块 id，"
+                          "由后端解析成精确字符区间再落库（段落/句子/公式/图表都能标）。"
+                          "多处命中时回候选让你用 block 指定；找不到就报 not_found（别硬标）。"
+                          "回执里的 snippet 就是「标在哪」的证据。")
+    def annotate_paper(arxiv_id: str, quote: str = "", block: str = "", body: str = "",
+                       color: str = "", kind: str = "highlight",
+                       actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        meta, e = _need_html(arxiv_id)
+        if e:
+            return e
+        _, blocks = _load_blocks(arxiv_id)
+        if quote:
+            hit = locate_quote(blocks, quote, block_id=block)
+            if hit.reason == "block_not_found":
+                return err("block_not_found", f"没有块 {block}",
+                           hint="用 read_paper_outline 看块 id")
+            if hit.reason == "ambiguous":
+                return err("ambiguous", f"这句话在全文里出现 {hit.candidates} 次",
+                           hint="用 block 指定是哪一块（suggest 里是候选）",
+                           suggest=[a.as_dict() for a in hit.anchors])
+            if not hit.anchors:
+                return err("not_found", "没在正文里找到这句原文",
+                           hint="换一句更独特的原文；或先 search_paper_text 拿 block")
+            anchor = hit.anchors[0]
+        elif block:
+            blk = next((b for b in blocks if b.block_id == block), None)
+            if blk is None:
+                return err("block_not_found", f"没有块 {block}",
+                           hint="用 read_paper_outline 看块 id")
+            anchor = Anchor(block=block, start=0, end=len(blk.text), quote="", kind=blk.kind)
+        else:
+            return err("bad_params", "quote 与 block 至少给一个",
+                       hint="标一句就 quote='原文那句话'；标整块/整图就 block='S3.F1'")
+        snap = repo.add_mark(arxiv_id, anchor=anchor.as_dict(),
+                             quote=anchor.quote or quote, body=body, kind=kind,
+                             color=color, html_sha256=meta["sha256"],
+                             actor=actor, reason=reason)
+        blk = next((b for b in blocks if b.block_id == anchor.block), None)
+        return ok(mark=snap, block=anchor.block, kind=anchor.kind,
+                  snippet=snippet(blk.text, anchor.start, anchor.end) if blk else "",
+                  url=f"/read/{arxiv_id}#m{snap['id']}",
+                  hint="位置对不对看 snippet；要核对观感就 capture_paper_shot")
+
+    @reg.tool(name="update_mark", kind="write", reversible=True,
+              description="改一条批注（正文/状态/颜色）。改完回执仍是那条批注的完整快照。")
+    def update_mark(mark_id: int, body: str = "", status: str = "", color: str = "",
+                    actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        out = repo.update_mark(int(mark_id), body=body if body else None,
+                               status=status if status else None,
+                               color=color if color else None,
+                               actor=actor, reason=reason or f"改批注 {mark_id}")
+        if out is None:
+            return err("not_found", f"没有批注 {mark_id}", hint="verify_marks 看现有批注 id")
+        return ok(mark=out, hint="改完可 undo_change(seq=0) 撤这一版")
+
+    @reg.tool(name="resolve_mark", kind="write", reversible=True,
+              description="把一条批注标为**已解决**（问题处理完了，但痕迹留着）。")
+    def resolve_mark(mark_id: int, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        out = repo.update_mark(int(mark_id), status="resolved", actor=actor,
+                               reason=reason or f"标记已解决 {mark_id}")
+        if out is None:
+            return err("not_found", f"没有批注 {mark_id}", hint="verify_marks 看现有批注 id")
+        return ok(mark=out, hint="已解决；要重新打开用 update_mark(status='active')")
+
+    @reg.tool(name="delete_mark", kind="write", reversible=True,
+              description="**删除一条批注**（**人类专属**：不投影给 AI——精读痕迹的处置权归人；"
+                          "AI 想撤掉自己刚写的那条，用 undo_change）。")
+    def delete_mark(mark_id: int, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        out = repo.delete_mark(int(mark_id), actor=actor, reason=reason or f"删除批注 {mark_id}")
+        if out is None:
+            return err("not_found", f"没有批注 {mark_id}", hint="verify_marks 看现有批注 id")
+        return ok(**out, hint="删除已进事件总线；undo_change(seq=0) 可恢复整条")
+
+    @reg.tool(name="verify_marks", kind="read",
+              description="**批注回执**：逐条报「重锚结果 + 命中的原句 + 前后文」。标完先看它——"
+                          "位置错了一眼看得出来，不必等人截图。")
+    def verify_marks(arxiv_id: str, since_id: int = 0) -> dict:
+        meta, e = _need_html(arxiv_id)
+        if e:
+            return e
+        _, blocks = _load_blocks(arxiv_id)
+        marks = repo.marks_for(arxiv_id, since_id=int(since_id or 0))
+        rep: list[dict] = []
+        for m in marks:
+            a = m.get("anchor") or {}
+            blk = next((b for b in blocks if b.block_id == a.get("block")), None)
+            start, end = int(a.get("start") or 0), int(a.get("end") or 0)
+            rep.append({"id": m["id"], "kind": m["kind"], "status": m["status"],
+                        "block": a.get("block", ""), "resolved": blk is not None,
+                        "quote": (m["quote"] or "")[:120], "body": (m["body"] or "")[:120],
+                        "snippet": snippet(blk.text, start, end) if blk else "",
+                        "url": f"/read/{arxiv_id}#m{m['id']}"})
+        bad = [r["id"] for r in rep if not r["resolved"]]
+        return ok(arxiv_id=arxiv_id, count=len(rep), marks=rep, unresolved=bad,
+                  version=meta["version"],
+                  hint=("有批注的块对不上（正文变过？）⇒ 用 update_mark 重锚；"
+                        "要看观感用 capture_paper_shot" if bad
+                        else "全部锚定正常；要确认排版观感再 capture_paper_shot"))
+
+    @reg.tool(name="capture_paper_shot", kind="write",
+              description="**服务端无头截图**：把真实阅读页拍成 PNG 存到本地并回你文件路径——"
+                          "你用它旁边的 read_image 打开，就能看见自己标的批注长什么样、"
+                          "挡没挡住正文。「位置对但观感不对」只有这一条检查手段。")
+    def capture_paper_shot(arxiv_id: str, mark_id: int = 0, width: int = 1440,
+                           actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        meta, e = _need_html(arxiv_id)
+        if e:
+            return e
+        base = _web_base()
+        if not base:
+            return err("web_not_running", "读不到 .web-port（Web 没在跑）",
+                       hint="先起 Web（paperpilot serve / ai）；截图拍的是真实页面，不另起服务")
+        url = f"{base}/read/{arxiv_id}" + (f"?focus={int(mark_id)}" if mark_id else "")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        name = f"{stamp}-m{int(mark_id)}.png" if mark_id else f"{stamp}-full.png"
+        out = shot_root / arxiv_id / name
+        try:
+            info = shot_capture(url, out, width=max(600, min(2400, int(width or 1440))),
+                                full_page=not bool(mark_id))
+        except ShotError as exc:
+            return err("shot_unavailable", str(exc),
+                       hint="装 Edge 或 Chrome 任一即可（Chromium 内核）——本机零新依赖方案")
+        return ok(arxiv_id=arxiv_id, path=info["path"], width=info["width"],
+                  height=info["height"], bytes=info["bytes"], page=url,
+                  hint="用 read_image 打开这个 path——你看到的就是用户看到的")
+
+    @reg.tool(name="read_paper_shots", kind="read",
+              description="列出这篇论文已拍过的截图（最近优先），回本地路径——交给 read_image 看。")
+    def read_paper_shots(arxiv_id: str, limit: int = 5) -> dict:
+        d = shot_root / arxiv_id
+        files = (sorted(d.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+                 if d.exists() else [])
+        keep = max(1, min(20, int(limit or 5)))
+        return ok(arxiv_id=arxiv_id, count=len(files),
+                  shots=[{"path": str(p), "bytes": p.stat().st_size,
+                          "ts": datetime.fromtimestamp(p.stat().st_mtime).isoformat(
+                              timespec="seconds")} for p in files[:keep]],
+                  hint="用 read_image 打开 path 看真实渲染效果")
 
     reg.attach_param_descriptions(PARAM_DESCRIPTIONS)   # N8：单一事实源装入 ToolSpec.params
     return reg

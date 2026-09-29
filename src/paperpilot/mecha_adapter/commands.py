@@ -244,6 +244,16 @@ _VIEW_DELETE_PARAMS: dict[str, object] = {
     "required": ["name", "reason"],
 }
 
+#: `delete_mark` 命令的参数契约（手写）。人类专属（不进 `TOOL_DECLS`）。
+_MARK_DELETE_PARAMS: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "mark_id": {"type": "integer", "description": "要删除的批注 id"},
+        "reason": {"type": "string", "description": "一句话中文说明为什么删"},
+    },
+    "required": ["mark_id", "reason"],
+}
+
 
 def _make_cap_handler(container, cap_name: str, fields: tuple[str, ...]):
     """通用命令体：按字段名**转调能力层**（不复制第二份逻辑）。
@@ -420,6 +430,22 @@ def build_commands(container, sw) -> list[str]:
         wants_channel=True,
     ), _make_cap_handler(container, "delete_graph_view", ("name", "reason")))
     names.append("delete_graph_view")
+
+    # ⭐ **删批注的命令**（2026-09-29）：批注是精读痕迹，**处置权归人**。它同样不在
+    # `TOOL_DECLS` 里（AI 工具面没有它），这里再补 `scope=marks`（只授予 human）第二道锁；
+    # AI 想撤掉自己刚写的那条批注，走 `undo_change` 而不是删。
+    commands.register(define_command(
+        name="delete_mark",
+        description="删除一条精读批注（人类专属：精读痕迹的处置权归人；可 undo 撤销）。",
+        parameters=dict(_MARK_DELETE_PARAMS),
+        output_schema={"type": "object", "required": ["ok"]},
+        side_effect=True,
+        scope=("marks",),
+        estimate_sec=0.3,
+        cancel_supported=False,
+        wants_channel=True,
+    ), _make_cap_handler(container, "delete_mark", ("mark_id", "reason")))
+    names.append("delete_mark")
 
     # ⚠ **`reset_profile` 是"人类专属"，这条命令只为给人一个入口**（2026-09-26）：
     # 它是"重置兴趣画像锚点"——让 AI 自助改锚点等于让它改自己的标尺 ⇒ 本仓**刻意不把它
