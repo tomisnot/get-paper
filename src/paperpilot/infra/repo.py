@@ -18,7 +18,7 @@ from ..config import TopicCfg
 from ..domain.models import PaperSummary, RelevanceScore
 from ..infra.ai.errors import AIError
 from .arxiv import NormalizedPaper
-from .fts import PaperIndex
+from .fts import PaperIndex, PaperTextIndex
 from .orm import (
     AICall,
     Base,  # noqa: F401  （re-export 便于外部 import）
@@ -48,9 +48,11 @@ _READING_FIELDS = ("read", "star", "marked_skip")
 
 
 class PaperRepository:
-    def __init__(self, session_factory, index: PaperIndex | None = None) -> None:
+    def __init__(self, session_factory, index: PaperIndex | None = None,
+                 text_index: PaperTextIndex | None = None) -> None:
         self.sf = session_factory
-        self.index = index
+        self.index = index                    # 标题/摘要/卡片（papers_fts）
+        self.text_index = text_index          # 正文块级（paper_text_fts，精读体系）
 
     # ---------------------------------------------------------------- 事件（L2 记录仪）
     def _event(
@@ -1711,7 +1713,29 @@ class PaperRepository:
         no = [r for r in rows if r.status == "no_html"]
         return {"papers": int(total), "ok": len(ok), "no_html": len(no),
                 "untried": max(0, int(total) - len(rows)),
-                "bytes": sum(r.bytes + r.asset_bytes for r in ok)}
+                "bytes": sum(r.bytes + r.asset_bytes for r in ok),
+                "text_blocks_indexed": self.text_index_size()}
+
+    def index_paper_text(self, arxiv_id: str, version: int, blocks) -> int:
+        """把正文块灌进**块级**全文索引（幂等重建）。
+
+        派生数据、**不记事件**（与 papers_fts 同款）：索引删了重建即可，不是事实。
+        """
+        if self.text_index is None:
+            return 0
+        with self.sf() as s:
+            n = self.text_index.upsert(s, arxiv_id=arxiv_id, version=version, blocks=blocks)
+            s.commit()
+        return n
+
+    def search_text(self, query: str, *, limit: int = 20) -> list[dict]:
+        """跨篇块级检索：命中带 ``arxiv_id`` + ``block`` + 高亮片段（可一步跳到原文）。"""
+        if self.text_index is None:
+            return []
+        return self.text_index.search(query, limit=limit)
+
+    def text_index_size(self) -> int:
+        return self.text_index.count() if self.text_index is not None else 0
 
     # ---------------------------------------------------------------- 精读：批注（带位置）
 

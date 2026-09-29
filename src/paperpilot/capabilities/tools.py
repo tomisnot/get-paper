@@ -104,6 +104,8 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
                          "force": "True 时即使已归档也重抓（换版本/重锚前用）",
                          "reason": "一句话中文说明为何归档"},
     "read_paper_outline": {"arxiv_id": "论文 arXiv 编号"},
+    "search_library_text": {"q": "检索词（原文里的字样）",
+                            "limit": "最多命中条数（默认 20，上限 50）"},
     "read_paper_text": {"arxiv_id": "论文 arXiv 编号",
                         "section": "只读某一节（给节标题包含的字符串，如 'Method'）",
                         "block": "只读某一块（给块 id，如 S3.p2）",
@@ -1389,6 +1391,7 @@ def build_registry(container) -> Registry:
         finally:
             client.close()
         blocks = extract_blocks(LH.fromstring(clean))
+        indexed = repo.index_paper_text(aid, version, blocks)   # 块级全文索引（融合检索）
         meta = repo.save_paper_html(
             aid, version=version, source=res.source, source_url=res.url, status="ok",
             detail="", sha256=sha256_text(clean), bytes=len(clean.encode("utf-8")),
@@ -1396,8 +1399,19 @@ def build_registry(container) -> Registry:
             blocks=len(blocks), chars=sum(len(b.text) for b in blocks),
             actor=actor, reason=reason or f"归档 HTML 正文 {aid}")
         return ok(**meta, source_url=res.url, url=f"/read/{aid}", cached=False,
+                  text_blocks_indexed=indexed,
                   failed_assets=stats.get("failed", [])[:5],
                   hint="去 /read/{aid} 读；要 AI 看一眼版面就 capture_paper_shot")
+
+    @reg.tool(name="search_library_text", kind="read",
+              description="在**已归档正文**里跨篇检索（**块级**）：命中回 arxiv_id + 块 id + 高亮片段，"
+                          "可一步跳到原文那一段。与 search_papers（标题/摘要/卡片）互补——"
+                          "那个答「哪篇相关」，这个答「原文在哪说」。")
+    def search_library_text(q: str, limit: int = 20) -> dict:
+        hits = repo.search_text(q, limit=max(1, min(50, int(limit or 20))))
+        return ok(q=q, count=len(hits), hits=hits, indexed_blocks=repo.text_index_size(),
+                  hint="命中给的是**块**：用 read_paper_text(block=…) 读全段；"
+                       "要人去看就把 /read/{arxiv_id} 给他")
 
     @reg.tool(name="read_paper_outline", kind="read",
               description="一篇论文的**章节树 + 锚点地图**：每节的块数与类型分布、块 id 样例。"
@@ -1602,7 +1616,10 @@ def build_registry(container) -> Registry:
                        hint="装 Edge 或 Chrome 任一即可（Chromium 内核）——本机零新依赖方案")
         return ok(arxiv_id=arxiv_id, path=info["path"], width=info["width"],
                   height=info["height"], bytes=info["bytes"], page=url,
-                  hint="用 read_image 打开这个 path——你看到的就是用户看到的")
+                  too_tall=info["height"] >= 8000,
+                  hint=("这篇太长，整页图到了 8000px 上限——**多模态读图读不了这么高的图**；"
+                        "改拍局部：capture_paper_shot(mark_id=…) 或调小 width" if info["height"] >= 8000
+                        else "用 read_image 打开这个 path——你看到的就是用户看到的"))
 
     @reg.tool(name="read_paper_shots", kind="read",
               description="列出这篇论文已拍过的截图（最近优先），回本地路径——交给 read_image 看。")

@@ -56,12 +56,12 @@ def test_every_capability_projected_exactly_once(tmp_path):
     """
     container, _stack_ = _stack(tmp_path)
     cap_names = set(registry_for(container).names())
-    assert len(cap_names) == 57
+    assert len(cap_names) == 58
     # 人类专属写能力（不投影给 AI）：reset_profile＝防自改画像锚；
     # delete_graph_view＝图是作品、处置权归人；delete_mark＝批注是精读痕迹、处置权归人。
     human_only = {"reset_profile", "delete_graph_view", "delete_mark"}
     assert set(TOOL_TO_CAPABILITY.values()) == cap_names - human_only
-    assert len(set(TOOL_TO_CAPABILITY)) == len(TOOL_TO_CAPABILITY) == 54
+    assert len(set(TOOL_TO_CAPABILITY)) == len(TOOL_TO_CAPABILITY) == 55
 
 
 def test_tool_parameters_derive_from_capability_no_drift(tmp_path):
@@ -122,10 +122,10 @@ def test_required_projection_not_hollowed_by_kwargs(tmp_path):
 
 
 def test_expected_tools_covers_config_and_authority_surface():
-    """不许误报：模型可见面 = 54 投影能力 + 非能力面 6 = **60 工具**。
+    """不许误报：模型可见面 = 55 投影能力 + 非能力面 6 = **61 工具**。
 
     （三个能力人类专属、刻意不投影：reset_profile / delete_graph_view / delete_mark。）
     """
     from tests.test_mecha_adapter import NON_CAPABILITY_TOOLS
     assert EXPECTED_TOOLS == set(TOOL_TO_CAPABILITY) | NON_CAPABILITY_TOOLS
-    assert len(EXPECTED_TOOLS) == 60
+    assert len(EXPECTED_TOOLS) == 61

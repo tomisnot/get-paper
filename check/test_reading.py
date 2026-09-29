@@ -25,7 +25,6 @@ from paperpilot.infra.paperhtml import (
     outline,
     sanitize,
 )
-
 from .conftest import SAMPLE_XML, make_settings
 
 #: 一份"像 LaTeXML 产出"的最小正文：有 id、有图、有一处**没有 id** 的段落，还有一个脚本。
@@ -51,7 +50,7 @@ def _paper(container, i: int = 0) -> str:
 
 
 def _archive(container, arxiv_id: str, html_text: str = FIXTURE, version: int = 1) -> None:
-    """把一份正文"归档"成 fetch_paper_html 会落的样子（含补 id 这一步）。"""
+    """把一份正文"归档"成 fetch_paper_html 会落的样子（补 id + **入块级全文索引**两步）。"""
     root = LH.fromstring(html_text)
     sanitize(root)
     ensure_block_ids(root)
@@ -59,10 +58,34 @@ def _archive(container, arxiv_id: str, html_text: str = FIXTURE, version: int = 
     base = container.settings.data_dir / "paper_html" / arxiv_id / f"v{version}"
     base.mkdir(parents=True, exist_ok=True)
     (base / "index.html").write_text(clean, encoding="utf-8")
+    container.repo.index_paper_text(arxiv_id, version, extract_blocks(LH.fromstring(clean)))
     container.repo.save_paper_html(arxiv_id, version=version, source="arxiv",
                                    source_url=f"https://arxiv.org/html/{arxiv_id}v{version}",
                                    status="ok", sha256="deadbeef", bytes=len(clean),
                                    assets=0, asset_bytes=0, actor="ai", reason="判据")
+
+
+def test_library_text_search_lands_on_the_block(tmp_path):
+    """**与检索融合**：正文进块级全文索引 ⇒ 跨篇搜「原文在哪说」直接给到那一段。
+
+    这是精读与全库检索的接缝：`search_papers` 答"哪篇相关"，`search_library_text` 答
+    "原文在哪一句"——命中必须带 `arxiv_id` + 块 id，否则跳不到原文。
+    """
+    c = _container(tmp_path)
+    aid = _paper(c)
+    _archive(c, aid)
+    reg = registry_for(c)
+    assert c.repo.text_index_size() > 0
+
+    hit = reg.invoke("search_library_text", q="hallmark of confinement")
+    assert hit["ok"] and hit["count"] >= 1
+    first = hit["hits"][0]
+    assert first["arxiv_id"] == aid
+    assert first["block"], "命中没带块 id ⇒ 跳不到原文（这条接缝就断了）"
+    assert "confine" in first["snippet"].lower()
+
+    assert reg.invoke("search_library_text", q="")["count"] == 0       # 空词不崩、不瞎给
+    assert reg.invoke("search_library_text", q="绝不存在的词zzz")["count"] == 0
 
 
 # ---------------------------------------------------------------- 消毒与块清单

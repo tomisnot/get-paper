@@ -31,7 +31,10 @@ _NAMES = ("msedge", "chrome", "chromium", "chromium-browser", "google-chrome")
 #: 截图默认参数：宽度按阅读页布局，最小高度兜底。
 DEFAULT_WIDTH = 1440
 MIN_HEIGHT = 720
-MAX_HEIGHT = 12000
+#: 上限 **8000**（不是随便定的）：多模态读图有硬限制——实测 8192px 以上**根本读不进来**
+#: （"at least one image side exceeds the 8192px limit"）。一篇 8 万字的论文整页能到 1.2 万像素，
+#: 那样拍出来的图 AI 看不见 ⇒ **长论文要拍局部**（按 mark_id 聚焦），整页图只适合人看。
+MAX_HEIGHT = 8000
 _HEIGHT_RE = re.compile(r'data-pp-height="(\d+)"')
 _LAUNCH_TIMEOUT = 90
 

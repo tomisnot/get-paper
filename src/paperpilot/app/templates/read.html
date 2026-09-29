@@ -106,6 +106,7 @@
   const FOCUS = {{ focus|int }};
   const SHOT = {{ shot|int }};
   const COLORS = {highlight: "#fde68a", note: "#bfdbfe", section: "#e9d5ff", figure: "#bbf7d0"};
+  const EDGE = {highlight: "#f59e0b", note: "#3b82f6", section: "#a855f7", figure: "#22c55e"};
   let maxId = {{ (marks|map(attribute="id")|max) if marks else 0 }};
   const frame = document.getElementById("paper");
 
@@ -154,8 +155,14 @@
       el.id = "m" + m.id;
       el.dataset.markId = m.id;
       el.title = (m.body || m.quote || "").slice(0, 300);
-      el.style.background = m.color || COLORS[m.kind] || COLORS.highlight;
-      el.style.borderRadius = "2px";
+      // 只铺浅底在 arXiv 自己的样式下几乎看不出"标了"（**实测截图确认**：note 的浅蓝在白底上
+      // 几乎不可辨）⇒ 同色系 2px 下边框一并给上，一眼可辨。这是"多模态自查看得出效果"的前提。
+      const bg = m.color || COLORS[m.kind] || COLORS.highlight;
+      el.style.background = bg;
+      el.style.color = "inherit";                 // 别被 arXiv 对 mark 的默认样式改掉字色
+      el.style.padding = "1px 0";
+      el.style.borderRadius = "3px";
+      el.style.borderBottom = "2px solid " + (m.color || EDGE[m.kind] || EDGE.highlight);
       el.style.cursor = "pointer";
       el.addEventListener("click", function () { hiliteSidebar(m.id); });
       try { r.surroundContents(el); ok++; } catch (e) { markStale(m.id); }

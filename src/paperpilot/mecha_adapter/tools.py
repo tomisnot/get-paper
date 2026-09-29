@@ -202,6 +202,9 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
     ToolDecl("read_paper_outline", "read_paper_outline", "read",
              "一篇论文的章节树 + 锚点地图：每节的块数与类型分布、块 id 样例。"
              "进正文前先看它——后面的读/检索/批注都吃这些块 id。"),
+    ToolDecl("search_library_text", "search_library_text", "read",
+             "在已归档正文里跨篇检索（块级）：命中回论文 + 块 + 高亮片段，可一步跳到原文那一段。"
+             "与 search_papers 互补——那个答「哪篇相关」，这个答「原文在哪说」。"),
     ToolDecl("read_paper_text", "read_paper_text", "read",
              "读论文正文（分块、带块 id）：可按章节/块取，也可从头顺读；截断时回 next_offset。"),
     ToolDecl("search_paper_text", "search_paper_text", "read",

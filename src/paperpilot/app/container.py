@@ -25,7 +25,7 @@ from ..infra.ai import (
 from ..infra.ai.errors import AIError
 from ..infra.ai.unified import resolve_api_key
 from ..infra.db import init_db, make_engine, make_session_factory
-from ..infra.fts import PaperIndex
+from ..infra.fts import PaperIndex, PaperTextIndex
 from ..infra.notify import NullNotifier, WebhookNotifier
 from ..infra.render import MarkdownBriefRenderer
 from ..infra.repo import PaperRepository
@@ -57,7 +57,8 @@ def build_container(settings: Settings | None = None) -> Container:
     engine = make_engine(settings.db_path)
     init_db(engine)
     index = PaperIndex(engine)
-    repo = PaperRepository(make_session_factory(engine), index=index)
+    text_index = PaperTextIndex(engine)          # 正文块级（精读体系）：跨篇搜"原文在哪说"
+    repo = PaperRepository(make_session_factory(engine), index=index, text_index=text_index)
     # ⭐ **启动期两次写也留痕**（2026-09-26）：从前它们只在框架外悄悄发生——
     # 建表/迁移与"把 YAML 主题真相源对齐进 DB"都是**域状态改动**，却没有任何地方能事后看出
     # "这次启动干了什么"。两条都记**域 journal**（`record_op`：只读面的使用日志，`reversible=0`、

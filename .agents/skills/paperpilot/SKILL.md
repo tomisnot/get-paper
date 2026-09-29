@@ -5,12 +5,12 @@ description: >-
   生成日报或月度合集、刷推荐流（feed）、查引文脉络/文献计量、画引文网络视图、
   陪用户精读 HTML 正文并加批注、做资产盘点与趋势统计、调主题/配额/画像参数时必读。
   含「怎么干活」四大工作流（日报 / 推荐流 / 引文网络 / 精读）与项目信条；
-  60 个工具全部入册；AI 面唯一禁忌是 reset_profile。
+  61 个工具全部入册；AI 面唯一禁忌是 reset_profile。
 ---
 
 # PaperPilot 操作纪律（AI 面）
 
-> 本文件与工具注册表由判据强制同步（tests/test_skill_sync.py：60 工具漏一个就红）。
+> 本文件与工具注册表由判据强制同步（tests/test_skill_sync.py：61 工具漏一个就红）。
 > 改工具的人必须同时改这里，否则 CI 不答应。
 >
 > **本文只讲两件事：我们怎么想（§1）、活怎么干（§3）。§4 工具表是查表用的，不是读物。**
@@ -271,18 +271,22 @@ gate 值（`set_config`）直通全段但被显式参数再覆盖。**用户点�
   你写错了就用 `undo_change(seq=0)` 撤掉自己刚写的那条。
 - 截图拍的是**真实页面**，所以 Web 必须在跑；没跑就如实报 `web_not_running`，别假装拍到了。
 
-## 4. 工具全表（60；反引号内＝真实工具名，这是查表不是读物）
+## 4. 工具全表（61；反引号内＝真实工具名，这是查表不是读物）
 
 **读·认知**：`read_paper` 详情+总结+打分史+笔记 | `search_papers` 库内检索(FTS5,offset 分页) |
 `read_digest` 简报全文/纯统计 | `query_briefings` 历史简报清单(管理面) | `query_topics` 主题含
 authors | `read_config` / `review_status` 评审进度 | `read_activity` 事件+运行+AI 成本 |
 `query_profile` 画像 top 权重+分类熵 | `read_authority` 写权现状。
 
-**精读（HTML 正文 + 批注）**：`fetch_paper_html` 归档正文（全量离线）|
+**精读（HTML 正文 + 批注）**：`fetch_paper_html` 归档正文（全量离线，**同时入块级全文索引**）|
 `read_paper_outline` 章节树+锚点地图 | `read_paper_text` 分块读正文 | `search_paper_text` 篇内检索 |
+**`search_library_text` 跨篇正文检索**（命中回论文+块+高亮片段，可跳到原文那段）|
 `annotate_paper` 在原文上加批注（quote→精确区间）| `update_mark` / `resolve_mark` 改/收尾 |
 `verify_marks` 批注回执（标完先看它）| `capture_paper_shot` 服务端无头截图（配 `read_image` 看）|
 `read_paper_shots` 列历史截图。**`delete_mark` 人类专属、不投影给你。**
+
+> 两个检索的分工：`search_papers` 答「**哪篇**相关」（标题/摘要/卡片）；`search_library_text`
+> 答「**原文在哪说**」（正文块级）。想找"谁提过这个说法"，用后者。
 
 **引文与计量**（外部源实时，缓存过）：`paper_metrics` 一篇的影响力度量 | `read_references` 向前追溯
 （按被引排序=奠基候选，带 intents）| `read_citations` 向后看扩散 | `sync_citations` 把引用边落本地
