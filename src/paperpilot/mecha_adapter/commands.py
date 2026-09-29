@@ -233,6 +233,39 @@ def _make_note_delete_handler(container):
     return handler
 
 
+#: `delete_graph_view` 命令的参数契约（手写）。人类专属（不进 `TOOL_DECLS`）。
+#: 注：`set_default_view` 无需手写契约——它在 `TOOL_DECLS` 里，参数由能力声明机械派生。
+_VIEW_DELETE_PARAMS: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "description": "要删除的视图名"},
+        "reason": {"type": "string", "description": "一句话中文说明为什么删"},
+    },
+    "required": ["name", "reason"],
+}
+
+
+def _make_cap_handler(container, cap_name: str, fields: tuple[str, ...]):
+    """通用命令体：按字段名**转调能力层**（不复制第二份逻辑）。
+
+    与 `_make_profile_handler` 同款，只是字段可变——省得每条"人类入口"再抄一遍 handler。
+    `actor` 由**通道**钉死（human 侧恒 human），命令自身不改归因。
+    """
+    from .. import capabilities
+
+    def handler(context=None, channel=None, **args):
+        kw = {f: args.get(f) for f in fields if f != "reason"}
+        kw["actor"] = channel.actor
+        kw["reason"] = str(args.get("reason") or "")
+        res = capabilities.invoke(container, cap_name, **kw)
+        if not res.get("ok"):
+            return CommandResult(ok=False, values={"ok": False},
+                                 error=envelope_to_error(res))
+        return CommandResult(ok=True, values=dict(res))
+
+    return handler
+
+
 #: `set_config_batch` 的参数契约（手写）。`items` = {键: 值}；`reason` 必须进 required。
 _CONFIG_BATCH_PARAMS: dict[str, object] = {
     "type": "object",
@@ -369,6 +402,24 @@ def build_commands(container, sw) -> list[str]:
         wants_channel=True,            # handler 要 channel：`gate.set` 的写权看 side
     ), _make_config_handler(sw.gate))
     names.append("set_config")
+
+    # ⭐ **删视图的命令**（2026-09-29）：画出来的图是"作品"，要能像简报一样随时拉出来看、改、删。
+    #  注：`set_default_view`（切首屏渲染哪张）**不需要在这里登记**——它是投影过的写工具，
+    #  上面的 `for decl in TOOL_DECLS` 已经自动给它注册了命令（scope 落到缺省的 `library`，两侧放行）。
+    #  而 `delete_graph_view` **不在 TOOL_DECLS 里**（AI 工具面没有它）⇒ 必须手写一条命令，
+    #  让人的按钮也走同一道门，并用 `scope=views`（只授予 human）把"删除归人"落成规则。
+    commands.register(define_command(
+        name="delete_graph_view",
+        description="删除一张已发布的图视图（人类专属：作品的处置权归人；可 undo 撤销）。",
+        parameters=dict(_VIEW_DELETE_PARAMS),
+        output_schema={"type": "object", "required": ["ok"]},
+        side_effect=True,
+        scope=("views",),
+        estimate_sec=0.3,
+        cancel_supported=False,
+        wants_channel=True,
+    ), _make_cap_handler(container, "delete_graph_view", ("name", "reason")))
+    names.append("delete_graph_view")
 
     # ⚠ **`reset_profile` 是"人类专属"，这条命令只为给人一个入口**（2026-09-26）：
     # 它是"重置兴趣画像锚点"——让 AI 自助改锚点等于让它改自己的标尺 ⇒ 本仓**刻意不把它

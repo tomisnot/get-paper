@@ -61,17 +61,27 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "max_nodes": "布点上限（4-400）",
         "max_edges": "画边上限（10-3000，按被引数采样）",
         "group_quota": "每组保底篇数（0-50，防高被引把少数派挤掉）",
-        "sort_within": "weight（按库内同引）| year（按年份）",
+        "sort_within": "weight（按库内同引）| year（按年份）| align（**按连接重心对齐**，"
+                       "把有引用关系的点上下对齐、连线最短；与 rank 可同时用）",
         "size_by": "degree|weight|flat（节点大小依据）",
         "layer_gap": "层距/列距像素（40-400）",
         "node_gap": "同层节点间距像素（24-300）",
         "pin": "锚点 arXiv 编号（逗号分隔，永不截断）",
+        "rank": "**AI 的显式优先级**（arXiv 编号按重要性排序，逗号分隔）——压过度数与分组，"
+                "配 place=center 让骨干贴着中轴、连线最短",
+        "place": "lane（按组聚簇成泳道）| center（按 rank 从行中心向两侧展开）",
+        "layers": "**自定义分层**：'arxiv:层号' 逗号分隔（层号：负＝上游第几跳、0＝本体、正＝下游），"
+                  "压过 BFS 跳数——按你分析出的逻辑关系分层；只认图里有边的 id",
+        "mode": "auto＝机器替你捞一圈的**草稿**（供你读一眼再决定）| curated＝**你点名的清单**"
+                "（layers 即内容：点名的才上图，机器不加不减、不算配额；写下的顺序即层内次序）",
         "title": "视图标题（页头那行话）",
         "group_map": "'arxiv:组名' 逗号分隔（自定义叙事分组，替代固定六色）",
         "group_colors": "'组名:#色值' 逗号分隔",
         "is_default": "True 时设为默认视图",
         "reason": "一句话中文说明这张图要表达什么"},
     "query_graph_views": {},
+    "query_graph_views": {"name": "视图名（省略=列出全部；给了就把它整幅拉出来，含完整 spec）"},
+    "delete_graph_view": {"name": "要删除的视图名", "reason": "一句话中文说明为什么删"},
     "set_default_view": {"name": "已发布的视图名", "reason": "一句话中文说明为何切它"},
     "materialize_view": {"name": "视图名（省略=默认视图）",
                          "limit": "本次最多入库几篇（1-40，默认 12；arXiv 限速）",
@@ -318,62 +328,110 @@ def build_registry(container) -> Registry:
 
     # ============================================================== M4 调研基建：引文网络/覆盖率/趋势/作者
     @reg.tool(name="sync_citations", kind="write", reversible=True,
-              description="把一篇在库论文的引用边（它引用了谁）落库成本地图谱；重跑幂等替换。"
-                          "落完 upstream_clusters/related_papers 本地免费查，不再消耗 S2 额度。")
+              description="把在库论文的引用边（它引用了谁）落库成本地图谱；重跑幂等替换。"
+                          "**支持逗号分隔多篇一次织**（curated 画图前把清单里的边一次补齐，"
+                          "别为三十篇调三十次）。落完 upstream_clusters/related_papers 本地免费查。")
     def sync_citations(arxiv_id: str, limit: int = 40,
                        actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
-        if repo.get_paper(arxiv_id) is None:
-            return err("not_found", f"库里没有 {arxiv_id}",
-                       hint="先 fetch_paper_by_id 拉进入库")
-        client = _scholar()
-        try:
-            items = client.references(arxiv_ext_id(arxiv_id), limit=min(int(limit), 100))
-        finally:
-            client.close()
-        rows = []
-        for it in items:
-            p = it.get("citedPaper") or {}
-            ext = p.get("externalIds") or {}
-            aid = (ext.get("ArXiv") or p.get("arxiv_id") or "").strip()
-            if not aid:
-                continue                      # 只留有 arXiv 号的边（可溯可互引）
-            rows.append({"arxiv_id": aid, "title": p.get("title") or "",
-                         "citation_count": p.get("citationCount") or 0,
-                         "year": p.get("year") or 0,          # 年代编排（timeline）要用
-                         "influential": bool(it.get("isInfluential"))})
-        out = repo.replace_citation_edges(arxiv_id, rows, actor=actor,
-                                          reason=reason or f"落库引文边 {arxiv_id}")
-        return ok(arxiv_id=arxiv_id, edges=out["added"], replaced=out["replaced"],
-                  hint="本地图谱已更新；upstream_clusters 聚合簇、related_papers 找同伙")
+        ids = [x.strip() for x in (arxiv_id or "").replace("，", ",").split(",") if x.strip()]
+        if not ids:
+            return err("bad_params", "arxiv_id 为空",
+                       hint="给一个或多个 arXiv 编号（逗号分隔），如 '2508.06639,1902.09551'")
+
+        def _one(aid: str) -> dict:
+            if repo.get_paper(aid) is None:
+                return err("not_found", f"库里没有 {aid}",
+                           hint="先 fetch_paper_by_id 拉进入库")
+            client = _scholar()
+            try:
+                items = client.references(arxiv_ext_id(aid), limit=min(int(limit), 100))
+            finally:
+                client.close()
+            rows = []
+            for it in items:
+                p = it.get("citedPaper") or {}
+                ext = p.get("externalIds") or {}
+                dst = (ext.get("ArXiv") or p.get("arxiv_id") or "").strip()
+                if not dst:
+                    continue                      # 只留有 arXiv 号的边（可溯可互引）
+                rows.append({"arxiv_id": dst, "title": p.get("title") or "",
+                             "citation_count": p.get("citationCount") or 0,
+                             "year": p.get("year") or 0,      # 年代编排（timeline）要用
+                             "influential": bool(it.get("isInfluential"))})
+            out = repo.replace_citation_edges(aid, rows, actor=actor,
+                                              reason=reason or f"落库引文边 {aid}")
+            return ok(arxiv_id=aid, edges=out["added"], replaced=out["replaced"])
+
+        if len(ids) == 1:                          # 单篇：回执形状与从前一致
+            r = _one(ids[0])
+            if r.get("ok"):
+                r["hint"] = "本地图谱已更新；upstream_clusters 聚合簇、related_papers 找同伙"
+            return r
+        done: list[dict] = []
+        failed: list[dict] = []
+        for aid in ids:
+            r = _one(aid)
+            if r.get("ok"):
+                done.append({"arxiv_id": aid, "edges": r["edges"]})
+            else:
+                failed.append({"arxiv_id": aid,
+                               "error": (r.get("error") or {}).get("kind", "error")})
+        return ok(count=len(done), failed=failed, items=done,
+                  edges=sum(d["edges"] for d in done),
+                  hint="清单里的边一次补齐；failed 的那些先 fetch_paper_by_id 入库再补织")
 
     @reg.tool(name="sync_cited_by", kind="write",
               description="反查'谁引用了这篇'入图（S2 citations → 反向边）：下游扩散在 /network 独立成层；"
-                          "引用者可未入库（节点点击自动入库）。增量幂等加边，不可 undo（重建用 sync_citations）。")
+                          "引用者可未入库（节点点击自动入库）。**支持逗号分隔多篇一次织**。"
+                          "增量幂等加边，不可 undo（重建用 sync_citations）。")
     def sync_cited_by(arxiv_id: str, limit: int = 40,
                       actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
-        if repo.get_paper(arxiv_id) is None:
-            return err("not_found", f"库里没有 {arxiv_id}",
-                       hint="先 fetch_paper_by_id 拉进入库")
-        client = _scholar()
-        try:
-            items = client.citations(arxiv_ext_id(arxiv_id), limit=min(int(limit), 100))
-        finally:
-            client.close()
-        rows = []
-        for it in items:
-            p = it.get("citingPaper") or {}
-            ext = p.get("externalIds") or {}
-            aid = (ext.get("ArXiv") or "").strip()
-            if aid and aid != arxiv_id:
-                rows.append({"src": aid, "dst": arxiv_id, "title": p.get("title") or aid,
-                             "citations": p.get("citationCount") or 0,
-                             "year": p.get("year") or 0,
-                             "influential": bool(it.get("isInfluential"))})
-        added = repo.add_citation_edges(rows, actor=actor,
-                                        reason=reason or f"反查 {arxiv_id} 的下游扩散",
-                                        target=arxiv_id)
-        return ok(arxiv_id=arxiv_id, added=added,
-                  hint=f"/network?root={arxiv_id} 刷新即可见下游层（引用者可未入库）")
+        ids = [x.strip() for x in (arxiv_id or "").replace("，", ",").split(",") if x.strip()]
+        if not ids:
+            return err("bad_params", "arxiv_id 为空",
+                       hint="给一个或多个 arXiv 编号（逗号分隔）")
+
+        def _one(aid: str) -> dict:
+            if repo.get_paper(aid) is None:
+                return err("not_found", f"库里没有 {aid}",
+                           hint="先 fetch_paper_by_id 拉进入库")
+            client = _scholar()
+            try:
+                items = client.citations(arxiv_ext_id(aid), limit=min(int(limit), 100))
+            finally:
+                client.close()
+            rows = []
+            for it in items:
+                p = it.get("citingPaper") or {}
+                ext = p.get("externalIds") or {}
+                src = (ext.get("ArXiv") or "").strip()
+                if src and src != aid:
+                    rows.append({"src": src, "dst": aid, "title": p.get("title") or src,
+                                 "citations": p.get("citationCount") or 0,
+                                 "year": p.get("year") or 0,
+                                 "influential": bool(it.get("isInfluential"))})
+            added = repo.add_citation_edges(rows, actor=actor,
+                                            reason=reason or f"反查 {aid} 的下游扩散",
+                                            target=aid)
+            return ok(arxiv_id=aid, added=added)
+
+        if len(ids) == 1:                          # 单篇：回执形状与从前一致
+            r = _one(ids[0])
+            if r.get("ok"):
+                r["hint"] = f"/network?root={ids[0]} 刷新即可见下游层（引用者可未入库）"
+            return r
+        done: list[dict] = []
+        failed: list[dict] = []
+        for aid in ids:
+            r = _one(aid)
+            if r.get("ok"):
+                done.append({"arxiv_id": aid, "added": r["added"]})
+            else:
+                failed.append({"arxiv_id": aid,
+                               "error": (r.get("error") or {}).get("kind", "error")})
+        return ok(count=len(done), failed=failed, items=done,
+                  added=sum(d["added"] for d in done),
+                  hint="下游一次补齐；failed 的那些先入库再补织")
 
     @reg.tool(name="tag_paper", kind="write", reversible=True,
               description="给在库论文钉一枚图论标签（六色：平台源头/理论源头/综述枢纽/"
@@ -428,9 +486,14 @@ def build_registry(container) -> Registry:
 
     @reg.tool(name="set_graph_view", kind="write", reversible=True,
               description="**发布一张图视图**——/network 无参数打开就渲染它（AI 画什么，页面显示什么）。"
-                          "根/深度/方向/布局/分组/着色/标签/预算/锚点一次定完；重名覆盖，is_default=True 时"
-                          "把默认指针挪过来。sides=both ⇒ 根居中、**上游（它引的）在上、下游（引用它的）在下**；"
-                          "timeline 布局＝年代列；group_by=tag 出泳道标题；color_by=auto 时有标签就按标签着色。")
+                          "重名覆盖，is_default=True 时把默认指针挪过来。"
+                          "**两种模式**：`mode=curated`＝**你点名的清单**（`layers='id:层号,…'` 就是内容："
+                          "点名的才上图，写下的顺序即层内次序——**这张图表达的是你的理解**）；"
+                          "`mode=auto`＝机器按 `root`+`depth` 替你捞一圈的**草稿**，供你读一眼再决定。"
+                          "`sides=both` ⇒ 上游（它引的）在上、下游（引用它的）在下；"
+                          "`place=center` ⇒ 按 `rank` 从行中心向两侧展开（骨干贴中轴、连线最短）；"
+                          "`sort_within=align` ⇒ 按连接重心对齐（线最短，可与 center 同开）；"
+                          "timeline 布局＝年代列；`group_by=tag` 出泳道标题；`color_by=auto` 时按标签着色。")
     def set_graph_view(name: str = "默认视图", root: str = "", depth: int = 2,
                        sides: str = "both",
                        layout: str = "layer", color_by: str = "auto",
@@ -441,7 +504,9 @@ def build_registry(container) -> Registry:
                        group_quota: int = 0, sort_within: str = "weight",
                        size_by: str = "degree", layer_gap: int = 130, node_gap: int = 90,
                        in_lib_only: bool = False,
-                       pin: str = "", title: str = "",
+                       pin: str = "", rank: str = "", place: str = "lane",
+                       layers: str = "", mode: str = "auto",
+                       title: str = "",
                        group_map: str = "", group_colors: str = "",
                        is_default: bool = True,
                        actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
@@ -467,7 +532,8 @@ def build_registry(container) -> Registry:
             "max_edges": max_edges, "group_quota": group_quota, "sort_within": sort_within,
             "size_by": size_by, "layer_gap": layer_gap, "node_gap": node_gap,
             "in_lib_only": in_lib_only,
-            "pin": pin, "title": title or name,
+            "pin": pin, "rank": rank, "place": place, "layers": layers, "mode": mode,
+            "title": title or name,
             "group_map": gmap, "group_colors": gcol,
         })
         out = repo.save_graph_view(name, spec, is_default=bool(is_default),
@@ -481,17 +547,42 @@ def build_registry(container) -> Registry:
                        "细节看 /network.json；发错了 undo_change 撤这一版")
 
     @reg.tool(name="query_graph_views", kind="read",
-              description="列出已发布的图视图（名字/是否默认/spec 摘要）：切默认或复用前先看这里。")
-    def query_graph_views() -> dict:
+              description="列出已发布的图视图；**给 name 就把那一张整幅拉出来**"
+                          "（完整 spec：模式/层号清单/层内次序/锚点/配色/标题）——"
+                          "改图前先拉出来看，别凭记忆重写。")
+    def query_graph_views(name: str = "") -> dict:
+        want = (name or "").strip()
+        if want:                                   # 拉出单张 = "把我的作品取回来"
+            row = repo.get_graph_view(want)
+            if row is None:
+                return err("not_found", f"没有这张视图：{want}",
+                           hint="不带 name 先列一下已发布的视图名")
+            spec = row["spec"] or {}
+            return ok(name=row["name"], is_default=row["is_default"], spec=spec,
+                      ts=row["ts"], actor=row["actor"], reason=row["reason"],
+                      named=len(spec.get("layers") or {}),
+                      hint="改这张：把 spec 里的字段照抄进 set_graph_view、同名覆盖即可")
         views = repo.list_graph_views()
         return ok(views=[{"name": v["name"], "is_default": v["is_default"],
                           "title": (v["spec"] or {}).get("title", ""),
+                          "mode": (v["spec"] or {}).get("mode", "auto"),
                           "root": (v["spec"] or {}).get("root", ""),
+                          "named": len((v["spec"] or {}).get("layers") or {}),
                           "layout": (v["spec"] or {}).get("layout", ""),
                           "color_by": (v["spec"] or {}).get("color_by", "")}
                          for v in views],
                   count=len(views),
-                  hint="没有想要的视图就 set_graph_view 发一张（默认视图即 /network 首屏）")
+                  hint="要看/要改哪张，就用 query_graph_views(name='视图名') 把它整幅拉出来")
+
+    @reg.tool(name="delete_graph_view", kind="write", reversible=True,
+              description="**删除一张已发布的图视图**（**人类专属**：不投影给 AI——图的删除归人；"
+                          "AI 想删请让人在 /settings 的「视图管理」里点）。")
+    def delete_graph_view(name: str, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
+        out = repo.delete_graph_view(name, actor=actor,
+                                     reason=reason or f"删除视图 {name}")
+        return ok(**out,
+                  hint="删除已进事件总线（存了 spec 快照）；/activity 可 undo，"
+                       "或让 AI 调 undo_change(seq=0)")
 
     @reg.tool(name="set_default_view", kind="write", reversible=True,
               description="把某张已发布视图设为默认（/network 无参数渲染它）。")

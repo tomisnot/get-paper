@@ -56,9 +56,11 @@ def test_every_capability_projected_exactly_once(tmp_path):
     """
     container, _stack_ = _stack(tmp_path)
     cap_names = set(registry_for(container).names())
-    assert len(cap_names) == 45
-    # 人类专属写能力（不投影给 AI，防自改画像锚）：重置画像是当前唯一成员。
-    assert set(TOOL_TO_CAPABILITY.values()) == cap_names - {"reset_profile"}
+    assert len(cap_names) == 46
+    # 人类专属写能力（不投影给 AI）：reset_profile＝防自改画像锚；delete_graph_view＝
+    # "画出来的图是作品，处置权归人"（2026-09-29）。
+    human_only = {"reset_profile", "delete_graph_view"}
+    assert set(TOOL_TO_CAPABILITY.values()) == cap_names - human_only
     assert len(set(TOOL_TO_CAPABILITY)) == len(TOOL_TO_CAPABILITY) == 44
 
 

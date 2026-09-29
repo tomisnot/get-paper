@@ -66,7 +66,8 @@ def test_scope_policy_table_matches_intent(tmp_path):
     """④ **允许表本身要有守卫**（否则"绑歪了"没人看得见）。
 
     意图（用户裁决）：`library`/`topics`/`review`/`pipeline`/`config`/`undo` 两侧都放行；
-    ⭐ `profile` **只给人**（声明原文："人类专属：不投影给 AI，防自改锚点"）。
+    ⭐ `profile` **只给人**（"人类专属：不投影给 AI，防自改锚点"）；
+    ⭐ `views` **只给人**（删视图＝处置自己的作品，2026-09-29）。
     """
     policy = getattr(_stack(tmp_path)[1]["commands"], "_scope_policy", None)
     assert isinstance(policy, ScopePolicy), "装配期应当注入 ScopePolicy"
@@ -76,6 +77,21 @@ def test_scope_policy_table_matches_intent(tmp_path):
     assert policy.allows("human", "profile") is True, "人当然能重置画像"
     assert policy.allows("ai", "profile") is False, (
         "ai 不该能碰 profile —— 那是「改自己的标尺」")
+    assert policy.allows("human", "views") is True, "人当然能删自己画过的图"
+    assert policy.allows("ai", "views") is False, (
+        "ai 不该能碰 views —— 画出来的图是作品，处置权归人")
+
+
+def test_ai_denied_for_deleting_a_view(tmp_path):
+    """删视图：**AI 侧被拒**（第二道锁），人侧能成。
+
+    第一道锁是"不进 TOOL_DECLS"（AI 工具面里根本没这个工具）；这里是第二道——
+    就算有人绕过投影直接经 AI 通道调命令，作用域也会 fail-closed。
+    """
+    _c, stack = _stack(tmp_path)
+    denied = _ai_call(stack, "delete_graph_view", name="随便一张")
+    assert denied["is_error"] is True, "AI 侧竟然能删视图 ⇒ 作用域没生效"
+    assert denied["error"]["info"]["kind"] == "scope_denied", denied["error"]
 
 
 def test_every_declared_scope_is_granted_to_some_side(tmp_path):

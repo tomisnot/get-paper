@@ -132,14 +132,31 @@ def _trim_total(picked: dict, total: int, max_nodes: int, pin: set[str]) -> tupl
     return picked, total
 
 
+def _center_slots(n: int) -> list[int]:
+    """行内槽位（``0..n-1`` 的一个**排列**），按"离行中轴由近及远"排序。
+
+    ⚠ 必须返回**排列**，不能返回无界偏移：消费方按 ``x0 + slot*sp`` 定点，而 ``x0`` 只按
+    ``n-1`` 个间隔铺开——偏移一旦超过 ``(n-1)/2``，节点就被**推出画布**。旧版写成
+    ``j if j % 2 else -j``（幅度随 j 线性增长、索引 0 还向右偏），实测把 12 个点的行排到
+    ``x=-156 … 1544`` 而画布宽仅 1288：点跑出框外、边被拽长，"骨干居中"反而更糟。
+    """
+    mid = (n - 1) / 2
+    return sorted(range(n), key=lambda i: (abs(i - mid), i))
+
+
 def _bands(picked: dict, pos: dict, groups: dict[str, str] | None) -> list[dict]:
-    """层/列内**连续同组**段 → band（供消费方画分组标题）。未分组时返回空。"""
+    """层/列内**连续同组**段 → band（供消费方画分组标题）。未分组时返回空。
+
+    ⚠ 按**画面上的 x 顺序**取连续段，不按选点列表顺序——``center_out`` 排布时
+    列表顺序≠视觉顺序，照列表算会把带子画错位置（实测踩过）。
+    """
     if not groups:
         return []
     out: list[dict] = []
     for d, lst in sorted(picked.items()):
+        visual = sorted(lst, key=lambda n: pos[n.id]["x"])
         run: list[Node] = []
-        for n in [*lst, None]:                          # 哨兵收尾
+        for n in [*visual, None]:                       # 哨兵收尾
             gid = UNGROUPED if n is None else groups.get(n.id, UNGROUPED)
             if run and gid != groups.get(run[0].id, UNGROUPED):
                 xs = [pos[m.id]["x"] for m in run]
@@ -151,6 +168,101 @@ def _bands(picked: dict, pos: dict, groups: dict[str, str] | None) -> list[dict]
             if n is not None:
                 run.append(n)
     return out
+
+
+def _align_rows(picked: dict, edges: list[Edge], groups: dict[str, str] | None,
+                anchor: int, prio: dict[str, int] | None = None,
+                sweeps: int = 2) -> dict:
+    """**按连接重心重排各行**（Sugiyama 重心法）：让"有引用关系的点"在相邻行上下对齐。
+
+    为什么需要：行内默认按"分组 + 度数"排，**完全无视连接关系**——一条边可能横穿整幅画
+    （实测 1288px 画布上出现 861px 的横跨），画面就显得是程序平铺出来的。
+
+    分工（可组合，不互斥）：
+    - ``prio``（＝视图的 rank）：点名的骨干**按重要性排在该行最前**——配合 ``center_out``
+      由它决定"谁贴中轴"；其余节点才参与重心对齐。这样"我的判断"与"连接关系"各管一段，
+      而不是二者只能选一个。
+    - ⚠ 重心对齐是**块级**而非点级：``groups`` 给了就把同组视作一个块整体移动，否则泳道
+      会被打散成碎片（分组带随之碎掉）。块的分数＝块内成员在"已定位行"中邻居的序号均值；
+      没有对外连接的块保持原相对次序、垫在其后（确定性）。``sweeps`` 多轮让对齐跨行传播。
+    """
+    nbr: dict[str, set[str]] = {}
+    for e in edges:
+        nbr.setdefault(e.src, set()).add(e.dst)
+        nbr.setdefault(e.dst, set()).add(e.src)
+    row_of = {n.id: d for d, lst in picked.items() for n in lst}
+    idx: dict[str, int] = {}
+    rows = sorted(picked, key=lambda d: (abs(d - anchor), d))     # 从锚点行向外传播
+    prio = prio or {}
+    for _ in range(sweeps):
+        for d in rows:
+            lst = picked.get(d) or []
+            if not lst:
+                continue
+            top: list[Node] = []                                  # 我点名的骨干（按重要性）
+            rest: list[Node] = []
+            for n in lst:
+                (top if n.id in prio else rest).append(n)
+            if prio:
+                top.sort(key=lambda n: (prio[n.id], n.id))
+            if groups:                                            # 同组连成块（保泳道）
+                where: dict[str, int] = {}
+                blocks: list[list[Node]] = []
+                for n in rest:
+                    g = groups.get(n.id, UNGROUPED)
+                    if g in where:
+                        blocks[where[g]].append(n)
+                    else:
+                        where[g] = len(blocks)
+                        blocks.append([n])
+            else:
+                blocks = [[n] for n in rest]
+
+            def score(bl: list[Node]) -> float | None:
+                vals = [idx[m] for n in bl for m in sorted(nbr.get(n.id, ()))
+                        if m in idx and row_of.get(m) != d]
+                return sum(vals) / len(vals) if vals else None
+
+            scored = [(score(b), i, b) for i, b in enumerate(blocks)]
+            linked = sorted((s for s in scored if s[0] is not None), key=lambda s: (s[0], s[1]))
+            loose = [s for s in scored if s[0] is None]
+            flat = [*top, *(n for _sc, _i, bl in [*linked, *loose] for n in bl)]
+            picked[d] = flat
+            for i, n in enumerate(flat):
+                idx[n.id] = i
+    return picked
+
+
+def _plan_seats(by_layer: dict[int, list[Node]], max_nodes: int, key) -> dict[int, int]:
+    """草稿模式的各层席位：**每层先保底 1，其余按全局重要性补满**。
+
+    只此一条规则——没有比例、没有上限、没有取整公式。因为这一路本来就是"机器替我捞一圈，
+    让我先看一眼"；真正的取舍该由我**点名**（``layer_budget`` 那条路＝我的清单）。
+
+    历史上这里换过三版（均匀 ceil ⇒ 按候选数比例 ⇒ 比例加 2× 上限），每一版都在替调用方
+    做判断：均匀版把每层切成同一个数（用户一眼看出"这是算出来的"），比例版让某层独吞
+    26/38 个名额把库外噪声拉进画面。教训：**选点是不该由公式代劳的判断**。
+    """
+    live = {d: lst for d, lst in by_layer.items() if lst}
+    if not live:
+        return {}
+    seats = {d: 1 for d in live}                    # 每层至少 1：有候选就不断层
+    left = max(0, int(max_nodes) - len(seats))
+    if left <= 0:
+        return seats
+    layer_of = {n.id: d for d, lst in live.items() for n in lst}
+    granted: set[int] = set()
+    for n in sorted((n for lst in live.values() for n in lst), key=key):
+        if left <= 0:
+            break
+        d = layer_of[n.id]
+        if d not in granted:                        # 该层的保底名额已经算过了
+            granted.add(d)
+            continue
+        seats[d] += 1
+        left -= 1
+    return seats
+
 
 
 def _edge_rows(pos: dict, edges: list[Edge], layers: int,
@@ -185,16 +297,25 @@ def layered_layout(nodes: list[Node], edges: list[Edge], *, sources: set[str],
                    groups: dict[str, str] | None = None,
                    group_order: list[str] | None = None,
                    group_quota: int = 0,
-                   depths: dict[str, int] | None = None) -> dict:
+                   depths: dict[str, int] | None = None,
+                   order_map: dict[str, int] | None = None,
+                   center_out: bool = False,
+                   layer_budget: dict[int, int] | None = None) -> dict:
     """确定性分层坐标，**画布跟着内容长**（y＝行号、x＝行内序号）。
 
     语义分工（可自定义的关键）：
     - ``depths``：**调用方自带的层号**（行索引，≥0）——给了就不再自己 BFS。这样"层"
       的语义（引用方向上的上游/下游、年代、任意自定义分层）由消费方决定，域层只画几何
       （G5：本文件不带领域词）。缺省仍是从 ``sources`` 出发的无向最短路径深度。
+    - ``order_map``：**调用方的显式优先级**（id → 序号，小的在前）——给了就**压过**度数与分组：
+      它表达"这几篇是我认定的骨干"，而不是"按被引数排"。未列入的按原 key 排在其后。
+    - ``center_out``：行内**从中心向两侧展开**（序号 0 落在该行中点）——骨干贴近纵向中轴，
+      连线短、重心稳；不分组时等价于"重要的事摆中间"。
     - ``pin``：锚点（如根节点）永不截断——层内超额与全局超额都只砍非锚点；
-    - ``groups``：层内先按组聚簇、再按度排序（同组连续 ⇒ 出 ``bands``，可画泳道标题）；
-    - ``group_quota``：截断时每组至少留几篇，让叙事里的少数派不被高被引挤掉。
+    - ``groups``：层内按组聚簇（同组连续 ⇒ 出 ``bands``，可画泳道标题）；
+    - ``group_quota``：截断时每组至少留几篇，让叙事里的少数派不被高被引挤掉；
+    - ``layer_budget``：**各层席位数**（层号 → 席位）——**清单模式**：调用方点名了几个就画几个，
+      机器不加不减（对应视图的 curated 模式）。不给则走草稿模式（每层保底 1、按重要性补满）。
 
     实测教训（用户截图）：固定 980px 宽 + 固定小高 ⇒ 一层三十个节点叠成饼、
     标签糊成一团。现在：每层间距 ≥ 该层最大直径+余量（几何上永不重叠），总宽取
@@ -209,30 +330,42 @@ def layered_layout(nodes: list[Node], edges: list[Edge], *, sources: set[str],
     weight_of = {n.id: n.weight for n in nodes}
     meta_of = {n.id: n.meta for n in nodes}
     rank = _group_rank(groups, group_order)
+    prio = {str(k): int(v) for k, v in (order_map or {}).items()}
 
     def key(n: Node):
         g = _rank_of(rank, groups.get(n.id, UNGROUPED)) if groups else 0
+        explicit = (0, prio[n.id]) if n.id in prio else (1, 0)   # 显式优先级压过度数/分组
         if sort_within == "year":
-            return (g, str(meta_of.get(n.id, {}).get("published") or ""),
+            return (*explicit, g, str(meta_of.get(n.id, {}).get("published") or ""),
                     -inc.get(n.id, 0), n.id)
-        return (g, -inc.get(n.id, 0), -weight_of.get(n.id, 0.0), n.id)
+        return (*explicit, g, -inc.get(n.id, 0), -weight_of.get(n.id, 0.0), n.id)
 
     by_layer: dict[int, list[Node]] = {}
     for n in nodes:
         if n.id in depth:
             by_layer.setdefault(depth[n.id], []).append(n)
     layers = (max(by_layer) + 1) if by_layer else 0
-    per_layer = max(4, -(-max_nodes // max(1, layers)))          # ceil 配额
+    # 各层席位有两条路，泾渭分明：
+    #   · ``layer_budget`` 给了 ⇒ **清单模式**：调用方点名了几个就画几个，机器不加不减（我的笔）；
+    #   · 没给 ⇒ **草稿模式**：每层保底 1、其余按全局重要性补满（机器替我捞一圈，供我读一眼）。
+    if layer_budget is not None:
+        quotas = {d: max(0, int(layer_budget.get(d, 0))) for d in by_layer}
+    else:
+        quotas = _plan_seats(by_layer, max_nodes, key)
     picked: dict[int, list[Node]] = {}
     total = 0
     for d, lst in sorted(by_layer.items()):
         ordered = sorted(lst, key=key)
         if sort_within == "year" and not groups:
             ordered = list(reversed(ordered))                    # 新→旧（分组时不倒，组内成块）
-        picked[d] = _pick_layer(ordered, per_layer, pin=pin, groups=groups,
+        picked[d] = _pick_layer(ordered, quotas.get(d, 0), pin=pin, groups=groups,
                                 group_quota=group_quota, key=key)
         total += len(picked[d])
     picked, total = _trim_total(picked, total, max_nodes, pin)
+    if sort_within == "align":                                   # 行内按连接重心对齐
+        src_rows = [depth[s] for s in sorted(sources) if s in depth]
+        anchor = min(src_rows) if src_rows else (min(picked) if picked else 0)
+        picked = _align_rows(picked, edges, groups, anchor, prio=prio)
     if not any(picked.values()):
         return {"pos": {}, "layers": 0, "edges": [], "width": 980, "height": 460,
                 "bands": [], "columns": []}
@@ -257,8 +390,9 @@ def layered_layout(nodes: list[Node], edges: list[Edge], *, sources: set[str],
         n = len(lst)
         x0 = (width - sp * (n - 1)) / 2
         y = base_y - d * layer_gap
+        slots = _center_slots(n) if center_out else list(range(n))
         for i, nd in enumerate(lst):
-            pos[nd.id] = {"x": int(x0 + i * sp), "y": int(y), "layer": d,
+            pos[nd.id] = {"x": int(x0 + slots[i] * sp), "y": int(y), "layer": d,
                           "r": _radius_of(size_by, nd.id, inc, weight_of),
                           "in_deg": inc.get(nd.id, 0),
                           "stag": 18 if i % 2 else 0}            # 标签错峰防叠字

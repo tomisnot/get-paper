@@ -58,6 +58,40 @@ def test_web_write_goes_through_gate_both_journals(tmp_path):
     assert audits and audits[-1].actor == "human"
 
 
+def test_view_management_lists_views_and_deleting_is_human_work(tmp_path):
+    """图是**作品**：/settings 里列出来随时看、改（AI）、删（人）。
+
+    四条一起钉：① 管理面真的列出视图与"它想说什么"；② AI 工具面里**没有**删除视图这一项
+    （处置权归人）；③ 人侧删除走命令面（303 + 双 journal + 行真没了）；④ 删错了能 undo 回整张。
+    """
+    from paperpilot.capabilities import registry_for
+    from paperpilot.mecha_adapter.tools import TOOL_TO_CAPABILITY
+
+    client, container, stack = _gated(tmp_path)
+    container.repo.save_graph_view(
+        "我读出来的脉络",
+        {"mode": "curated", "title": "三层地基", "layers": {"a": 0, "b": -1}},
+        is_default=True, actor="ai", reason="测")
+
+    body = client.get("/settings").text
+    assert "视图管理" in body and "我读出来的脉络" in body and "三层地基" in body
+    assert "delete_graph_view" not in set(TOOL_TO_CAPABILITY.values())       # ② AI 无门
+
+    resp = client.post("/settings/views/delete", data={"name": "我读出来的脉络"},
+                       follow_redirects=False)
+    assert resp.status_code == 303                                          # ③ 人侧走门
+    assert container.repo.get_graph_view("我读出来的脉络") is None
+    assert container.repo.events_since(since_seq=0, actor="human",
+                                       op="set_graph_view")["count"] >= 1
+    audits = [e for e in stack["history"].events() if e.key == "command.delete_graph_view"]
+    assert audits and audits[-1].actor == "human"
+
+    # ④ 可撤销：undo 把整张图（含 spec）恢复回来
+    assert registry_for(container).invoke("undo", seq=0, reason="测撤销")["ok"] is True
+    back = container.repo.get_graph_view("我读出来的脉络")
+    assert back is not None and (back["spec"] or {}).get("title") == "三层地基"
+
+
 def test_web_add_note_gated(tmp_path):
     """Web 加笔记经门；笔记真落库（回执 303 + 详情页可见）。"""
     client, container, _stack = _gated(tmp_path)

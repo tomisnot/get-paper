@@ -64,11 +64,15 @@ DEFAULT_SPEC: dict = {
     "max_nodes": 90,
     "max_edges": 400,
     "group_quota": 0,        # 每组保底篇数（0=不保底）
-    "sort_within": "weight",  # weight|year
+    "sort_within": "weight",  # weight|year|align（align=按连接重心对齐，连线最短）
     "size_by": "degree",     # degree|weight|flat
     "layer_gap": 130,
     "node_gap": 90,
     "pin": [],               # 锚点：永不截断
+    "rank": [],              # **AI 的显式优先级**（id 顺序）：压过度数/分组 —— 我认定的骨干
+    "place": "lane",         # lane（按组聚簇成泳道）| center（按 rank 从行中心向两侧展开）
+    "layers": {},            # **AI 的自定义分层**：id → 有向层号（−2＝上游两跳、0＝本体、+1＝下游）
+    "mode": "auto",          # auto＝机器替我捞一圈的**草稿** | curated＝**我点名的清单**（layers 即内容）
     "group_map": {},         # arxiv → 组名（AI 自定义叙事分组）
     "group_colors": {},      # 组名 → 色值
     "group_order": [],       # 组的显示顺序
@@ -83,11 +87,13 @@ _INT_RANGES = {
 _ENUMS = {
     "layout": ("layer", "timeline"),
     "sides": ("both", "upstream", "downstream"),
+    "place": ("lane", "center"),
+    "mode": ("auto", "curated"),
     "color_by": ("auto", "kind", "in_lib", "weight", "tag", "group"),
     "group_by": ("none", "tag", "group"),
     "label_mode": ("auto", "always", "hover"),
     "label_style": ("title", "id"),
-    "sort_within": ("weight", "year"),
+    "sort_within": ("weight", "year", "align"),
     "size_by": ("degree", "weight", "flat"),
 }
 
@@ -112,12 +118,28 @@ def normalize_spec(raw: dict | None) -> dict:
         else spec["in_lib_only"].lower() not in ("0", "false", "no", "off")
     spec["root"] = str(spec["root"] or "").strip()
     spec["title"] = str(spec["title"] or "").strip()
-    for key in ("pin", "group_order"):
+    for key in ("pin", "rank", "group_order"):
         val = spec[key]
         spec[key] = [str(x).strip() for x in val if str(x).strip()] if isinstance(val, (list, tuple)) \
             else [x.strip() for x in str(val).split(",") if x.strip()]
     for key in ("group_map", "group_colors"):
         spec[key] = dict(spec[key]) if isinstance(spec[key], dict) else {}
+    # 自定义分层：'id:-2,id2:1'（有向层号：负=上游、0=本体、正=下游）。非法项丢弃不崩。
+    if not isinstance(spec["layers"], dict):
+        parsed: dict[str, int] = {}
+        for chunk in str(spec["layers"]).replace(";", ",").split(","):
+            ident, _, val = chunk.partition(":")
+            ident, val = ident.strip(), val.strip()
+            if not ident or not val:
+                continue
+            try:
+                parsed[ident] = max(-6, min(6, int(val)))
+            except ValueError:
+                continue
+        spec["layers"] = parsed
+    else:
+        spec["layers"] = {str(k): max(-6, min(6, int(v)))
+                          for k, v in spec["layers"].items() if str(k).strip()}
     return spec
 
 
@@ -321,16 +343,59 @@ def build(repo, retrieval, settings, spec: dict, *, focus: str = "",
         gedges = [e for e in gedges if e.src in keep_lib and e.dst in keep_lib]
         src_out = {k: v for k, v in src_out.items() if k in keep_lib} or src_out
 
-    # ---------------------------------------------------------------- 单根聚焦：有向多层（上游/下游）
+    # ---------------------------------------------------------------- 分两条路：我的手 / 机器的草稿
+    #
+    # 为什么不把"放谁、放第几层、层里第几个"继续交给公式：
+    # 图画的是**理解**，不是统计。一个网络就几十个点，每个点的位置都可以是一个人的判断——
+    # 机器负责的只是"把它画出来"（几何、防重叠、箭头、标签、画布跟着内容长）。
+    #
+    #   · **curated ＝ 我的手**：`layers='id:层号,…'` 就是内容清单——写下的顺序即层内次序。
+    #     点名的才上图，机器不加一个点、不减一个点，不算任何配额。
+    #   · **auto ＝ 机器的草稿**：按 root 有向 BFS 捞一圈给我**读一眼再决定**。
+    #     它是数据分析的辅助，不是交付物——别拿草稿当成果交差。
     root = spec["root"]
     pin = set(spec["pin"])
     rows: dict[str, int] | None = None
-    if root:
+    named_missing: list[str] = []
+    if spec["mode"] == "curated":
+        manifest = {str(k): int(v) for k, v in (spec["layers"] or {}).items()}
+        # 清单＝`layers` 的**键**，只认它：`rank` 只管层内次序、`pin` 是草稿模式的概念——
+        # **都不能往清单里加人**。否则从已发布视图继承来的 pin/rank 会悄悄塞进你没点名的点
+        # （实测踩过：清单 16 篇，图上冒出第 17 篇——旧视图的 pin 带来的）。
+        order_ids = [i for i in (spec["rank"] or []) if i in manifest]
+        order_ids += [i for i in manifest if i not in set(order_ids)]
+        by_id = {n.id: n for n in nodes_g}
+        kept: list[GNode] = []
+        for ident in order_ids:
+            node = by_id.get(ident)
+            if node is None:                       # 图里没它（边没织过）⇒ 拿库里的记录补一个孤点
+                p = repo.get_paper(ident)
+                if p is None:
+                    named_missing.append(ident)    # 库里也没有：**响亮点名**，别静默吞掉
+                    continue
+                pub = p.published_at.date().isoformat() if p.published_at else ""
+                node = GNode(id=ident, kind="src", weight=0.0, meta={
+                    "kind": "src", "title": p.title or ident, "published": pub,
+                    "in_lib": True, "cites": 0, "citations": 0})
+            kept.append(node)
+        nodes_g = kept
+        keep = set(manifest)
+        gedges = [e for e in gedges if e.src in keep and e.dst in keep]
+        top = max(manifest.values()) if manifest else 0
+        rows = {nid: (top - s) for nid, s in manifest.items()}
+        sources = {root} if (root and root in keep) else (set(keep) or {root})
+        order_map = {aid: i for i, aid in enumerate(order_ids) if aid in keep}
+    elif root:
         if not any(n.id == root for n in nodes_g):
             foot["root_found"] = False
             foot["stats"] = {**foot["stats"], "src": len(src_out), "dst": len(dst_info)}
             return foot
         signed = _signed_depths(gedges, root, int(spec["depth"]), spec["sides"])
+        # 草稿上也可以点名纠层（显式意图 > 拓扑距离），只认图里确实有边的 id
+        known = {n.id for n in nodes_g}
+        for ident, lv in (spec.get("layers") or {}).items():
+            if ident in known:
+                signed[ident] = int(lv)
         keep = set(signed)
         nodes_g = [n for n in nodes_g if n.id in keep]
         gedges = [e for e in gedges if e.src in keep and e.dst in keep]
@@ -343,7 +408,18 @@ def build(repo, retrieval, settings, spec: dict, *, focus: str = "",
         sources = set(src_out)
 
     # ---------------------------------------------------------------- 编排
-    common = dict(max_nodes=int(spec["max_nodes"]), sort_within=spec["sort_within"],
+    budget: dict[int, int] | None = None
+    if spec["mode"] == "curated":
+        # 清单模式：层里有几个就画几个（机器不加不减）⇒ max_nodes 不再参与裁剪
+        budget = {}
+        for _nid, r in (rows or {}).items():
+            budget[r] = budget.get(r, 0) + 1
+        max_nodes = len(nodes_g)
+    else:
+        # 草稿模式：rank 列表的顺序即"离中心多近"（序号 0 最近）
+        order_map = {aid: i for i, aid in enumerate(spec["rank"] or [])}
+        max_nodes = int(spec["max_nodes"])
+    common = dict(max_nodes=max_nodes, sort_within=spec["sort_within"],
                   size_by=spec["size_by"], pin=pin, groups=groups or None,
                   group_order=spec["group_order"], group_quota=int(spec["group_quota"]))
     if spec["layout"] == "timeline":
@@ -354,6 +430,9 @@ def build(repo, retrieval, settings, spec: dict, *, focus: str = "",
         lay = layered_layout(nodes_g, gedges, sources=sources,
                              layer_gap=int(spec["layer_gap"]),
                              node_gap=int(spec["node_gap"]),
+                             order_map=order_map or None,
+                             center_out=spec["place"] == "center",
+                             layer_budget=budget,
                              depths=rows, **common)
 
     # 侧标注（上游在上 / 下游在下）：**只在分层布局下成立**——年代布局的"层"是年份列，
@@ -439,7 +518,8 @@ def build(repo, retrieval, settings, spec: dict, *, focus: str = "",
         "arrow_size": int(spec["arrow_size"]), "spec": spec,
         "stats": {"edges": len(edges), "edges_shown": len(links),
                   "src": len(src_out), "dst": len(dst_info),
-                  "shown": shown, "layers": lay["layers"],
+                  "shown": shown, "layers": lay["layers"], "mode": spec["mode"],
+                  "named_missing": named_missing,
                   "in_lib": sum(1 for n in nodes if n.get("in_lib")),
                   "not_in_lib": sum(1 for n in nodes if not n.get("in_lib"))},
     })

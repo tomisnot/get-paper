@@ -458,6 +458,7 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         from .control_token import read_control_token
 
         s = container.settings
+        views = container.repo.list_graph_views()
         return render(
             request,
             "settings.html",
@@ -465,6 +466,11 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
             last_run=container.repo.last_run(),
             counts=container.repo.counts_by_status(),
             briefings=container.repo.briefings(limit=30),
+            graph_views=[{"name": v["name"], "is_default": v["is_default"],
+                          "title": (v["spec"] or {}).get("title", ""),
+                          "mode": (v["spec"] or {}).get("mode", "auto"),
+                          "named": len((v["spec"] or {}).get("layers") or {}),
+                          "ts": v["ts"], "actor": v["actor"]} for v in views],
             mode=_authority_mode(),
             control_ready=read_control_token() is not None,
         )
@@ -529,6 +535,44 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
             return RedirectResponse(f"/settings?msg={quote(msg)}", status_code=303)
         gate_msg = _gated("delete_briefing", date=date, reason="Web 设置页删简报")
         msg = gate_msg or f"已删除 {date} 的简报（/activity 可 undo，或让 AI 调 undo_change(seq=0)）"
+        return RedirectResponse(f"/settings?msg={quote(msg)}", status_code=303)
+
+    @app.post("/settings/views/default")
+    def set_default_view_row(name: str = Form(...)):
+        """切默认视图（人侧入口）：走命令面（写权门 + 审计）。无栈时回退直调能力层。
+
+        与 `/settings/briefings/delete` 同款——人侧的"处置"也要留痕，不直写数据库。
+        """
+        from urllib.parse import quote
+
+        if stack is None:
+            result = registry_for(container).invoke(
+                "set_default_view", name=name, actor="human",
+                reason="Web 设置页切默认视图")
+            msg = (f"默认视图已切到「{name}」" if result.get("ok")
+                   else f"切换失败：{(result.get('error') or {}).get('message', '未知错误')}")
+            return RedirectResponse(f"/settings?msg={quote(msg)}", status_code=303)
+        gate_msg = _gated("set_default_view", name=name, reason="Web 设置页切默认视图")
+        msg = gate_msg or f"默认视图已切到「{name}」——刷新 /network 即是这张"
+        return RedirectResponse(f"/settings?msg={quote(msg)}", status_code=303)
+
+    @app.post("/settings/views/delete")
+    def delete_view_row(name: str = Form(...)):
+        """**删除视图（人类专属）**：AI 侧没有这个工具——画出来的图是"作品"，处置权归人。
+
+        数据层留了 spec 快照 ⇒ 删错了可在 `/activity` undo（或让 AI `undo_change(seq=0)`）。
+        """
+        from urllib.parse import quote
+
+        if stack is None:
+            result = registry_for(container).invoke(
+                "delete_graph_view", name=name, actor="human",
+                reason="Web 设置页删视图")
+            msg = (f"已删除视图「{name}」（可 undo 撤销）" if result.get("ok")
+                   else f"删除失败：{(result.get('error') or {}).get('message', '未知错误')}")
+            return RedirectResponse(f"/settings?msg={quote(msg)}", status_code=303)
+        gate_msg = _gated("delete_graph_view", name=name, reason="Web 设置页删视图")
+        msg = gate_msg or f"已删除视图「{name}」（/activity 可 undo 撤销）"
         return RedirectResponse(f"/settings?msg={quote(msg)}", status_code=303)
 
     @app.post("/settings/general")
