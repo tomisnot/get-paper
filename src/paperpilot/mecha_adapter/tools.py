@@ -314,10 +314,11 @@ def _raise_from_envelope(res: Mapping[str, object]) -> None:
 #: 生成 ⇒ 它们**不再**出现在手写 `TOOL_DECLS` 里（一个事实一个家）。未列入的仍走手写。
 _PROJECTED_WRITE_TOOLS: tuple[str, ...] = (
     "mark_read", "star_paper", "skip_paper", "add_note", "delete_briefing",
+    "tag_paper", "tag_papers", "resolve_mark", "set_default_view", "sync_citations",
 )
 
 
-def _merge_model_params(decl, cap_params) -> dict:
+def _params_for_model(decl, cap_params) -> dict:
     """**投影产物 + 本仓的"模型面参数口径"** ⇒ 给模型的参数 schema（在本侧合并）。
 
     ⚠ 为什么在本侧合并（n=1，R1）：`project()` 搬的是**命令面** schema，而
@@ -394,7 +395,7 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
         reg.register(define_tool(
             name=projected.name,
             description=projected.description,
-            parameters=_merge_model_params(
+            parameters=_params_for_model(
                 ToolDecl(mecha_name, mecha_name, "write", "", omit=()),
                 _cap_params(container, mecha_name)),
             output_schema={"type": "object", "required": ["ok"]},
