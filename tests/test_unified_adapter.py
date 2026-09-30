@@ -217,7 +217,8 @@ def test_llm_ranker_end_to_end_through_adapter():
         SimpleNamespace(id=2, arxiv_id="b", title="T2", abstract="traffic forecasting",
                         authors=["Y"], primary_category="cs.LG"),
     ]
+    # 参数已正名：`interest`（画像口径）——LLMRanker 只读 name/description/keywords
     profile = SimpleNamespace(name="推理", description="", keywords=["reasoning"], authors=[])
-    scores = ranker.score_batch(papers=papers, profile=profile, run_id="t")
+    scores = ranker.score_batch(papers=papers, interest=profile, run_id="t")
     assert [round(s.score, 2) for s in scores] == [0.9, 0.4]
     assert scores[0].label == "must_read"

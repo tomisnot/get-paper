@@ -20,15 +20,16 @@ from ..infra.arxiv import ArxivClient
 from ..infra.paperhtml import (
     Anchor,
     Block,
-    LocateResult,
     PaperHtmlClient,
     extract_blocks,
     fetch_html,
     localize_and_clean,
     locate_quote,
-    outline as blocks_outline,
     sha256_text,
     snippet,
+)
+from ..infra.paperhtml import (
+    outline as blocks_outline,
 )
 from ..infra.scholar import SemanticScholarClient, arxiv_ext_id
 from ..infra.shot import ShotError
@@ -99,7 +100,6 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "group_colors": "'组名:#色值' 逗号分隔",
         "is_default": "True 时设为默认视图",
         "reason": "一句话中文说明这张图要表达什么"},
-    "query_graph_views": {},
     "query_graph_views": {"name": "视图名（省略=列出全部；给了就把它整幅拉出来，含完整 spec）"},
     "delete_graph_view": {"name": "要删除的视图名", "reason": "一句话中文说明为什么删"},
     "fetch_paper_html": {"arxiv_id": "论文 arXiv 编号（需已入库）",
@@ -196,17 +196,19 @@ PARAM_DESCRIPTIONS: dict[str, dict[str, str]] = {
                           "reason": "一句话中文说明目的"},
     "run_pipeline": {"date": "日期 ISO 格式（省略=今天）", "force": "已存在时是否强制重跑",
                      "reason": "一句话中文说明目的"},
-    "add_topic": {"name": "主题名", "keywords": "关键词，逗号分隔",
-                  "categories": "arXiv 分类白名单，逗号分隔", "description": "主题描述",
-                  "exclude_keywords": "排除词，逗号分隔", "quota": "每主题配额",
-                  "threshold": "入选评分阈值", "reason": "一句话中文说明新增原因"},
+    "add_topic": {"name": "主题名", "keywords": "关键词，逗号分隔（注入画像池的词条）",
+                  "categories": "arXiv 分类，逗号分隔（同样注入池子）", "description": "主题描述",
+                  "exclude_keywords": "排除词，逗号分隔（以**负权重**注入＝别给我看这类）",
+                  "authors": "关注作者，逗号分隔（按 author 维注入）",
+                  "weight": "注入画像池的基线权重（默认 0.5，越大越强势）",
+                  "reason": "一句话中文说明新增原因"},
     "update_topic": {"name": "要改的主题名（必填）",
                      "description": "新描述；省略=不动",
                      "keywords": "新关键词，逗号分隔；省略=不动（替换而非追加）",
-                     "categories": "新分类白名单，逗号分隔；省略=不动",
+                     "categories": "新分类，逗号分隔；省略=不动",
                      "exclude_keywords": "新排除词，逗号分隔；省略=不动",
-                     "authors": "关注作者，逗号分隔（命中者基线分加成）；省略=不动",
-                     "quota": "新配额；负数=不动", "threshold": "新阈值 0-1；负数=不动",
+                     "authors": "关注作者，逗号分隔；省略=不动",
+                     "weight": "新基线权重；负数=不动",
                      "reason": "一句话中文说明改的原因"},
     "set_topic_enabled": {"name": "主题名", "enabled": "True 启用 / False 停用",
                           "reason": "一句话中文说明原因"},
@@ -843,7 +845,6 @@ def build_registry(container) -> Registry:
               description="读兴趣画像：arXiv 分类/词/作者三维权重 top + 分类熵（防茧房哨兵）。"
                           "行为信号驱动，YAML 主题只是先验种子。")
     def get_profile(top: int = 12, half_life_days: float = 30.0) -> dict:
-        repo.profile_seed_if_empty(settings.topics)
         view = repo.profile_view(top=max(1, min(int(top), 50)),
                                  half_life_days=max(0.001, float(half_life_days)))
         return ok(**view, note="画像由行为信号驱动；熵过低=兴趣收窄，feed 会自动加倍探索道；"
@@ -867,7 +868,6 @@ def build_registry(container) -> Registry:
         if int(offset) < 0:
             return err("bad_params", f"offset={offset} 不能为负",
                        hint="换一屏用上次回执的 meta.next_offset（或直接改 days/mix/seen_days 重配口味）")
-        repo.profile_seed_if_empty(settings.topics)
         view = repo.profile_view()
         weights = repo.profile_weights_map()
         if not weights:
@@ -993,7 +993,6 @@ def build_registry(container) -> Registry:
         if repo.get_paper(arxiv_id) is None:
             return err("not_found", f"库里没有 {arxiv_id}，先 fetch_paper_by_id 拉入再记信号",
                        hint="信号的特征来自论文自分类/标题/作者，需先入库")
-        repo.profile_seed_if_empty(settings.topics)
         repo.record_signal(arxiv_id, signal, source="declared", actor=actor,
                            reason=reason or f"AI 声明信号 {signal}")
         return ok(arxiv_id=arxiv_id, signal=signal, source="declared",
@@ -1072,30 +1071,38 @@ def build_registry(container) -> Registry:
                   note="可用 undo_change(seq=0) 撤销（事件回滚会重建简报行）")
 
     @reg.tool(name="add_topic", kind="write",
-              description="新增研究主题（写回 config/settings.yaml，即时生效）。keywords/categories 用逗号分隔。")
+              description="新建研究主题＝往**画像池注入一组带权重的词条**（写回 config/settings.yaml，"
+                          "即时生效）。keywords/authors/categories 逗号分隔；exclude_keywords 以"
+                          "**负权重**注入（＝「别给我看这类」）；weight 是注入基线（默认 0.5）。")
     def add_topic(name: str, keywords: str = "", categories: str = "", description: str = "",
-                  exclude_keywords: str = "", quota: int = 4, threshold: float = 0.6,
+                  exclude_keywords: str = "", authors: str = "", weight: float = 0.5,
                   actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
         if any(t.name == name for t in settings.topics):
             return err("duplicate", f"主题「{name}」已存在",
                        suggest=[t.name for t in settings.topics][:5])
+        if not (keywords or categories or authors):
+            return err("no_keys", "一个空主题包没用：至少给 keywords / categories / authors 之一",
+                       hint="主题包的作用是把这些词条按 weight 注入画像池")
         topic = TopicCfg(
             name=name, description=description, keywords=_split(keywords),
             categories=_split(categories), exclude_keywords=_split(exclude_keywords),
-            quota=quota, threshold=threshold, enabled=True,
+            authors=_split(authors), weight=max(0.0, float(weight)), enabled=True,
         )
         settings.topics = [*settings.topics, topic]
         save_settings(settings)
         repo.sync_topics(settings.topics, actor=actor, reason=reason or f"新增主题「{name}」")
-        return ok(added=name, total_topics=len(settings.topics))
+        pool = repo.sync_topic_pool(settings.topics, actor=actor,
+                                    reason=reason or f"新增主题「{name}」注入画像池")
+        return ok(added=name, total_topics=len(settings.topics), pool=pool,
+                  hint="已注入画像池：日报与推荐流都会立刻吃到这组权重")
 
     @reg.tool(name="update_topic", kind="write",
-              description="更新既有主题（W7，AI 自助调优闭环）：只改传入的字段，省略=不动；"
-                          "列表字段为**替换**语义、逗号分隔；暂不支持清空列表。"
-                          "启用/停用请用 set_topic_enabled（职责不重叠）。")
+              description="更新既有主题包（AI 自助调优闭环）：只改传入的字段，省略=不动；"
+                          "列表字段为**替换**语义、逗号分隔。改完**幂等重注入画像池**（权重按差量调，"
+                          "不会越改越胖）。启用/停用请用 set_topic_enabled（职责不重叠）。")
     def update_topic(name: str, description: str = "", keywords: str = "",
                      categories: str = "", exclude_keywords: str = "", authors: str = "",
-                     quota: int = -1, threshold: float = -1.0,
+                     weight: float = -1.0,
                      actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
         idx = next((i for i, t in enumerate(settings.topics) if t.name == name), None)
         if idx is None:
@@ -1112,24 +1119,24 @@ def build_registry(container) -> Registry:
             if raw:
                 setattr(topic, fld, _split(raw))
                 changed[fld] = _split(raw)
-        if quota >= 1:
-            topic.quota = int(quota)
-            changed["quota"] = topic.quota
-        if 0.0 <= threshold <= 1.0:
-            topic.threshold = float(threshold)
-            changed["threshold"] = topic.threshold
+        if weight >= 0.0:
+            topic.weight = float(weight)
+            changed["weight"] = topic.weight
         if not changed:
             return err("no_fields", "未传任何要改的字段（全部省略）",
-                       hint="至少传一个：keywords/categories/exclude_keywords/"
-                            "authors/quota/threshold/description")
+                       hint="至少传一个：keywords/categories/exclude_keywords/authors/weight/description")
         save_settings(settings)
         repo.sync_topics(settings.topics, actor=actor,
                          reason=reason or f"更新主题「{name}」")
+        pool = repo.sync_topic_pool(settings.topics, actor=actor,
+                                    reason=reason or f"更新主题「{name}」重注入画像池")
         return ok(topic=name, changed=sorted(changed), total_topics=len(settings.topics),
-                  hint="已写回配置事实源并同步打分镜像；authors 命中作者的论文基线分会获得加成")
+                  pool=pool,
+                  hint="已写回配置事实源并**幂等重注入画像池**；作者命中会按 author 维加权")
 
     @reg.tool(name="set_topic_enabled", kind="write",
-              description="启用/停用某主题（写回 YAML）。")
+              description="启用/停用某主题包（写回 YAML）。停用＝把它注入画像池的权重**撤掉**，"
+                          "但行为学到的部分保留。")
     def set_topic_enabled(name: str, enabled: bool, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
         for t in settings.topics:
             if t.name == name:
@@ -1137,7 +1144,9 @@ def build_registry(container) -> Registry:
                 save_settings(settings)
                 repo.sync_topics(settings.topics, actor=actor,
                                  reason=reason or f"{'启用' if enabled else '停用'}主题「{name}」")
-                return ok(topic=name, enabled=bool(enabled))
+                pool = repo.sync_topic_pool(settings.topics, actor=actor,
+                                            reason=reason or f"{'启用' if enabled else '停用'}主题包「{name}」")
+                return ok(topic=name, enabled=bool(enabled), pool=pool)
         return err("unknown_topic", f"没有主题「{name}」",
                    suggest=[t.name for t in settings.topics][:5])
 
@@ -1149,8 +1158,29 @@ def build_registry(container) -> Registry:
                              hint="先用 search_papers 搜到正确 arxiv_id")
         return paper, None
 
+    def _feed_pref_signal(arxiv_id: str, signal: str, on: bool, *, actor: str = "",
+                          reason: str = "") -> None:
+        """把**入口处表达的偏好**（收藏/已读/不感兴趣）同时记进画像池。
+
+        两处刻意的选择：
+        * 记账放**入口**、不放 repo 的状态设置器：`repo.set_read`/`set_marked_skip` 也会被
+          批量回炉、undo 等**非偏好**流程调用，那些不该训练画像；只有"人/AI 明确表态"才算。
+        * **只记打开方向**（star=True / read=True）：信号表里没有"取消收藏/标记未读"这两档，
+          硬造负值会把"取消"误当"讨厌"。要表达讨厌用 `skip_paper`/`uninterested`。
+        """
+        if not on:
+            return
+        try:
+            repo.record_signal(arxiv_id, signal, source="declared",
+                               actor=actor or ACTOR_DEFAULT,
+                               reason=reason or f"入口表达偏好：{signal}")
+        except Exception:  # noqa: BLE001  记账失败不拦操作（与 Web 侧同款纪律）
+            import logging
+            logging.getLogger("paperpilot.capabilities").exception(
+                "偏好信号记账失败（操作照常）")
+
     @reg.tool(name="mark_read", kind="write", reversible=True,
-              description="标记论文已读/未读。")
+              description="标记论文已读/未读（标已读时**同时喂画像** read 信号）。")
     def mark_read(arxiv_id: str, read: bool = True, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
         # W9 批量：逗号分隔多篇（per-item 纪律，坏 id 进 rejected 不伤其余）；
         # 单 id 保持旧返回形状，不碎已依赖它的调用方/判据。
@@ -1163,6 +1193,7 @@ def build_registry(container) -> Registry:
             if e:
                 return e
             repo.set_read(paper, read=read, actor=actor, reason=reason)
+            _feed_pref_signal(ids[0], "read", bool(read), actor=actor, reason=reason)
             return ok(arxiv_id=ids[0], read=read)
         updated: list[str] = []
         rejected: list[dict] = []
@@ -1173,6 +1204,7 @@ def build_registry(container) -> Registry:
                 continue
             repo.set_read(paper, read=read, actor=actor,
                           reason=reason or f"批量标记{'已读' if read else '未读'}")
+            _feed_pref_signal(one, "read", bool(read), actor=actor, reason=reason)
             updated.append(one)
         if not updated:
             return err("not_found", "所有 arxiv_id 都不在库中",
@@ -1194,7 +1226,9 @@ def build_registry(container) -> Registry:
             paper, e = _paper_or_err(ids[0])
             if e:
                 return e
-            return ok(arxiv_id=ids[0], star=repo.toggle_star(paper, actor=actor, reason=reason))
+            star = repo.toggle_star(paper, actor=actor, reason=reason)
+            _feed_pref_signal(ids[0], "star", star, actor=actor, reason=reason)
+            return ok(arxiv_id=ids[0], star=star)
         results: list[dict] = []
         rejected: list[dict] = []
         for one in ids:
@@ -1202,9 +1236,9 @@ def build_registry(container) -> Registry:
             if paper is None:
                 rejected.append({"arxiv_id": one, "why": "库里没有这篇"})
                 continue
-            results.append({"arxiv_id": one,
-                            "star": repo.toggle_star(paper, actor=actor,
-                                                     reason=reason or "批量收藏/取消")})
+            star = repo.toggle_star(paper, actor=actor, reason=reason or "批量收藏/取消")
+            _feed_pref_signal(one, "star", star, actor=actor, reason=reason)
+            results.append({"arxiv_id": one, "star": star})
         if not results:
             return err("not_found", "所有 arxiv_id 都不在库中",
                        hint="先 search_papers 确认，或 fetch_paper_by_id 拉入",
@@ -1213,13 +1247,19 @@ def build_registry(container) -> Registry:
                   hint=f"{len(results)} 篇已翻面" + (f"；{len(rejected)} 篇被拒" if rejected else ""))
 
     @reg.tool(name="skip_paper", kind="write", reversible=True,
-              description="标记不感兴趣（同类下次过滤）。")
+              description="标记不感兴趣（同类下次过滤），**并喂画像负权重**（＝Web 的「不感兴趣」同权）。")
     def skip_paper(arxiv_id: str, actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
         paper, e = _paper_or_err(arxiv_id)
         if e:
             return e
         repo.set_marked_skip(paper, skip=True, actor=actor, reason=reason)
-        return ok(arxiv_id=arxiv_id, marked_skip=True)
+        # **负反馈接线**（2026-09-30 补）：从前这条只改阅读态、完全不碰画像 ⇒ 200 个权重全为正、
+        # `w<0` 一行都没有（"负向"那半个机制等于没接）。现在与 Web「不感兴趣」**同一个信号、
+        # 同一个权重**（`uninterested` = −1.5）——同一份意图，不管从哪条通道表达。
+        repo.record_signal(arxiv_id, "uninterested", source="declared", actor=actor,
+                           reason=reason or "标记不感兴趣（同时喂画像负权重）")
+        return ok(arxiv_id=arxiv_id, marked_skip=True, signal="uninterested",
+                  hint="已同时记 uninterested 信号（画像负权重 −1.5）")
 
     @reg.tool(name="add_note", kind="write", reversible=True,
               description="给论文加笔记（调研沉淀）。")

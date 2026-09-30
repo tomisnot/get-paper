@@ -103,7 +103,9 @@ def test_prepare_submit_finalize_flow(tmp_path):
 
     prepared = _call(tools, "prepare_review")
     assert prepared["ok"] is True
-    assert prepared["n_candidates"] == 9
+    # ⚠ 2026-09-30 主题池化：候选口径从"按主题分类过滤"改为**客观边界**（new + 回溯窗），
+    # 分类只是画像里的软权重 ⇒ 样例里那篇 cs.ET 现在也进候选（9 → 10）。
+    assert prepared["n_candidates"] == 10
     assert prepared["candidates"], "候选不应为空"
     date = prepared["date"]
     first = prepared["candidates"][0]

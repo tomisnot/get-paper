@@ -388,6 +388,7 @@ class PaperRepository:
                     exclude_keywords=list(cfg.exclude_keywords),
                     categories=list(cfg.categories),
                     authors=list(cfg.authors),
+                    weight=cfg.weight,
                     quota=cfg.quota,
                     threshold=cfg.threshold,
                     enabled=cfg.enabled,
@@ -426,6 +427,7 @@ class PaperRepository:
                 "exclude_keywords": list(t.exclude_keywords or []),
                 "categories": list(t.categories or []),
                 "authors": list(t.authors or []),
+                "weight": t.weight,
                 "quota": t.quota,
                 "threshold": t.threshold,
                 "enabled": t.enabled,
@@ -526,6 +528,22 @@ class PaperRepository:
         if topic.categories:
             stmt = stmt.where(Paper.primary_category.in_(list(topic.categories)))
         stmt = stmt.order_by(Paper.published_at.desc().nullslast(), Paper.id.desc())
+        with self.sf() as s:
+            return list(s.scalars(stmt))
+
+    def pipeline_candidates(self, *, lookback_days: int) -> list[Paper]:
+        """日报线候选：**new 状态 + 回溯窗内首次见到**。
+
+        主题池化（2026-09-30）后候选**不再按主题分类过滤**——分类/词面的相关性交给画像权重
+        做**软排序**，这里只留客观边界（没处理过的、最近进来的）。窗口与旧
+        `candidates_for_topic` 完全同口径，所以覆盖度不缩水。
+        """
+        cutoff = utcnow() - timedelta(days=max(0, lookback_days))
+        stmt = (
+            select(Paper)
+            .where(Paper.status == "new", Paper.first_seen_at >= cutoff)
+            .order_by(Paper.published_at.desc().nullslast(), Paper.id.desc())
+        )
         with self.sf() as s:
             return list(s.scalars(stmt))
 
@@ -666,32 +684,98 @@ class PaperRepository:
                 out[(r.kind, r.key)] = r.w * (2.0 ** (-age / hl))
         return out
 
-    def profile_seed_if_empty(self, topics: Sequence, *, actor: str = "system") -> int:
-        """空画像 ⇒ 以 YAML 主题为先验播种（一次性；主题此后是种子不是门）。"""
+    def sync_topic_pool(self, topics: Sequence, *, actor: str = "system",
+                        reason: str = "") -> dict:
+        """把启用的**主题包幂等注入画像池**（取代"仅空画像才播种一次"的冻结快照）。
+
+        为什么改：旧实现只在画像**完全为空**时播种，播完那一次之后——`profile_seed_if_empty`
+        再也不跑 ⇒ 之后改主题（加词/改作者）画像**永远不动**。实测后果：库里 8 个作者只有
+        1 个与画像种子对得上，另外 4 个种子还是更早配置里的中文名 ⇒ "填了没用"。
+
+        语义：
+        * 主题的 keywords→`term`、authors→`author`、categories→`category`，各按 `topic.weight`
+          给基线；**多主题共享同一 key 取最大基线**（同一份先验被两个主题声明不该翻倍）；
+        * 幂等：`w += 新基线 − w_base` ⇒ 反复调、改权重都不会越改越胖；
+        * 主题被删/停用/去掉某词 ⇒ `w −= w_base`、`w_base=0`、来源退回 `signal`；
+          若此时 `hits=0` 且权重归零才删行 ⇒ **行为学到的部分不受影响**（这是 `source`/`w_base`
+          两列存在的全部理由）；
+        * 写入带 before/after 快照 ⇒ `undo_change` 可整体回退。
+        """
         from .orm import ProfileWeight
+
+        want: dict[tuple[str, str], tuple[float, str]] = {}
+        pos: dict[tuple[str, str], tuple[float, str]] = {}
+        neg: dict[tuple[str, str], tuple[float, str]] = {}
+        for t in topics:
+            if not getattr(t, "enabled", True):
+                continue
+            w0 = float(getattr(t, "weight", 0.5) or 0.0)
+            label = f"topic:{t.name}"
+            plan = (
+                ("term", [k.strip().lower() for k in (getattr(t, "keywords", []) or []) if k.strip()]),
+                ("author", [a.strip() for a in (getattr(t, "authors", []) or []) if a.strip()]),
+                ("category", [c.strip() for c in (getattr(t, "categories", []) or []) if c.strip()]),
+            )
+            for kind, keys in plan:
+                for key in keys:
+                    prev = pos.get((kind, key))
+                    if prev is None or w0 > prev[0]:
+                        pos[(kind, key)] = (w0, label)
+            # 排除词 = **负权重词条**（不再靠硬规则门）：声明"别给我看 X"也统一走画像。
+            for key in (getattr(t, "exclude_keywords", []) or []):
+                key = key.strip().lower()
+                if not key:
+                    continue
+                prev = neg.get(("term", key))
+                if prev is None or -w0 < prev[0]:
+                    neg[("term", key)] = (-w0, label)
+        want.update(pos)
+        want.update(neg)          # 排除优先：同一个词既被声明又被排除时，**以排除为准**
+
         with self.sf() as s:
-            if s.scalar(select(ProfileWeight.id)) is not None:
-                return 0
-            seeded = 0
-            wanted: dict[tuple[str, str], float] = {}
-            for t in topics:
-                plan = [("category", list(getattr(t, "categories", []) or [])),
-                        ("term", [k.lower() for k in (getattr(t, "keywords", []) or [])]),
-                        ("author", list(getattr(t, "authors", []) or []))]
-                for kind, keys in plan:
-                    for key in keys:
-                        if key:
-                            # 多主题共享同一分类/词只能铸一行（(kind,key) 唯一约束）
-                            wanted.setdefault((kind, key), self.SIGNAL_WEIGHTS["seed"])
-            for (kind, key), w0 in wanted.items():
-                s.add(ProfileWeight(kind=kind, key=key, w=w0, hits=0))
-                seeded += 1
-            if seeded:
-                self._event(s, op="profile_seed", actor=actor,
-                            reason="空画像播种：以 YAML 主题为先验",
-                            target="profile", after={"seeded": seeded}, undoable=0)
+            rows = {(r.kind, r.key): r for r in s.scalars(select(ProfileWeight)).all()}
+
+            def snap() -> list[dict]:
+                return sorted(
+                    ({"kind": r.kind, "key": r.key, "w": round(r.w, 6),
+                      "w_base": round(r.w_base, 6), "source": r.source, "hits": r.hits}
+                     for r in rows.values()),
+                    key=lambda d: (d["kind"], d["key"]))
+
+            before = snap()
+            injected = released = 0
+            for (kind, key), (w0, label) in want.items():
+                row = rows.get((kind, key))
+                if row is None:
+                    s.add(ProfileWeight(kind=kind, key=key, w=w0, hits=0,
+                                        source=label, w_base=w0))
+                    injected += 1
+                    continue
+                if abs(row.w_base - w0) > 1e-9:
+                    row.w += w0 - row.w_base
+                    row.w_base = w0
+                    row.source = label
+                    injected += 1
+                elif row.source != label:
+                    row.source = label          # 只是换了个主题声明它，权重不动
+            for (kind, key), row in rows.items():
+                if (kind, key) in want:
+                    continue
+                if not (row.source or "").startswith("topic:"):
+                    continue                        # 只撤"主题注入过"的基线
+                row.w -= row.w_base
+                row.w_base = 0.0
+                row.source = "signal"
+                released += 1
+                if row.hits == 0 and abs(row.w) < 1e-9:
+                    s.delete(row)
+            if snap() != before:
+                self._event(s, op="sync_topic_pool", actor=actor,
+                            reason=reason or "主题包幂等注入画像池",
+                            target="profile", before={"rows": before},
+                            after={"rows": snap()}, undoable=1)
             s.commit()
-            return seeded
+        return {"keys": len(want), "injected": injected, "released": released}
 
     def profile_reset(self, *, kind: str = "", actor: str = "human",
                       reason: str = "") -> dict:

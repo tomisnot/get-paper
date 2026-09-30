@@ -19,7 +19,9 @@
 
 1. **每日资讯**（主场景）：早上打开 `http://127.0.0.1:8080/`，看今日简报：Top 推荐（TL;DR + 推荐理由 + 相关性评分）、分类速览、可一键跳原文/PDF。
 2. **文献调研**（次场景）：在检索页按关键词/分类/评分过滤，翻阅历史积累的论文库，收藏、加笔记、导出 BibTeX。
-3. **兴趣管理**：维护若干「研究主题」（关键词、分类、排除词、关注作者），系统按主题打分并支持每主题配额。
+3. **兴趣管理**（2026-09-30 转向）：维护**画像池**——主题是「往池子里注入的词条包」
+   （关键词/分类/排除词/关注作者 + 注入权重），行为信号持续往同一池子加权重；
+   **日报线与推荐流都吃这个池子**，不再有"每主题配额/阈值"。
 4. **手动触发**：Web 上一键补跑某天，或 CLI 执行 `paperpilot run daily`。
 
 ---
@@ -92,8 +94,8 @@ arXiv API ──► ArxivFetcher ──► PaperNormalizer ──► SQLite(pape
 | --- | --- | --- |
 | `infra.arxiv.ArxivFetcher` | 按主题检索 arXiv API，增量抓取，限速与重试 | (主题, 日期窗) → `RawPaper` |
 | `infra.arxiv.Normalizer` | Atom XML → `Paper` 实体，字段清洗/补全 | Atom entry → `Paper` |
-| `domain.policy.RuleGate` | 硬规则过滤：排除词、分类白名单、语言、作者黑名单 | `[Paper]` → `[Paper]` |
-| `domain.policy.ScoringPolicy` | 阈值、每主题配额、连坐降权（同一作者一天最多 N 篇） | `[Score]` → `[SelectedPaper]` |
+| `domain.policy.RuleGate` | **全局**硬规则过滤：语言、作者黑名单（分类/排除词已改走画像软权重，见 §兴趣池） | `[Paper]` → `[Paper]` |
+| `domain.policy.SelectionPolicy` | 阈值、**总量配额**、连坐降权（同一作者一天最多 N 篇） | `[Score]` → `[SelectedPaper]` |
 | `domain.service.DailyPipelineService` | 编排上面所有步骤，产出 Briefing | 任务参数 → `Briefing` |
 | `domain.ports.ai.*` | AI 能力契约（本项目的**集成边界**） | 见 §5 |
 | `infra.ai.AIMockService` | 本地确定性假实现，供联调/测试/降级 | 同 Port 签名 |

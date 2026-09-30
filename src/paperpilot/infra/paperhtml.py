@@ -274,27 +274,9 @@ def retrieve_assets(client: PaperHtmlClient, root, base_url: str, dest: Path,
     return {"assets": count, "bytes": total, "failed": failed}
 
 
-#: 应当可被锚定的元素（缺 id 时由 :func:`ensure_block_ids` 补一个确定性 id）
+#: 应当可被锚定的元素（缺 id 时由 `ensure_block_ids` 补确定性 id）。
+#: 函数本体在下面「解析成块」一节（要跟 `content_root`/`_skipped_subtree` 一起读）。
 _BLOCK_ID_TAGS = {"p", "li", "figcaption", "td", "th", "blockquote", "figure", "table"}
-
-
-def ensure_block_ids(root) -> int:
-    """给缺失 ``id`` 的可锚定元素补一个**确定性** id（``pp-1``、``pp-2``…按文档序）。
-
-    为什么必须有：LaTeXML 通常给段落 ``S1.p2`` 这样的 id，但**不保证每个都有**
-    （实测有整段无 id 的情形）——没有 id 的段落既进不了块清单、也没法锚定，会被整段丢掉。
-    补 id 的时机是**抓取落盘那一刻**（``localize_and_clean``）⇒ 我们存档的 HTML 与批注锚点
-    从此自洽：同一份归档里 id 永远稳定（换版本时靠 quote/prefix/suffix 重锚）。
-    """
-    n = 0
-    for el in root.iter():
-        if not isinstance(el.tag, str) or (el.tag or "").lower() not in _BLOCK_ID_TAGS:
-            continue
-        if el.get("id"):
-            continue
-        n += 1
-        el.set("id", f"pp-{n}")
-    return n
 
 
 def localize_and_clean(html_text: str, *, base_url: str, client: PaperHtmlClient,

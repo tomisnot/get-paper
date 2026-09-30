@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from check.test_ai_experience import _reg
 from paperpilot.app.web import create_app
 
 from .conftest import SAMPLE_XML
-from check.test_ai_experience import _reg
 
 
 class _FakeScholar:

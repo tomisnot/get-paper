@@ -184,19 +184,22 @@ def test_w1_empty_reason_carries_status_counts(tmp_path):
 
 # ---------------------------------------------------------------- W7 自助调主题
 def test_w7_update_topic_partial_fields_yaml_single_source(tmp_path):
-    """能红：只改传入字段（动 quota 不动 keywords），写回 YAML 重载可见；未知名响亮带 suggest。"""
+    """能红：只改传入字段（动 weight 不动 keywords），写回 YAML 重载可见；
+    **且立刻重注入画像池**（新语义：主题不是"填完就冻"的规则，而是池子里的权重）；
+    未知名响亮带 suggest。"""
     _c, reg = _reg(tmp_path)
     first = _c.settings.topics[0]
     kws_before = list(first.keywords)
-    out = reg.invoke("update_topic", name=first.name, quota=7,
-                     authors="陈丞, Lukin", reason="测试调配额+作者")
-    assert out["ok"] and set(out["changed"]) == {"quota", "authors"}, out
-    assert first.quota == 7 and first.keywords == kws_before   # 未传的字段不动
+    out = reg.invoke("update_topic", name=first.name, weight=0.9,
+                     authors="陈丞, Lukin", reason="测试调权重+作者")
+    assert out["ok"] and set(out["changed"]) == {"weight", "authors"}, out
+    assert first.weight == 0.9 and first.keywords == kws_before   # 未传的字段不动
+    assert out["pool"]["injected"] > 0, "改主题必须重注入画像池（否则又是'填了没用'）"
     from paperpilot.config import load_settings
     reloaded = {t.name: t for t in load_settings(_c.settings.config_path).topics}
-    assert reloaded[first.name].quota == 7
+    assert reloaded[first.name].weight == 0.9
     assert reloaded[first.name].authors == ["陈丞", "Lukin"]    # YAML 唯一事实源
-    bad = reg.invoke("update_topic", name="没有这个主题", quota=3)
+    bad = reg.invoke("update_topic", name="没有这个主题", weight=0.3)
     assert bad["ok"] is False and bad["error"]["kind"] == "unknown_topic"
     assert first.name in bad["error"]["suggest"]              # 可教学：现有主题名列出
 
@@ -206,8 +209,7 @@ def test_w7_update_topic_no_op_fails_loud(tmp_path):
     _c, reg = _reg(tmp_path)
     out = reg.invoke("update_topic", name=_c.settings.topics[0].name)
     assert out["ok"] is False and out["error"]["kind"] == "no_fields"
-    neg = reg.invoke("update_topic", name=_c.settings.topics[0].name,
-                     quota=-1, threshold=-1.0)
+    neg = reg.invoke("update_topic", name=_c.settings.topics[0].name, weight=-1.0)
     assert neg["ok"] is False and neg["error"]["kind"] == "no_fields"
 
 

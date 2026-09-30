@@ -218,9 +218,15 @@ def _align_rows(picked: dict, edges: list[Edge], groups: dict[str, str] | None,
             else:
                 blocks = [[n] for n in rest]
 
-            def score(bl: list[Node]) -> float | None:
+            def score(bl: list[Node], row: int = d) -> float | None:
+                """块分＝成员在"已定位行"里邻居的序号均值（**排除自己所在行**，否则自我印证）。
+
+                ⚠ `row: int = d` 这个默认参数是**刻意的**：在循环里定义的闭包若直接读 `d`，
+                等循环结束后再调用会拿到最后一轮的 `d`（B023 晚绑定）。这里虽然当场就调用、
+                不会出错，但显式绑定把"这个块属于哪一行"钉死，读代码与将来重构都安全。
+                """
                 vals = [idx[m] for n in bl for m in sorted(nbr.get(n.id, ()))
-                        if m in idx and row_of.get(m) != d]
+                        if m in idx and row_of.get(m) != row]
                 return sum(vals) / len(vals) if vals else None
 
             scored = [(score(b), i, b) for i, b in enumerate(blocks)]

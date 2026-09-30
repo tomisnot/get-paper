@@ -19,9 +19,9 @@ from paperpilot.capabilities import registry_for
 from paperpilot.capabilities.base import gate as volume_gate
 from paperpilot.infra.arxiv import parse_atom
 from paperpilot.mecha_adapter.tools import envelope_to_error
+from tests.test_mecha_adapter import EXPECTED_TOOLS, _call, _stack
 
 from .conftest import SAMPLE_XML, make_settings
-from tests.test_mecha_adapter import EXPECTED_TOOLS, _call, _stack
 
 
 def _reg(tmp_path):

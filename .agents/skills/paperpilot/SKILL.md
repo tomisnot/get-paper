@@ -3,7 +3,7 @@ name: paperpilot
 description: >-
   PaperPilot 论文情报系统的操作纪律（DSH 对话驱动）。当抓取 arXiv、评审候选、
   生成日报或月度合集、刷推荐流（feed）、查引文脉络/文献计量、画引文网络视图、
-  陪用户精读 HTML 正文并加批注、做资产盘点与趋势统计、调主题/配额/画像参数时必读。
+  陪用户精读 HTML 正文并加批注、做资产盘点与趋势统计、调画像池参数时必读。
   含「怎么干活」四大工作流（日报 / 推荐流 / 引文网络 / 精读）与项目信条；
   工具全部入册；AI 面唯一禁忌是 reset_profile。
 ---
@@ -115,12 +115,21 @@ gate 值（`set_config`）直通全段但被显式参数再覆盖。**用户点�
 - **打分一致性**：跨期整合时，旧分数**逐字沿用**并注记出处，不要"重打得新分"。
 - **大池扫雷**：brief 只展示前 40；关键词稀疏但标题对口的总览/平台类会被基线分挡在视野外——
   读评审文件里 `ai=None` 的项，按标题补评（`submit_review` 按全量校验）。
-- 想让用户读到某篇而分数不够：**降门槛是最后手段**，先想机制（点名、配额、扩篇数）。
+- 想让用户读到某篇而分数不够：**先调画像、再点名，最后才降门槛**——降门槛是最后手段。
+
+**⚠ 2026-09-30 起：日报线也吃画像（主题="词条包"，不再有每主题配额/阈值）**
+- **候选** = `new` 状态 + 回溯窗内（不再"按主题分类筛"）；**硬门只剩客观项**（非英文标题、作者黑名单）。
+- **分类与排除词都进了画像池**（正/负权重，软影响）——所以"把某方向压下去"要用
+  `add_topic(exclude_keywords=…)` / `update_topic`，**不要再找配额与阈值**（已废弃）。
+- **一次全局选择**：没有"每主题 quota"了，`scoring.max_papers` 是唯一总量闸。
+- 主题的 `topic` 字段在回执里只是**显示归属**（可能空 =「画像池」），不参与任何决策。
+- 评审回执里给的是 `interest`（画像摘要：主线分类/高频词/关注作者），不再是主题清单。
 
 **翻车点**
 - 池子里含**被此前评审/定稿消费过**的论文（月报、跨期汇总）⇒ 必须 `requeue=true` 回炉，
   否则池子永远不进（一次性消费语义）。回炉会重置评审文件，**需重交全量**。
-- **月报**：临时抬各主题 `quota_per_topic` ＋ `max_papers` ＋ `max_per_author`，定稿后**全部还原**。
+- **月报**：临时抬 `max_papers` ＋ `max_per_author`（**`quota_per_topic` 已废弃**，主题池化后
+  没有"每主题配额"这回事），定稿后**全部还原**。
 - 报数与 /lab 仪表盘**同口径**，同一数字两处真相会被判据拒绝。
 
 ### 3.2 推荐流 feed
@@ -306,12 +315,16 @@ authors | `read_config` / `review_status` 评审进度 | `read_activity` 事件+
 
 **feed**：`feed_generate`（只看不发）| `publish_feed`（发期＝交付）。
 
-**写·轻操作**（均留痕可逆）：`mark_read` / `star_paper`（逗号多篇、坏项不伤其余）|
-`skip_paper`（同类过滤旧机制，与画像 uninterested 是两码事）| `add_note` 笔记（笔记≠卡）|
+**写·轻操作**（均留痕可逆）：`mark_read`（标已读**同时喂画像** read 信号）|
+`star_paper`（逗号多篇、坏项不伤其余；收藏同时喂 star 信号）|
+`skip_paper`（**同时喂画像 uninterested −1.5**，与 Web「不感兴趣」同权）| `add_note` 笔记（笔记≠卡）|
 `write_summary` 单篇补卡 | `delete_briefing` 删某天简报（快照留痕可 undo）。
 
-**主题管理**：`add_topic` / `update_topic`（省略=不动、列表替换语义）/ `set_topic_enabled`。
-**删主题、改主题名：AI 无门，归人。**
+**主题管理（＝往画像池注入词条包）**：`add_topic` / `update_topic` / `set_topic_enabled`——
+参数是 `keywords` / `authors` / `categories` / `exclude_keywords` / **`weight`**（注入基线，
+默认 0.5）；**每次改都会幂等重注入池子**（按差量调权重，不会越改越胖）。
+`exclude_keywords` 以**负权重**注入（＝「别给我看这类」），不再需要找硬门。
+**配额/阈值已废弃**（传了也没用）；**删主题、改主题名：AI 无门，归人。**
 
 **配置与治理**：`set_config`（gate 值，重启回 YAML）| `read_config` | `read_authority` |
 `undo_change`（seq=0 撤最近可逆）| `submit_job` / `read_job` / `cancel_job`（长活用）。

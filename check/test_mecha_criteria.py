@@ -18,7 +18,6 @@ from mecha.tools import ToolRegistry, check_tool_name
 from paperpilot.capabilities import registry_for
 from paperpilot.mecha_adapter.hub import INSTRUCTIONS, MCP_SERVER_NAME
 from paperpilot.mecha_adapter.tools import TOOL_DECLS, TOOL_TO_CAPABILITY
-
 from tests.test_mecha_adapter import EXPECTED_TOOLS, _stack
 
 

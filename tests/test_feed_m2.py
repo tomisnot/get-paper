@@ -5,14 +5,13 @@
 
 from __future__ import annotations
 
+from check.test_ai_experience import _reg
 from paperpilot.domain.feed import (
     EXPLORE_FLOOR_PCT,
     allocate,
     maybe_entropy_boost,
     resolve_quotas,
 )
-
-from check.test_ai_experience import _reg
 
 
 def _item(i: str, cat: str, score: float, authors=("A",)) -> dict:

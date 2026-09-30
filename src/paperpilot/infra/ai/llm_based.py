@@ -103,14 +103,14 @@ class LLMRanker:
         self.max_abstract_chars = max_abstract_chars
         self.batch_size = batch_size
 
-    def score_batch(self, *, papers, profile, run_id: str) -> list[RelevanceScore]:
+    def score_batch(self, *, papers, interest, run_id: str) -> list[RelevanceScore]:
         results: list[RelevanceScore] = []
         for start in range(0, len(papers), self.batch_size):
             batch = list(papers[start : start + self.batch_size])
-            results.extend(self._score_batch_once(batch, profile))
+            results.extend(self._score_batch_once(batch, interest))
         return results
 
-    def _score_batch_once(self, batch, profile) -> list[RelevanceScore]:
+    def _score_batch_once(self, batch, interest) -> list[RelevanceScore]:
         papers_text = "\n\n".join(
             f"[{i}] 标题：{_truncate(p.title, 300)}\n摘要：{_truncate(p.abstract, self.max_abstract_chars)}"
             for i, p in enumerate(batch, start=1)
@@ -120,9 +120,9 @@ class LLMRanker:
             Message(
                 role="user",
                 content=_RANK_USER.format(
-                    topic=profile.name,
-                    description=profile.description or "",
-                    keywords=", ".join(profile.keywords or []),
+                    topic=interest.name,
+                    description=interest.description or "",
+                    keywords=", ".join(interest.keywords or []),
                     papers=papers_text,
                 ),
             ),
@@ -164,14 +164,14 @@ class LLMSummarizer:
         self.llm = llm
         self.max_abstract_chars = max_abstract_chars
 
-    def summarize(self, *, paper, profile, run_id: str) -> PaperSummary:
+    def summarize(self, *, paper, interest, run_id: str) -> PaperSummary:
         messages = [
             Message(role="system", content=_SUM_SYSTEM),
             Message(
                 role="user",
                 content=_SUM_USER.format(
-                    topic=profile.name,
-                    description=profile.description or "",
+                    topic=interest.name,
+                    description=interest.description or "",
                     title=_truncate(paper.title, 400),
                     abstract=_truncate(paper.abstract, self.max_abstract_chars),
                 ),

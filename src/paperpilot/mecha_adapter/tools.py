@@ -81,11 +81,12 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
              omit=("actor",)),
     # ------------------------------------------------------------ 只读面（10）
     ToolDecl("query_topics", "list_topics", "read",
-             "列出研究主题：名称、关键词、分类白名单、配额、评分阈值、启用状态。"),
+             "列出研究主题：名称、关键词、分类白名单、关注作者、配额、评分阈值、启用状态。"),
     ToolDecl("read_digest", "get_digest", "read",
-             "读取某日简报全文（Markdown）与统计。"),
+             "读取某日简报全文（Markdown）与统计。date 省略=今天；full=False 只回统计与条目。"),
     ToolDecl("search_papers", "search_papers", "read",
-             "在论文库中检索（标题/摘要/要点全文匹配）。query 省略则按时间倒序列出近期论文。"),
+             "在论文库中检索（标题/摘要/要点全文匹配）。query 省略则按时间倒序列出近期论文。"
+             "分页：offset 从 0 起，回程带 next_offset（非空则可继续取）。"),
     ToolDecl("read_paper", "get_paper", "read",
              "论文详情：原文摘要、最新 AI 总结、打分历史、笔记、阅读态、本地 PDF 路径。"),
     ToolDecl("read_activity", "get_activity", "read",
@@ -121,7 +122,7 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
              "图上的每篇论文都应是库内论文，才能点进管理页/补卡/喂画像。",
              omit=("actor",)),
     ToolDecl("upstream_clusters", "upstream_clusters", "read",
-             "关键上游簇：库内多篇反复引同一文献⇒领域思想源头。"),
+             "关键上游簇：库内多篇反复引同一文献⇒领域思想源头；按入组数降序。"),
     ToolDecl("related_papers", "related_papers", "read",
              "共引相似：与指定论文引用集交集最大的库内论文。"),
     ToolDecl("coverage_report", "coverage_report", "read",
@@ -129,13 +130,15 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
     ToolDecl("stats_timeseries", "stats_timeseries", "read",
              "趋势聚合：每日入库/信号漏斗/简报节奏/AI 成本按用途（近 N 天）。"),
     ToolDecl("watch_authors", "watch_authors", "read",
-             "作者监控：主题关注+画像正权作者的近 N 天新提交（只读；入库逐篇 fetch_paper_by_id）。"),
+             "作者监控：主题关注+画像正权作者的近 N 天新提交（只读报告；要入库逐篇 fetch_paper_by_id，"
+             "不自动写库）。"),
     ToolDecl("paper_metrics", "paper_metrics", "read",
              "一篇论文的影响力指标：被引数、参考数、高影响引用数、年份、发表场所、要点摘要。"
              "用于判断分量与质量信号。"),
     ToolDecl("read_references", "get_references", "read",
              "取一篇论文引用的文献（往前追溯技术起源）。默认按被引论文引用数降序——排最前的"
-             "即起源/奠基候选；含引用意图与是否高影响引用。可对结果递归再查以继续往前追溯。"),
+             "即起源/奠基候选；含引用意图（background/method/result）与是否高影响引用。"
+             "可对结果递归再查以继续往前追溯。"),
     ToolDecl("read_citations", "get_citations", "read",
              "取引用了这篇论文的文献（往后看影响力扩散与后续工作）。可按引用数降序。"),
     ToolDecl("query_briefings", "list_briefings", "read",

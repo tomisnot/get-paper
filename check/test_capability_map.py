@@ -8,14 +8,14 @@ from __future__ import annotations
 
 from paperpilot.app.container import build_container
 from paperpilot.capabilities import registry_for
-
-from .conftest import make_settings
 from tests.test_mecha_adapter import (
     EXPECTED_TOOLS,
     NON_CAPABILITY_TOOLS,
     TOOL_TO_CAPABILITY,
     _stack,
 )
+
+from .conftest import make_settings
 
 
 def test_declaration_equals_projection(tmp_path):

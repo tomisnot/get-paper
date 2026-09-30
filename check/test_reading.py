@@ -25,6 +25,7 @@ from paperpilot.infra.paperhtml import (
     outline,
     sanitize,
 )
+
 from .conftest import SAMPLE_XML, make_settings
 
 #: 一份"像 LaTeXML 产出"的最小正文：有 id、有图、有一处**没有 id** 的段落，还有一个脚本。

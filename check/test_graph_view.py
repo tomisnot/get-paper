@@ -16,9 +16,9 @@ from fastapi.testclient import TestClient
 from paperpilot.app import graph_view as gv
 from paperpilot.app.web import create_app
 from paperpilot.domain.graph import Edge, Node, layered_layout, timeline_layout
+from tests.test_web_research import _FakeScholar, _seed
 
 from .test_graph_base import _FakeArxivFor
-from tests.test_web_research import _FakeScholar, _seed
 
 
 def _scholar_patch(monkeypatch):

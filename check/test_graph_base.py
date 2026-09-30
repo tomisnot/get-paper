@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 
 from paperpilot.app.web import create_app
 from paperpilot.domain.graph import Edge, Node, label_for, layered_layout
-
 from tests.test_web_research import _FakeScholar, _seed
 
 

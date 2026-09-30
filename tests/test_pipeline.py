@@ -20,10 +20,14 @@ def test_pipeline_end_to_end(pipeline, loaded_repo):
     assert briefing.stats["stats"]["ai_provider"] == "heuristic"
     assert len(briefing.stats["items"]) == result.selected
 
-    # 状态机：入选进 in_briefing，其余过规则者进 archived，cs.ET 那篇不在任何主题内仍为 new
+    # 状态机：入选进 in_briefing，其余**过规则者**进 archived。
+    # ⚠ 2026-09-30 主题池化后语义变了：候选不再"按主题分类取"，分类只是**画像里的软权重**
+    # ⇒ cs.ET 那篇（2608.02555）现在**会进候选**，画像不认它、分数低于阈值 ⇒ 进 archived，
+    # 而不是像旧实现那样"根本不参与⇒永远停在 new"。终态仍可 `requeue` 捞回，不丢东西。
     counts = loaded_repo.counts_by_status()
     assert counts.get("in_briefing", 0) == result.selected
-    assert counts.get("new", 0) == 1  # 2608.02555（cs.ET）不匹配任何主题分类
+    assert counts.get("new", 0) == 0, "池化后论文都会走完一遍判定，不该有漏网的 new"
+    assert counts.get("archived", 0) == 10 - result.selected
     assert sum(counts.values()) == 10
 
 

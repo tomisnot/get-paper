@@ -72,6 +72,13 @@ def build_container(settings: Settings | None = None) -> Container:
     repo.record_op("sync_topics_boot", target="topics",
                    after={"count": len(settings.topics)},
                    actor="system", reason="启动把 YAML 主题真相源对齐进 DB")
+    # 主题包 → 画像池：**每次启动幂等注入**。旧的"仅空画像才播种一次"会把主题冻成快照
+    # （实测：改过的作者永远进不去画像）⇒ 这里每次都对账，主题改动在下次启动/下次主题写入时生效。
+    pool = repo.sync_topic_pool(settings.topics, actor="system",
+                                reason="启动把主题包幂等注入画像池")
+    if pool["injected"] or pool["released"]:
+        repo.record_op("sync_topic_pool_boot", target="profile", after=pool,
+                       actor="system", reason="启动把主题包幂等注入画像池")
 
     ranker = summarizer = None
     notes: list[str] = []

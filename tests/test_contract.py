@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from paperpilot.domain.models import PaperSummary
+from paperpilot.domain.models import InterestBrief, PaperSummary
 from paperpilot.infra.ai import (
     HeuristicRanker,
     HeuristicSummarizer,
@@ -42,12 +42,14 @@ class StubLLMPort:
         return LLMResult(text=self.response, model="stub", prompt_tokens=10, completion_tokens=20)
 
 
-def _profile():
-    return SimpleNamespace(
+def _interest():
+    """兴趣上下文（**画像池**口径）：LLMRanker 只读 name/description/keywords；
+    HeuristicRanker 读 weights ⇒ 给一组可命中的权重，让兜底分非零。"""
+    return InterestBrief(
         name="推理",
         description="test-time compute",
         keywords=["reasoning", "chain-of-thought"],
-        authors=[],
+        weights={("term", "reasoning"): 0.5, ("category", "cs.CL"): 0.5},
     )
 
 
@@ -76,7 +78,7 @@ def test_llm_ranker_parses_valid_response():
     llm = StubLLMPort(json.dumps(payload, ensure_ascii=False))
     ranker = LLMRanker(llm)
 
-    scores = ranker.score_batch(papers=_papers(), profile=_profile(), run_id="t1")
+    scores = ranker.score_batch(papers=_papers(), interest=_interest(), run_id="t1")
 
     assert [round(s.score, 2) for s in scores] == [0.91, 0.62, 0.31]
     assert scores[0].label == "must_read"
@@ -89,21 +91,21 @@ def test_llm_ranker_tolerates_markdown_wrapped_json():
     payload = {"scores": [{"i": 1, "score": 0.8, "label": "worth"}]}
     wrapped = f"```json\n{json.dumps(payload)}\n```"
     ranker = LLMRanker(StubLLMPort(wrapped))
-    scores = ranker.score_batch(papers=_papers(1), profile=_profile(), run_id="t")
+    scores = ranker.score_batch(papers=_papers(1), interest=_interest(), run_id="t")
     assert scores[0].score == 0.8
 
 
 def test_llm_ranker_rejects_garbage():
     ranker = LLMRanker(StubLLMPort("抱歉，我无法完成该任务。"))
     with pytest.raises(AIParseError):
-        ranker.score_batch(papers=_papers(1), profile=_profile(), run_id="t")
+        ranker.score_batch(papers=_papers(1), interest=_interest(), run_id="t")
 
 
 def test_llm_ranker_rejects_length_mismatch():
     payload = {"scores": [{"i": 1, "score": 0.8, "label": "worth"}]}
     ranker = LLMRanker(StubLLMPort(json.dumps(payload)))
     with pytest.raises(AIParseError):
-        ranker.score_batch(papers=_papers(3), profile=_profile(), run_id="t")
+        ranker.score_batch(papers=_papers(3), interest=_interest(), run_id="t")
 
 
 def test_llm_summarizer_parses_valid_response():
@@ -116,7 +118,7 @@ def test_llm_summarizer_parses_valid_response():
         "keywords": ["reasoning", "test-time compute"],
     }
     summarizer = LLMSummarizer(StubLLMPort(json.dumps(payload, ensure_ascii=False)))
-    summary = summarizer.summarize(paper=_papers(1)[0], profile=_profile(), run_id="t")
+    summary = summarizer.summarize(paper=_papers(1)[0], interest=_interest(), run_id="t")
 
     assert isinstance(summary, PaperSummary)
     assert summary.tldr == "提出自适应停止准则"
@@ -124,11 +126,11 @@ def test_llm_summarizer_parses_valid_response():
 
 
 def test_heuristic_ports_work_without_any_model():
-    profile = _profile()
+    profile = _interest()
     papers = _papers(2)
-    scores = HeuristicRanker().score_batch(papers=papers, profile=profile, run_id="t")
+    scores = HeuristicRanker().score_batch(papers=papers, interest=profile, run_id="t")
     assert len(scores) == 2 and all(0.0 <= s.score <= 1.0 for s in scores)
-    summary = HeuristicSummarizer().summarize(paper=papers[0], profile=profile, run_id="t")
+    summary = HeuristicSummarizer().summarize(paper=papers[0], interest=profile, run_id="t")
     assert isinstance(summary, PaperSummary) and summary.tldr
 
 

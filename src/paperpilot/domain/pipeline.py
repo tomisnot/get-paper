@@ -30,17 +30,20 @@ from .models import (
     BriefingItem,
     BriefingItemLite,
     BriefingStats,
+    InterestBrief,
     PaperSummary,
     RelevanceScore,
 )
 from .policy import (
+    PoolScope,
     RuleGate,
     SelectionPolicy,
     extractive_summary,
-    fallback_keyword_score,
-    for_topic,
+    fallback_pool_score,
+    matched_keywords,
     select_for_briefing,
 )
+from .profile import brief_from_view
 
 if TYPE_CHECKING:  # 领域层不运行时依赖 infra / config 实现
     from ..config import Settings
@@ -50,6 +53,13 @@ if TYPE_CHECKING:  # 领域层不运行时依赖 infra / config 实现
     from .ports.repo import PaperRepository
 
 log = logging.getLogger("paperpilot.pipeline")
+
+#: 主题池化后 `topic` **只为显示**且可能缺省（论文不属于任何已声明主题包）⇒ 统一兜底名。
+_FALLBACK_TOPIC_NAME = "画像池"
+
+
+def _topic_name(topic) -> str:
+    return getattr(topic, "name", None) or _FALLBACK_TOPIC_NAME
 
 # 交给 AI 评审的候选上限（防 context 爆炸；回程体积纪律同 Energy Level I4）
 _MAX_REVIEW_CANDIDATES = 40
@@ -210,7 +220,7 @@ class DailyPipelineService:
         ranked, n_candidates, kept_ids = self._prepare_stages(
             run_id, actor=actor, reason=reason
         )
-        topics = {t.id: t for _, t, _ in ranked}
+        interest = self._interest()          # 评审者需要知道"用户在追什么"——现在是**画像**
 
         # 一篇论文可能命中多个主题：只保留基线分最高的那个主题（评审面按论文去重）
         best: dict[str, tuple[Paper, Topic, RelevanceScore]] = {}
@@ -241,7 +251,7 @@ class DailyPipelineService:
                 "arxiv_id": paper.arxiv_id,
                 "title": paper.title,
                 "primary_category": paper.primary_category,
-                "topic": topic.name,
+                "topic": _topic_name(topic),
                 "abstract": (paper.abstract or "")[:cut],
                 "baseline": score.model_dump(),
             }
@@ -276,15 +286,13 @@ class DailyPipelineService:
             "n_after_rules": len(kept_ids),
             "requeue_flipped": requeue_flipped,
             "floor_applied": floor_applied,
-            "topics": [
-                {
-                    "id": t.id,
-                    "name": t.name,
-                    "description": t.description,
-                    "keywords": list(t.keywords or []),
-                }
-                for t in topics.values()
-            ],
+            # 主题池化前这里是"每个主题的 id/名/关键词表"；现在兴趣是一个**画像池**，
+            # 所以给评审者的上下文就是画像摘要（主线分类/高频词/关注作者）。
+            "interest": {
+                "name": interest.name,
+                "description": interest.description,
+                "keywords": list(interest.keywords),
+            },
             "candidates": view,
             "stage": stage,
             "how_to_review": (
@@ -470,14 +478,17 @@ class DailyPipelineService:
         ai_summaries: dict[str, PaperSummary] = {}
         for cand in stored["candidates"]:
             paper = papers.get(cand["arxiv_id"])
-            topic = topics.get(cand.get("topic_id"))
-            if paper is None or topic is None:
+            # ⚠ 池化后 `topic_id` 可能为 null（论文不属于任何主题包）⇒ **不能**因此丢掉候选，
+            # 否则"评审过的论文"会在提交阶段被静默吞掉。
+            topic = topics.get(cand.get("topic_id")) if cand.get("topic_id") else None
+            if paper is None:
                 continue
             raw = cand.get("ai") or cand["baseline"]
             score = RelevanceScore(**raw)
             # 评审跑的打分也进历史（详情页「打分历史」可见 AI 判了什么）
             self.repo.save_scores(
-                run_id=run_id, paper=paper, topic_id=topic.id,
+                run_id=run_id, paper=paper,
+                topic_id=(topic.id if topic is not None else None),
                 score=score, model="dsh-review" if cand.get("ai") else "heuristic",
             )
             ranked.append((paper, topic, score))
@@ -516,65 +527,91 @@ class DailyPipelineService:
         }
 
     # ================================================================== 内部阶段
+    #: 送给打分器的候选上限（按画像分排序取前 N）。防"某天入库暴涨 ⇒ AI 调用爆炸"；
+    #: 240 ≈ 30 次批（batch=8），与旧口径（每主题各评一遍）同量级。
+    _CANDIDATE_CAP = 240
+
+    def _interest(self) -> InterestBrief:
+        """当前**兴趣上下文**（画像池 → 给打分器/精读器）。日报线与推荐流共用这一个真相。"""
+        return brief_from_view(self.repo.profile_view(), self.repo.profile_weights_map())
+
+    def _label_topics(self, papers) -> dict:
+        """给论文挑一个"归属主题"——**只用于显示**（简报里那句"来自哪个主题"）。
+
+        主题池化后它**不参与任何决策**：配额/阈值已废除，相关性由画像权重决定。
+        挑法：命中关键词数 + 主分类落在该主题分类里加 2 分，取最高者；没有则不给标签。
+        """
+        topics = self.repo.enabled_topics()
+        if not topics:
+            return {}
+        out: dict = {}
+        for p in papers:
+            best, best_hits = None, 0
+            for t in topics:
+                hits = len(matched_keywords(p, t))
+                if (p.primary_category or "") in (t.categories or []):
+                    hits += 2
+                if hits > best_hits:
+                    best, best_hits = t, hits
+            if best is not None:
+                out[p.arxiv_id] = best
+        return out
+
     def _prepare_stages(self, run_id: str, *, actor: str = "system", reason: str = ""):
-        """候选 → 硬规则 → 基线分。返回 (ranked, n_candidates, kept_ids)。"""
+        """候选 → 全局硬门 → **画像基线分**。返回 (ranked, n_candidates, kept_ids)。
+
+        ⚠ 2026-09-30 主题池化：候选不再"按主题分类取"、门不再"每主题一套"、分不再
+        "按主题关键词算"。现在是：**new + 回溯窗** 取候选 → 全局客观门（非英文/作者黑名单）
+        → 画像池打分。`ranked` 的 ``topic`` 元素**只为显示**（可能缺省）。
+        """
         self.repo.sync_topics(self.settings.topics, actor=actor, reason=reason)
+        self.repo.sync_topic_pool(self.settings.topics, actor=actor, reason=reason)
 
-        candidates: list[tuple[Topic, list[Paper]]] = []
-        for topic in self.repo.enabled_topics():
-            papers = self.repo.candidates_for_topic(
-                topic, lookback_days=self._eff_lookback_days()
-            )
-            if papers:
-                candidates.append((topic, papers))
-        candidate_ids = {p.arxiv_id for _, papers in candidates for p in papers}
-        n_candidates = len(candidate_ids)
+        weights = self.repo.profile_weights_map()
+        rows = self.repo.pipeline_candidates(lookback_days=self._eff_lookback_days())
+        n_candidates = len(rows)
 
+        # 全局硬门只留"客观不可入"。**绝不能拿 `settings.arxiv_categories` 当门**：那是
+        # 抓取范围（示例配置是 cs.*，而主题可能在 quant-ph），当门会把整个主题域一刀切掉。
+        # 分类与排除词都改走画像权重（软影响）——这正是"不再死板"的落点。
         gate = RuleGate(blocked_authors=self.blocked_authors)
-        after_rules: list[tuple[Topic, list[Paper]]] = []
-        for topic, papers in candidates:
-            kept, _rejected = gate.apply(papers, topic)
-            if kept:
-                after_rules.append((topic, kept))
-        kept_ids = {p.arxiv_id for _, kept in after_rules for p in kept}
-        # 被所有主题都拒的论文才标记 rejected；任一主题放行则保留 new，等待末尾归档/入选
-        for _topic, papers in candidates:
-            for paper in papers:
-                if paper.arxiv_id not in kept_ids:
-                    self.repo.mark_status(
-                        paper, "rejected", actor=actor, reason=reason or "规则过滤未通过"
-                    )
+        kept, rejected = gate.apply(rows, PoolScope())
+        for paper in rejected:
+            self.repo.mark_status(paper, "rejected", actor=actor,
+                                  reason=reason or "全局规则未通过")
+        kept_ids = {p.arxiv_id for p in kept}
 
-        ranked: list[tuple[Paper, Topic, RelevanceScore]] = []
-        for topic, papers in after_rules:
-            for paper in papers:
-                ranked.append((paper, topic, fallback_keyword_score(paper, topic)))
+        scored = [(p, fallback_pool_score(p, weights)) for p in kept]
+        scored.sort(key=lambda ps: (-ps[1].score, ps[0].arxiv_id))   # 平分时按 id，确定性
+        top = scored[: self._CANDIDATE_CAP]
+        labels = self._label_topics([p for p, _s in top])
+        ranked: list[tuple[Paper, Topic | None, RelevanceScore]] = [
+            (p, labels.get(p.arxiv_id), s) for p, s in top
+        ]
         return ranked, n_candidates, kept_ids
 
     def _prepare_and_rank(self, run_id: str, *, actor: str = "system", reason: str = ""):
-        """run() 用：基线分之后，若配了程序化 ranker 则升级为 AI 打分。"""
+        """run() 用：基线分之后，若配了程序化 ranker 则升级为 AI 打分（**一次全局评**）。"""
         ranked, n_candidates, kept_ids = self._prepare_stages(
             run_id, actor=actor, reason=reason
         )
         degraded: list[str] = []
         ai_ms = 0
-        if self.ranker is not None:
-            upgraded: list[tuple[Paper, Topic, RelevanceScore]] = []
-            by_topic: dict[int, list[Paper]] = {}
-            for paper, topic, _score in ranked:
-                by_topic.setdefault(topic.id, []).append(paper)
-            topics = {t.id: t for _, t, _ in ranked}
-            for topic_id, papers in by_topic.items():
-                scores, elapsed, err = self._rank(papers, topics[topic_id], run_id)
-                ai_ms += elapsed
-                if err:
-                    degraded.append(err)
-                for paper, score in zip(papers, scores, strict=False):
-                    self.repo.save_scores(
-                        run_id=run_id, paper=paper, topic_id=topic_id,
-                        score=score, model=self._model_name(),
-                    )
-                    upgraded.append((paper, topics[topic_id], score))
+        if self.ranker is not None and ranked:
+            papers = [p for p, _t, _s in ranked]
+            interest = self._interest()
+            scores, elapsed, err = self._rank(papers, interest, run_id)
+            ai_ms += elapsed
+            if err:
+                degraded.append(err)
+            upgraded: list[tuple[Paper, Topic | None, RelevanceScore]] = []
+            for (paper, topic, _base), score in zip(ranked, scores, strict=False):
+                self.repo.save_scores(
+                    run_id=run_id, paper=paper,
+                    topic_id=(topic.id if topic is not None else None),
+                    score=score, model=self._model_name(),
+                )
+                upgraded.append((paper, topic, score))
             ranked = upgraded
         return ranked, n_candidates, kept_ids, degraded, ai_ms
 
@@ -603,39 +640,41 @@ class DailyPipelineService:
         pre_summaries = pre_summaries or {}
         degraded = list(degraded)
 
-        # 4) 全局去重（同一篇取最高分主题）+ 配额筛选
-        best: dict[str, tuple[Paper, Topic, RelevanceScore]] = {}
+        # 4) 全局去重（同一篇取最高分）＋ **一次全局选择**
+        # 主题池化前：按 topic_id 分组，各套 `for_topic()` 的 threshold/quota。
+        # 池化后：**没有"每主题"这个概念了**——兴趣是一个池子，选择是一次全局排序。
+        best: dict[str, tuple[Paper, Topic | None, RelevanceScore]] = {}
         for paper, topic, score in ranked:
             cur = best.get(paper.arxiv_id)
             if cur is None or score.score > cur[2].score:
                 best[paper.arxiv_id] = (paper, topic, score)
 
-        by_topic: dict[int, list[tuple[Paper, RelevanceScore]]] = {}
-        topic_by_id = {t.id: t for _, t, _ in ranked}
-        for paper, topic, score in best.values():
-            by_topic.setdefault(topic.id, []).append((paper, score))
-
         scoring = self._eff_scoring()
         base_policy = SelectionPolicy(
             threshold=scoring.threshold,
-            quota_per_topic=scoring.quota_per_topic,
+            # "每主题配额"已废除 ⇒ 借用它当**总配额**（与 max_papers 同值，双保险）
+            quota_per_topic=scoring.max_papers,
             max_papers=scoring.max_papers,
             max_per_author=scoring.max_per_author,
             must_read_cap=scoring.must_read_cap,
         )
-        selected: list[tuple[Paper, Topic, RelevanceScore]] = []
-        archived: list[tuple[Paper, Topic, RelevanceScore]] = []
-        for topic_id, items in by_topic.items():
-            topic = topic_by_id[topic_id]
-            sel, arc = select_for_briefing(items, for_topic(base_policy, topic))
-            selected.extend((p, topic, s) for p, s in sel)
-            archived.extend((p, topic, s) for p, s in arc)
-
-        # 全局总量上限（超出部分降为存档）
+        picked, _dropped = select_for_briefing(
+            [(p, s) for p, _t, s in best.values()], base_policy
+        )
+        selected_ids = {p.arxiv_id for p, _s in picked}
+        selected: list[tuple[Paper, Topic | None, RelevanceScore]] = [
+            (p, t, s) for p, t, s in best.values() if p.arxiv_id in selected_ids
+        ]
         selected.sort(key=lambda x: -x[2].score)
-        overflow = selected[base_policy.max_papers :]
-        selected = selected[: base_policy.max_papers]
-        archived.extend(overflow)
+        # **硬总量上限**：`select_for_briefing` 里 must_read **不占配额**（那是有意的：必读不该
+        # 被配额挤掉），所以光靠 quota 管不住总量 ⇒ 这里再按 max_papers 截断，超出者降为存档。
+        # ⚠ 这一步旧实现就有，重写成全局选择时**弄丢过一次**（判据当场抓到：max_papers=2 却选了 3）。
+        overflow = selected[base_policy.max_papers:]
+        if overflow:
+            selected = selected[: base_policy.max_papers]
+        archived: list[tuple[Paper, Topic | None, RelevanceScore]] = [
+            (p, t, s) for p, t, s in best.values() if p.arxiv_id not in selected_ids
+        ] + list(overflow)
 
         # 5) 精读：review 模式用 AI 已交总结；其余走 summarizer / 抽取式兜底
         items, sum_ms, sum_errors = self._summarize(selected, run_id, pre_summaries)
@@ -697,17 +736,17 @@ class DailyPipelineService:
             degraded=degraded,
         )
 
-    def _rank(self, papers, topic, run_id):
-        """程序化 AI 档打分（失败降级关键词兜底）。返回 (scores, elapsed_ms, error)。"""
+    def _rank(self, papers, interest, run_id):
+        """程序化 AI 档打分（失败降级**画像兜底**）。返回 (scores, elapsed_ms, error)。"""
         if self.ranker is None:
             return (
-                [fallback_keyword_score(p, topic) for p in papers],
+                [fallback_pool_score(p, interest.weights) for p in papers],
                 0,
-                "ranker 未配置，使用关键词兜底",
+                "ranker 未配置，使用画像兜底",
             )
         t0 = time.perf_counter()
         try:
-            scores = self.ranker.score_batch(papers=papers, profile=topic, run_id=run_id)
+            scores = self.ranker.score_batch(papers=papers, interest=interest, run_id=run_id)
         except Exception as exc:  # noqa: BLE001
             elapsed = int((time.perf_counter() - t0) * 1000)
             self.repo.log_ai_call(
@@ -716,9 +755,9 @@ class DailyPipelineService:
                 latency_ms=elapsed, ok=False, error=str(exc),
             )
             return (
-                [fallback_keyword_score(p, topic) for p in papers],
+                [fallback_pool_score(p, interest.weights) for p in papers],
                 elapsed,
-                f"ranker 失败（{exc}），使用关键词兜底",
+                f"ranker 失败（{exc}），使用画像兜底",
             )
         elapsed = int((time.perf_counter() - t0) * 1000)
         if len(scores) != len(papers):
@@ -729,9 +768,9 @@ class DailyPipelineService:
                 error=f"length mismatch {len(scores)} != {len(papers)}",
             )
             return (
-                [fallback_keyword_score(p, topic) for p in papers],
+                [fallback_pool_score(p, interest.weights) for p in papers],
                 elapsed,
-                "ranker 返回长度不符，使用关键词兜底",
+                "ranker 返回长度不符，使用画像兜底",
             )
         self.repo.log_ai_call(
             port="ranker", purpose="score_batch",
@@ -751,6 +790,7 @@ class DailyPipelineService:
         results: dict[str, dict] = {}
         errors: list[str] = []
         ai_ms = 0
+        interest = self._interest()          # 精读同样基于**画像**（不再是某个主题）
 
         def work(item):
             paper, topic, score = item
@@ -764,7 +804,7 @@ class DailyPipelineService:
                 t0 = time.perf_counter()
                 try:
                     summary = self.summarizer.summarize(
-                        paper=paper, profile=topic, run_id=run_id
+                        paper=paper, interest=interest, run_id=run_id
                     )
                     latency = int((time.perf_counter() - t0) * 1000)
                     self.repo.save_summary(
@@ -883,8 +923,8 @@ class DailyPipelineService:
             "candidates": [
                 {
                     "arxiv_id": paper.arxiv_id,
-                    "topic_id": topic.id,
-                    "topic": topic.name,
+                    "topic_id": (topic.id if topic is not None else None),
+                    "topic": _topic_name(topic),
                     "baseline": score.model_dump(),
                     "ai": None,
                     "ai_summary": None,

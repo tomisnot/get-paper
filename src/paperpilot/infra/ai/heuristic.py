@@ -6,16 +6,16 @@
 from __future__ import annotations
 
 from ...domain.models import PaperSummary, RelevanceScore
-from ...domain.policy import extractive_summary, fallback_keyword_score
+from ...domain.policy import extractive_summary, fallback_pool_score
 
 
 class HeuristicRanker:
-    """关键词重合度伪相关性打分。"""
+    """画像池线性加权打分（与推荐流同一套权重）。"""
 
     name = "heuristic-ranker"
 
-    def score_batch(self, *, papers, profile, run_id: str) -> list[RelevanceScore]:
-        return [fallback_keyword_score(p, profile) for p in papers]
+    def score_batch(self, *, papers, interest, run_id: str) -> list[RelevanceScore]:
+        return [fallback_pool_score(p, interest.weights) for p in papers]
 
 
 class HeuristicSummarizer:
@@ -23,5 +23,5 @@ class HeuristicSummarizer:
 
     name = "heuristic-summarizer"
 
-    def summarize(self, *, paper, profile, run_id: str) -> PaperSummary:
+    def summarize(self, *, paper, interest, run_id: str) -> PaperSummary:
         return extractive_summary(paper)

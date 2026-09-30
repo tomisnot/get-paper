@@ -13,10 +13,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from ..models import LLMResult, Message, PaperSummary, RelevanceScore
+from ..models import InterestBrief, LLMResult, Message, PaperSummary, RelevanceScore
 
 if TYPE_CHECKING:  # 避免领域层运行时依赖 ORM
-    from ...infra.orm import Paper, Topic
+    from ...infra.orm import Paper
 
 
 @runtime_checkable
@@ -42,13 +42,18 @@ class LLMPort(Protocol):
 
 @runtime_checkable
 class RankerPort(Protocol):
-    """论文相关性打分。实现必须保证返回值长度与 papers 一致。"""
+    """论文相关性打分。实现必须保证返回值长度与 papers 一致。
+
+    ⚠ 参数名曾是 `profile: Topic`——**名实不符**（传进来的是**主题**，不是画像），
+    读代码的人会误解。2026-09-30 主题池化时一并正名为 `interest: InterestBrief`：
+    现在它**真的是画像**（含权重），日报线与推荐流共用同一个兴趣对象。
+    """
 
     def score_batch(
         self,
         *,
         papers: Sequence[Paper],
-        profile: Topic,
+        interest: InterestBrief,
         run_id: str,
     ) -> list[RelevanceScore]:
         ...
@@ -62,7 +67,7 @@ class SummarizerPort(Protocol):
         self,
         *,
         paper: Paper,
-        profile: Topic,
+        interest: InterestBrief,
         run_id: str,
     ) -> PaperSummary:
         ...

@@ -255,7 +255,6 @@ def build(repo, retrieval, settings, spec: dict, *, focus: str = "",
           edge_limit: int = 6000) -> dict:
     """编译一份视图 → 渲染载荷（nodes/links/bands/legend/stats + 回执副本）。"""
     spec = normalize_spec(spec)
-    cfg = settings.graph
     edges = repo.citation_edges_all(limit=int(edge_limit))
     foot = {"spec": spec, "views": repo.list_graph_views(),
             "stats": {"edges": len(edges), "src": 0, "dst": 0, "shown": 0,

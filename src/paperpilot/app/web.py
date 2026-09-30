@@ -565,34 +565,40 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         exclude_keywords: str = Form(""),
         categories: str = Form(""),
         authors: str = Form(""),
-        quota: int = Form(4),
-        threshold: float = Form(0.6),
-        enabled: bool = Form(False),
+        weight: float = Form(0.5),
     ):
+        """主题 = **词条包**：只保留"新建 + 删除"（2026-09-30 用户裁决：逐字段规则编辑已过时）。
+
+        每次增删都调 `sync_topic_pool` **幂等重建注入**：新建 ⇒ 按 weight 注入画像池；
+        删除 ⇒ 按 `source` 精确撤掉它注入的基线（行为学到的权重保留）。
+        """
         s = container.settings
         topics = list(s.topics)
         if action == "add":
+            if not (keywords.strip() or categories.strip() or authors.strip()):
+                return RedirectResponse(
+                    "/settings?msg=空主题包没用：至少给关键词/作者/分类之一", status_code=303)
             topics.append(_topic_from_form(name, description, keywords, exclude_keywords,
-                                           categories, authors, quota, threshold, enabled))
-            msg = f"已新增主题「{name}」"
-        elif action == "update" and index.isdigit() and 0 <= int(index) < len(topics):
-            topics[int(index)] = _topic_from_form(
-                name, description, keywords, exclude_keywords,
-                categories, authors, quota, threshold, enabled,
-            )
-            msg = f"已更新主题「{name}」"
+                                           categories, authors, weight))
+            msg = f"已新建主题包「{name}」并注入画像池"
         elif action == "delete" and index.isdigit() and 0 <= int(index) < len(topics):
             removed = topics.pop(int(index))
-            msg = f"已删除主题「{removed.name}」"
+            msg = f"已删除主题包「{removed.name}」，其注入权重已撤"
         else:
-            return RedirectResponse("/settings?msg=无效操作", status_code=303)
+            return RedirectResponse("/settings?msg=无效操作（只支持新建/删除）", status_code=303)
         s.topics = topics
         save_settings(s)
         container.repo.sync_topics(
             topics, actor="human",
-            reason=f"Web 设置页主题操作（{action}）「{name}」",
+            reason=f"Web 设置页主题包操作（{action}）「{name}」",
         )
-        return RedirectResponse(f"/settings?msg={msg}", status_code=303)
+        pool = container.repo.sync_topic_pool(
+            topics, actor="human",
+            reason=f"Web 设置页主题包操作（{action}）「{name}」注入画像池",
+        )
+        return RedirectResponse(
+            f"/settings?msg={msg}（注入 {pool['injected']} · 撤权 {pool['released']}）",
+            status_code=303)
 
     @app.post("/settings/briefings/delete")
     def delete_briefing_row(date: str = Form(...)):
@@ -939,10 +945,13 @@ def _topic_from_form(
     exclude_keywords: str,
     categories: str,
     authors: str,
-    quota: int,
-    threshold: float,
-    enabled: bool,
+    weight: float = 0.5,
 ) -> TopicCfg:
+    """设置页的「手动新建主题包」→ TopicCfg。
+
+    ⚠ 2026-09-30：`quota`/`threshold`/`enabled` 不再由表单提供——主题的语义只剩
+    "按 weight 往画像池注入词条"（见 TopicCfg 文档）。旧字段仍留在模型里读得懂老 YAML。
+    """
     return TopicCfg(
         name=name.strip() or "未命名主题",
         description=description,
@@ -950,7 +959,6 @@ def _topic_from_form(
         exclude_keywords=_split_csv(exclude_keywords),
         categories=_split_csv(categories),
         authors=_split_csv(authors),
-        quota=quota,
-        threshold=threshold,
-        enabled=enabled,
+        weight=max(0.0, float(weight or 0.0)),
+        enabled=True,
     )

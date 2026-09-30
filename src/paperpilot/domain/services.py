@@ -52,25 +52,43 @@ class RetrievalService:
         )
 
     # ---- 人工状态（actor 默认 human：Web 是人在用）----
+    def _pref(self, arxiv_id: str, signal: str, on: bool) -> None:
+        """Web 入口表达的偏好也要喂画像（与 AI 侧**同表同权**）。
+
+        只记打开方向：信号表没有"取消收藏/标未读"这两档，硬造负值会把"取消"误当"讨厌"。
+        """
+        if not on:
+            return
+        try:
+            self.repo.record_signal(arxiv_id, signal, actor="human",
+                                    reason=f"Web 面板表达偏好：{signal}")
+        except Exception:  # noqa: BLE001  记账失败不拦页面
+            import logging
+            logging.getLogger("paperpilot.services").exception("偏好信号记账失败（操作照常）")
+
     def toggle_read(self, arxiv_id: str) -> bool | None:
         paper = self.repo.get_paper(arxiv_id)
         if paper is None:
             return None
         current = bool(paper.reading.read) if paper.reading else False
         self.repo.set_read(paper, read=not current, actor="human", reason="Web 面板切换已读")
+        self._pref(arxiv_id, "read", not current)
         return True
 
     def star(self, arxiv_id: str) -> bool | None:
         paper = self.repo.get_paper(arxiv_id)
         if paper is None:
             return None
-        return self.repo.toggle_star(paper, actor="human", reason="Web 面板收藏")
+        star = self.repo.toggle_star(paper, actor="human", reason="Web 面板收藏")
+        self._pref(arxiv_id, "star", bool(star))
+        return star
 
     def skip(self, arxiv_id: str) -> bool | None:
         paper = self.repo.get_paper(arxiv_id)
         if paper is None:
             return None
         self.repo.set_marked_skip(paper, skip=True, actor="human", reason="Web 面板标不感兴趣")
+        self._pref(arxiv_id, "uninterested", True)      # 负反馈：与 AI 的 skip_paper 同权
         return True
 
     def add_note(self, arxiv_id: str, content: str) -> bool:

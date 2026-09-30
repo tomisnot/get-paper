@@ -32,6 +32,12 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str, str]]] = {
     # **自动**拿到默认值（`kind='history'` 对现有事件是**正确**的：它们全是域事件），
     # **一个 UPDATE 都不用** ⇒ 不碰 events 表那道 append-only 触发器。
     "events": [("kind", "VARCHAR(16)", "'history'"), ("call_id", "VARCHAR(64)", "''")],
+    # 2026-09-30 画像池化：主题不再"一次性播种"，而是以幂等 upsert 往池子里注入带权重的词条
+    # ⇒ 需要溯源两列。老行自动拿默认值：`source='signal'`（它们本来就是行为学出来的）、
+    # `w_base=0.0`（没有基线可撤）——语义对老家底是**正确**的。
+    "profile_weights": [("source", "VARCHAR(48)", "'signal'"), ("w_base", "FLOAT", "0.0")],
+    # 主题=词条包：注入基线的权重列（老行拿 0.5，与 TopicCfg 默认一致，避免老主题"消失权重"）。
+    "topics": [("weight", "FLOAT", "0.5")],
 }
 
 #: 列**改名**表：{表: [(旧名, 新名)]}。同样纯 DDL：SQLite（≥3.25）`RENAME COLUMN` 会

@@ -50,6 +50,28 @@ def matched_authors(paper, topic) -> list[str]:
 
 
 # ---------------------------------------------------------------- 兜底打分（Mock 与降级共用）
+def fallback_pool_score(paper, weights) -> RelevanceScore:
+    """**画像池兜底打分**（日报线的基线分 & AI 缺席时的降级）。
+
+    与推荐流用**同一个** `profile.score_paper` ⇒ 两条线一个真相。原始分经
+    `pool_relevance` 压到 0~1，`why` 原样带进 reason（**拿不出 why 的条目不许进简报**）。
+    """
+    from .profile import label_for, paper_features, pool_relevance, score_paper
+
+    feat = paper_features(list(getattr(paper, "categories", None) or []),
+                          getattr(paper, "primary_category", "") or "",
+                          getattr(paper, "title", "") or "",
+                          getattr(paper, "abstract", "") or "",
+                          list(getattr(paper, "authors", None) or []))
+    raw, why = score_paper(feat, weights or {})
+    rel = pool_relevance(raw)
+    return RelevanceScore(
+        score=rel, label=label_for(rel),
+        reason=("；".join(why[:4]) if why else "画像池无命中：按探索位保留待 AI 判断"),
+        tags=[t for t in feat["terms"][:6]],
+    )
+
+
 def fallback_keyword_score(paper, topic) -> RelevanceScore:
     """关键词重合度兜底打分：AI 不可用时保证流水线仍可运行（DESIGN.md §4.4）。"""
     total = len(topic.keywords or [])
@@ -82,6 +104,20 @@ def fallback_keyword_score(paper, topic) -> RelevanceScore:
 
 
 # ---------------------------------------------------------------- 硬规则
+@dataclass(frozen=True)
+class PoolScope:
+    """**全局硬门口径**（主题池化后，门不再挂在每个主题上）。
+
+    主题的"分类白名单/排除词"改走画像（正/负权重，软影响）；这里只留**全局**的硬底线：
+    分类白名单（默认取 `settings.arxiv_categories`）、全局排除词、关注/屏蔽作者。
+    与 `TopicCfg` 鸭式同形（都有 categories/exclude_keywords），所以 `RuleGate.apply` 两者通吃。
+    """
+
+    categories: tuple[str, ...] = ()
+    exclude_keywords: tuple[str, ...] = ()
+    authors: tuple[str, ...] = ()
+
+
 @dataclass(frozen=True)
 class GateStats:
     category_blocked: int = 0

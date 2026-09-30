@@ -20,7 +20,6 @@ from __future__ import annotations
 from mecha.scopes import ScopePolicy
 
 from paperpilot.mecha_adapter.commands import invoke_command
-
 from tests.test_mecha_adapter import _stack
 
 
@@ -136,7 +135,6 @@ def test_bound_policy_does_not_break_the_paths_users_actually_take(tmp_path):
 
     from paperpilot.app.container import build_container
     from paperpilot.app.web import create_app
-
     from tests.conftest import make_settings
     from tests.test_web_mecha import _gated
 

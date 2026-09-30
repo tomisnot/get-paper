@@ -20,7 +20,16 @@ _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
 
 class TopicCfg(BaseModel):
-    """一个研究主题（打分的最小单位）。"""
+    """一个研究主题 = **往画像池注入的一组带权重词条**（不再是"规则表"）。
+
+    ⚠ 2026-09-30 语义转向（用户裁决）：主题曾经是一套规则（分类白名单 + 排除词 + 每主题
+    配额/阈值），配好后只**一次性播种**进画像 ⇒ 之后改主题画像不动，成了"填了没用"的死配置。
+    现在主题退化为**种子包**：它列出的 keywords/authors/categories 会被**幂等 upsert** 进
+    画像池（带上 `weight` 作为基线权重、带 `topic:<名>` 溯源），日报线与推荐流**都吃画像**。
+    ⇒ 改主题＝改池子里的权重，立刻生效；删主题＝按溯源精确撤权（学到的东西不误伤）。
+
+    ``quota`` / ``threshold`` **已弃用**：保留只为读得懂旧配置文件，不再参与任何选择。
+    """
 
     name: str
     description: str = ""
@@ -28,7 +37,11 @@ class TopicCfg(BaseModel):
     exclude_keywords: list[str] = Field(default_factory=list)
     categories: list[str] = Field(default_factory=list)
     authors: list[str] = Field(default_factory=list)
+    #: 注入画像池的基线权重（三条词条都按它给先验）。0.5 与旧 `seed` 系数同档。
+    weight: float = 0.5
+    #: @deprecated 不再参与候选/门/配额；见类文档。
     quota: int = 4
+    #: @deprecated 同上。
     threshold: float = 0.6
     enabled: bool = True
 

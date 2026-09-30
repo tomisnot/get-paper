@@ -36,6 +36,21 @@ class RelevanceScore(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class InterestBrief(BaseModel):
+    """打分/精读时的「**兴趣上下文**」——来自**画像池**，不再是单个主题。
+
+    为什么要有它（2026-09-30，主题池化）：日报线原来把 `Topic` 对象当"画像"传给打分器，
+    于是"兴趣"就等于"一个主题的关键词表"；现在主题只是池子里的种子，**真正的兴趣是池子**。
+    * ``weights``：(kind,key)→权重 ⇒ 兜底打分器与推荐流用**同一套**权重（一个真相）；
+    * ``name`` / ``description`` / ``keywords``：给 AI prompt 读的人话上下文（保持可解释）。
+    """
+
+    name: str = "我的兴趣画像"
+    description: str = ""
+    keywords: list[str] = Field(default_factory=list)
+    weights: dict[tuple[str, str], float] = Field(default_factory=dict)
+
+
 class PaperSummary(BaseModel):
     tldr: str = ""
     problem: str = ""

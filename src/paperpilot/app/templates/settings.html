@@ -116,57 +116,62 @@
   </form>
 </div>
 
-<h2>研究主题（{{ settings.topics | length }}）</h2>
-<p class="muted">主题是打分配额的最小单位；多个关键词用英文逗号分隔。</p>
-{% for t in settings.topics %}
-<div class="card">
-  <form method="post" action="/settings/topics">
-    <input type="hidden" name="action" value="update">
-    <input type="hidden" name="index" value="{{ loop.index0 }}">
-    <div class="row">
-      <div style="flex:2;"><label>名称</label><input type="text" name="name" value="{{ t.name }}" style="width:100%;"></div>
-      <div><label>配额</label><input type="number" name="quota" value="{{ t.quota }}" min="1"></div>
-      <div><label>阈值</label><input type="number" step="0.05" name="threshold" value="{{ t.threshold }}" min="0" max="1"></div>
-      <div><label>启用</label><input type="checkbox" name="enabled" {{ "checked" if t.enabled }} style="width:auto;"></div>
-    </div>
-    <div class="row">
-      <div style="flex:2;"><label>描述（给 AI 的领域画像）</label><input type="text" name="description" value="{{ t.description }}" style="width:100%;"></div>
-      <div style="flex:2;"><label>分类（白名单）</label><input type="text" name="categories" value="{{ t.categories | join(",") }}" placeholder="cs.CL, cs.AI" style="width:100%;"></div>
-    </div>
-    <div class="row">
-      <div style="flex:2;"><label>关键词</label><input type="text" name="keywords" value="{{ t.keywords | join(",") }}" style="width:100%;"></div>
-      <div style="flex:2;"><label>排除词</label><input type="text" name="exclude_keywords" value="{{ t.exclude_keywords | join(",") }}" style="width:100%;"></div>
-      <div><label>关注作者</label><input type="text" name="authors" value="{{ t.authors | join(",") }}" style="width:100%;"></div>
-    </div>
-    <div class="actions">
-      <button type="submit">保存</button>
-      <button class="ghost" formaction="/settings/topics" name="action" value="delete" formnovalidate
-              onclick="return confirm('删除主题「{{ t.name }}」？')">删除</button>
-    </div>
-  </form>
-</div>
-{% endfor %}
+<h2>研究主题 · 词条包（{{ settings.topics | length }}）</h2>
+<p class="muted">
+  主题的**唯一作用**是把一组词条按权重注入<b>画像池</b>——日报与推荐流都吃画像，
+  所以「加主题」＝「给这批词一个先验权重」。<b>改主题请直接新建新的</b>（旧的删掉）：
+  逐字段的规则编辑（配额/阈值/白名单）已废弃，它们不再参与任何选择。
+</p>
+{% if settings.topics %}
+<table>
+  <tr><th>主题</th><th>权重</th><th>注入的词条</th><th>状态</th><th></th></tr>
+  {% for t in settings.topics %}
+  <tr>
+    <td><b>{{ t.name }}</b>{% if t.description %}<div class="muted">{{ t.description }}</div>{% endif %}</td>
+    <td>{{ t.weight }}</td>
+    <td class="muted">
+      {% if t.keywords %}词：{{ t.keywords | join("、") }}<br>{% endif %}
+      {% if t.authors %}作者：{{ t.authors | join("、") }}<br>{% endif %}
+      {% if t.categories %}分类：{{ t.categories | join("、") }}<br>{% endif %}
+      {% if t.exclude_keywords %}<span style="color:var(--danger,#c00);">排除（负权重）：{{ t.exclude_keywords | join("、") }}</span>{% endif %}
+    </td>
+    <td>{{ "启用" if t.enabled else "停用" }}<div class="muted">{{ (t.keywords|length) + (t.authors|length) + (t.categories|length) }} 条</div></td>
+    <td>
+      <form method="post" action="/settings/topics">
+        <input type="hidden" name="action" value="delete">
+        <input type="hidden" name="index" value="{{ loop.index0 }}">
+        <button class="ghost" formnovalidate
+                onclick="return confirm('删除主题「{{ t.name }}」？它注入画像池的权重会被撤掉（行为学到的部分保留）。')">删除</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="muted">还没有主题包。</p>
+{% endif %}
 
-<h2>新增主题</h2>
+<h2>手动新建主题包</h2>
 <div class="card">
   <form method="post" action="/settings/topics">
     <input type="hidden" name="action" value="add">
     <div class="row">
-      <div style="flex:2;"><label>名称</label><input type="text" name="name" required style="width:100%;"></div>
-      <div><label>配额</label><input type="number" name="quota" value="4" min="1"></div>
-      <div><label>阈值</label><input type="number" step="0.05" name="threshold" value="0.6" min="0" max="1"></div>
-      <div><label>启用</label><input type="checkbox" name="enabled" checked style="width:auto;"></div>
+      <div style="flex:2;"><label>名称</label><input type="text" name="name" required placeholder="例：中性原子实验" style="width:100%;"></div>
+      <div><label>权重</label><input type="number" step="0.1" name="weight" value="0.5" min="0" max="5"></div>
     </div>
     <div class="row">
-      <div style="flex:2;"><label>描述</label><input type="text" name="description" placeholder="关注什么方向…" style="width:100%;"></div>
-      <div style="flex:2;"><label>分类</label><input type="text" name="categories" placeholder="cs.CL, cs.AI" style="width:100%;"></div>
+      <div style="flex:2;"><label>关键词（逗号分隔；多词短语也支持）</label>
+        <input type="text" name="keywords" placeholder="neutral atom, optical tweezer" style="width:100%;"></div>
+      <div style="flex:2;"><label>关注作者</label>
+        <input type="text" name="authors" placeholder="Mikhail Lukin, Hui Zhai" style="width:100%;"></div>
     </div>
     <div class="row">
-      <div style="flex:2;"><label>关键词</label><input type="text" name="keywords" placeholder="keyword1, keyword2" style="width:100%;"></div>
-      <div style="flex:2;"><label>排除词</label><input type="text" name="exclude_keywords" placeholder="survey" style="width:100%;"></div>
-      <div><label>关注作者</label><input type="text" name="authors" style="width:100%;"></div>
+      <div style="flex:2;"><label>分类</label>
+        <input type="text" name="categories" placeholder="quant-ph, physics.atom-ph" style="width:100%;"></div>
+      <div style="flex:2;"><label>排除词（以<b>负权重</b>注入＝别给我看这类）</label>
+        <input type="text" name="exclude_keywords" placeholder="survey" style="width:100%;"></div>
     </div>
-    <div style="margin-top:12px;"><button type="submit">添加主题</button></div>
+    <div style="margin-top:12px;"><button type="submit">注入画像池</button></div>
   </form>
 </div>
 

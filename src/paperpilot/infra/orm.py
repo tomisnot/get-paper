@@ -33,6 +33,12 @@ class Base(DeclarativeBase):
 
 
 class Topic(Base):
+    """主题的库内镜像（**配置文件的镜子**，不是事实源；见 config.py 顶部不变量）。
+
+    2026-09-30 起主题 = 「往画像池注入的词条包」：`weight` 是注入基线，`quota`/`threshold`
+    已弃用（保留列只为兼容旧库与旧 YAML）。
+    """
+
     __tablename__ = "topics"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -42,8 +48,9 @@ class Topic(Base):
     exclude_keywords: Mapped[list[str]] = mapped_column(JSON, default=list)
     categories: Mapped[list[str]] = mapped_column(JSON, default=list)
     authors: Mapped[list[str]] = mapped_column(JSON, default=list)
-    quota: Mapped[int] = mapped_column(Integer, default=4)
-    threshold: Mapped[float] = mapped_column(Float, default=0.6)
+    weight: Mapped[float] = mapped_column(Float, default=0.5)
+    quota: Mapped[int] = mapped_column(Integer, default=4)          # @deprecated
+    threshold: Mapped[float] = mapped_column(Float, default=0.6)    # @deprecated
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
@@ -188,10 +195,19 @@ class ReadingState(Base):
 
 
 class ProfileWeight(Base):
-    """M1 画像权重行（kind=category|term|author）：(kind,key) 唯一。
+    """画像权重行（kind=category|term|author）：(kind,key) 唯一。**画像池 = 唯一的影响面**。
 
     存**原始累计值**，衰减在读侧计算（免写放大、可审计）；单事件正向限幅在写侧。
+
+    溯源（2026-09-30 加）——为什么要有这两列：
+    * ``source``：这一行的**基线**是谁给的。``signal``＝纯行为学出来的；``topic:<主题名>``
+      ＝人手动建的主题包注入的先验；``manual``＝预留的单点手改。没有它就只能拿
+      ``hits=0`` 去猜来源，而"删主题要撤掉它注入的权重、但不能撤掉学到的权重"就做不到。
+    * ``w_base``：该来源**当前注入的基线值**。重新编辑主题时按 ``w += 新基线 − w_base``
+      幂等调整（改权重不会越改越胖）；删主题时 ``w −= w_base``、``w_base=0`` 并把来源退回
+      ``signal``，若此时 ``hits=0`` 且权重归零则整行删除 ⇒ **学到的东西不会被误伤**。
     """
+
     __tablename__ = "profile_weights"
     __table_args__ = (UniqueConstraint("kind", "key", name="uq_profile_kind_key"),)
 
@@ -200,6 +216,8 @@ class ProfileWeight(Base):
     key: Mapped[str] = mapped_column(String(200), index=True)
     w: Mapped[float] = mapped_column(Float, default=0.0)
     hits: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(48), default="signal", index=True)
+    w_base: Mapped[float] = mapped_column(Float, default=0.0)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
