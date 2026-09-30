@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}画像池 · PaperPilot{% endblock %}
+{% block head_extra %}
+<style>
+  .pool-cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .pool-cards .card { flex: 1; min-width: 130px; margin: 0; padding: 10px 12px; }
+  .pool-cards b { font-size: 19px; display: block; line-height: 1.3; }
+  .pool-cards span { color: var(--muted); font-size: 12px; }
+  .pool-cards b.bad { color: var(--warn); }
+  .prow { display: flex; align-items: center; gap: 8px; height: 22px; }
+  .pkey { width: 210px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+          font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .ptrack { flex: 1; height: 12px; background: #f1f5f9; border-radius: 3px; overflow: hidden; }
+  .pfill { height: 100%; border-radius: 3px; background: var(--ok); }
+  .pfill.neg { background: var(--warn); }
+  .pnum { width: 108px; text-align: right; font-family: ui-monospace, Consolas, monospace;
+          font-size: 11px; }
+  .pnum .raw { display: block; color: var(--muted); font-size: 10px; }
+  .pmeta { width: 46px; text-align: right; color: var(--muted); font-size: 11px; }
+  .tag { font-size: 10px; padding: 1px 6px; border-radius: 8px; white-space: nowrap; }
+  .tag.topic { background: var(--must-bg); color: var(--must); }
+  .tag.signal { background: #dcfce7; color: #166534; }
+  .tag.ph { background: #e0e7ff; color: #3730a3; }
+  .tag.unseen { background: #fee2e2; color: #991b1b; }
+  .mech code { background: var(--accent-soft); padding: 1px 4px; border-radius: 3px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1>画像池体检</h1>
+<p class="muted">
+  兴趣的**唯一影响面**。主题只是往这里注入先验的词条包；行为信号持续往同一个池子加权重。
+  日报与推荐流都吃这个池子。
+</p>
+
+<div class="pool-cards">
+  <div class="card"><b>{{ pool.total }}</b><span>池中键总数</span></div>
+  <div class="card"><b>{{ pool.learned }}</b><span>信号学出来的（{{ (100 * pool.learned / pool.total) | round(0) | int if pool.total else 0 }}%）</span></div>
+  <div class="card"><b>{{ pool.injected }}</b><span>主题包注入的先验</span></div>
+  <div class="card"><b class="{{ 'bad' if pool.unseen else '' }}">{{ pool.unseen }}</b><span>暂未命中（非结构错误）</span></div>
+  <div class="card"><b class="{{ 'bad' if pool.phrases_live < pool.phrases_total else '' }}">{{ pool.phrases_live }}/{{ pool.phrases_total }}</b><span>多词短语已活化</span></div>
+  <div class="card"><b>{{ pool.entropy }}</b><span>分类熵（防茧房哨兵）</span></div>
+</div>
+
+<div class="card mech">
+  <b>机制</b>：一条信号拿<u>这篇论文自己的特征</u>去加权重——分类（主 1.0／副 0.6）、
+  标题＋摘要前 400 字抽出的<b>词</b>（单词 0.5 · 短语 0.8）、作者（0.8），
+  再乘信号系数
+  {% for name, v in pool.signals %}<code>{{ name }} {{ '%+g'|format(v) }}</code>{% if not loop.last %} / {% endif %}{% endfor %}；
+  <b>正向单次限幅 {{ pool.pos_cap }}</b>（负向不放大）。所以给关键词之外的文章高回馈，
+  <b>确实会凭空长出新键</b>。<br>
+  权重存<b>原始累计值</b>，衰减在读侧算（<code>w·2^(−天数/{{ pool.half_life_days|int }})</code>）——
+  免写放大、可审计。含空格的键走<b>子串命中</b>（与日报线同一套语义），
+  紫色徽章是它当前命中的论文篇数。
+</div>
+
+{% if pool.topics %}
+<p class="muted">已注入的主题包：{% for t in pool.topics %}<span class="chip">{{ t }}</span>{% endfor %}</p>
+{% endif %}
+
+{% for sec in pool.sections %}
+<h2>{{ sec.label }}
+  <span class="muted" style="font-weight:400; font-size:12px;">
+    系数 {{ sec.coef }} · 共 {{ sec.total }} 个键{% if sec.neg %} · 负权重 {{ sec.neg }}{% endif %}
+    {% if sec.unseen %} · <b style="color:var(--warn);">暂未命中 {{ sec.unseen }}</b>{% endif %}
+  </span>
+</h2>
+<div class="card" style="padding:12px 14px;">
+  {% for r in sec.shown %}
+  <div class="prow">
+    <div class="pkey" title="{{ r.key }}">{{ r.key }}</div>
+    <div class="ptrack"><div class="pfill {{ 'neg' if r.decayed < 0 }}" style="width:{{ r.pct }}%"></div></div>
+    <div class="pnum">{{ '%+.3f'|format(r.decayed) }}<span class="raw">原始 {{ '%+.2f'|format(r.w) }}</span></div>
+    <div class="pmeta">{{ r.hits }} 次</div>
+    {% if r.phits %}<span class="tag ph" title="库内标题/摘要含此短语的论文数">{{ r.phits }} 篇</span>{% endif %}
+    {% if r.from_topic %}<span class="tag topic" title="{{ r.source }}">主题包</span>
+    {% else %}<span class="tag signal">信号学习</span>{% endif %}
+    {% if not r.live %}<span class="tag unseen" title="{{ r.why_unseen }}">暂未出现</span>{% endif %}
+  </div>
+  {% endfor %}
+  {% if sec.omitted %}
+  <p class="muted" style="margin:8px 0 0;">…… 另有 {{ sec.omitted }} 个键未显示（按 |权重| 取前 {{ sec.shown|length }}）</p>
+  {% endif %}
+</div>
+{% endfor %}
+
+<h2>怎么用这张表</h2>
+<div class="card">
+  <ul style="margin:0; padding-left:20px;">
+    <li><b>红标「暂未出现」</b>＝你声明的键在空转。最典型的是<b>作者名写法不一致</b>——
+      作者键是逐字匹配，库里是 <code>Chao-Yang Lu</code> 而配置写 <code>Chaoyang Lu</code> 就永远命不中。</li>
+    <li><b>黄标「主题包」</b>＝这条权重是你声明的先验（在
+      <a href="/settings">设置</a> 页新建/删除主题包）。删主题<b>只撤掉这份基线</b>，绿标学到的部分保留。</li>
+    <li><b>想纠正偏好</b>：给个别论文 <code>star</code>/<code>mark_read</code>/<code>skip_paper</code>
+      比手改词表更准——它按<b>那篇论文自己的特征</b>加权。</li>
+    <li>本页只读；清空画像（人类专属）在 <a href="/settings">设置</a> 页。</li>
+  </ul>
+</div>
+{% endblock %}

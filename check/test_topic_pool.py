@@ -159,6 +159,26 @@ def test_topic_edits_reach_the_pool_every_time(tmp_path):
     assert ("author", "Alice") not in raw, "被移除的作者该撤权"
 
 
+# ---------------------------------------------------------------- 5) 常驻页面
+def test_profile_page_renders_the_pool(tmp_path):
+    """`/profile` 常驻体检页：三件事必须画出来——权重构成、**哪个键在空转**、短语命中数。
+
+    只做冒烟（用户口径"快做，不用做太多测试"）：渲染得出 + 关键要素在 + 数字与 repo 对得上。
+    """
+    from fastapi.testclient import TestClient
+
+    from paperpilot.app.web import create_app
+
+    c, _ = _reg(tmp_path)
+    page = TestClient(create_app(c, None), follow_redirects=True).get("/profile")
+    assert page.status_code == 200
+    for probe in ("画像池体检", "信号学出来的", "暂未出现", "主题包", "多词短语已活化"):
+        assert probe in page.text, f"页面缺少「{probe}」"
+    assert 'href="/profile"' in page.text, "导航里没有入口"
+    assert "{{" not in page.text and "{%" not in page.text, "模板有未渲染的残留"
+    assert f"<b>{len(_raw(c.repo))}</b>" in page.text, "池中键总数与 repo 不一致"
+
+
 # ---------------------------------------------------------------- 4) 负反馈接线
 def test_legacy_seed_rows_get_a_baseline_and_can_be_released(tmp_path):
     """**老库回填判据**：`hits=0 且 w≠0` 的行只可能来自旧播种 ⇒ 把 `w` 认成基线，才撤得掉。

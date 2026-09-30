@@ -394,6 +394,17 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         msg = gate_msg or "已删除该批注（/activity 可 undo 撤销）"
         return RedirectResponse(f"/read/{arxiv_id}?msg={_q(msg)}", status_code=303)
 
+    @app.get("/profile", response_class=HTMLResponse)
+    def profile_page(request: Request):
+        """画像池体检：**唯一的兴趣影响面**长什么样（只读）。
+
+        把三件原本看不见的事画出来：权重构成（主题先验 vs 信号学习）、**哪个键在空转**
+        （作者名写法不一致这类），以及多词短语当前命中多少篇——"白占位"从形容词变成数字。
+        """
+        from .profile_view import build as build_pool
+
+        return render(request, "profile.html", pool=build_pool(container.repo), msg="")
+
     @app.get("/lab", response_class=HTMLResponse)
     def lab(request: Request):
         """调研仪表盘：覆盖率 + 缺卡工单 + 30 天趋势/漏斗/AI 成本（纯展示，数字全复用 M4）。"""

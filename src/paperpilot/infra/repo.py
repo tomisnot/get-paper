@@ -645,6 +645,30 @@ class PaperRepository:
             row.hits += 1
             row.updated_at = utcnow()
 
+    def profile_rows(self, *, half_life_days: float = 30.0,
+                     now: datetime | None = None) -> list[dict]:
+        """画像池的**全字段**读数（含溯源与基线），供 /profile 页面与体检工具用。
+
+        与 `profile_weights_map` 的区别：那个只给"打分要的 (kind,key)→权重"；
+        这个把 `w / w_base / source / hits / 衰减后` 一起给出，才画得出体检单。
+        """
+        from .orm import ProfileWeight
+        now = now or utcnow()
+        hl = max(0.001, float(half_life_days))
+        out: list[dict] = []
+        with self.sf() as s:
+            for r in s.scalars(select(ProfileWeight)).all():
+                age = max(0.0, (now - r.updated_at).total_seconds() / 86400.0)
+                factor = 2.0 ** (-age / hl)
+                out.append({
+                    "kind": r.kind, "key": r.key,
+                    "w": float(r.w), "w_base": float(r.w_base),
+                    "decayed": round(float(r.w) * factor, 4),
+                    "source": r.source or "signal",
+                    "hits": int(r.hits), "age_days": round(age, 2),
+                })
+        return out
+
     def profile_view(self, *, top: int = 12, half_life_days: float = 30.0,
                      now: datetime | None = None) -> dict:
         """画像读数：top 权重 + 分类熵（防茧房哨兵）；衰减读侧计算，不改写库。"""
