@@ -28,12 +28,30 @@ def make_engine(db_path: Path | str, *, echo: bool = False) -> Engine:
 #: 项目里，加列靠"探测 PRAGMA → 缺就 ALTER"，幂等且无需人工介入。
 _ADDED_COLUMNS: dict[str, list[tuple[str, str, str]]] = {
     "citation_edges": [("direction", "VARCHAR(16)", "'cites'"), ("year", "INTEGER", "0")],
+    # 2026-09-30 账事件与 mecha 对齐：新加两列。⚠ 纯 DDL（ADD COLUMN 带默认值）⇒ 老行
+    # **自动**拿到默认值（`kind='history'` 对现有事件是**正确**的：它们全是域事件），
+    # **一个 UPDATE 都不用** ⇒ 不碰 events 表那道 append-only 触发器。
+    "events": [("kind", "VARCHAR(16)", "'history'"), ("call_id", "VARCHAR(64)", "''")],
+}
+
+#: 列**改名**表：{表: [(旧名, 新名)]}。同样纯 DDL：SQLite（≥3.25）`RENAME COLUMN` 会
+#: **自动更新触发器/视图里的引用**（本仓 events 上有 append-only 触发器）⇒ 不卸触发器、不回填。
+_RENAMED_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "events": [("reversible", "undoable")],     # 对齐 mecha 的三态槽位（`None`＝未声明）
 }
 
 
 def _ensure_columns(engine: Engine) -> None:
-    """给既有表补新列（幂等；老库第一次跑 init_db 时静默补齐）。"""
+    """给既有表**补新列 / 改列名**（幂等；老库第一次跑 init_db 时静默补齐）。"""
     with engine.begin() as conn:
+        for table, renames in _RENAMED_COLUMNS.items():
+            rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+            if not rows:
+                continue
+            have = {r[1] for r in rows}
+            for old, new in renames:
+                if old in have and new not in have:
+                    conn.execute(text(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}"))
         for table, cols in _ADDED_COLUMNS.items():
             rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
             if not rows:                       # 表还不存在：create_all 已按新 schema 建好

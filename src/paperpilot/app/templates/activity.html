@@ -33,7 +33,7 @@
   <tr>
     <td>{{ e.seq }}</td>
     <td><span class="chip">{{ e.actor }}</span></td>
-    <td>{{ e.op }}{% if not e.reversible %}<span class="chip" style="background:#fef2f2;color:#b91c1c;">不可逆</span>{% endif %}</td>
+    <td>{{ e.op }}{% if not e.undoable %}<span class="chip" style="background:#fef2f2;color:#b91c1c;">不可逆</span>{% endif %}</td>
     <td class="muted">{{ e.target }}</td>
     <td class="muted" style="font-size:12px;">
       {% if e.reason %}<div><b>为什么</b>：{{ e.reason }}</div>{% endif %}
@@ -55,7 +55,7 @@
     {% if can_undo %}
     <td>
       {# 只对**可逆**事件给按钮：不可逆的（入库/定稿）由命令面明确拒绝，别让按钮骗人 #}
-      {% if e.reversible %}
+      {% if e.undoable %}
       <form method="post" action="/activity/undo" style="display:inline;">
         <input type="hidden" name="seq" value="{{ e.seq }}">
         <button class="ghost" type="submit"

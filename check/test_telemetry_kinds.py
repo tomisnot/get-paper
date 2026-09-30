@@ -119,7 +119,7 @@ def test_write_capability_writes_business_event(tmp_path):
     ev = container.repo.events_since(since_seq=0, op="star_paper")["events"][-1]
     # ⚠ `events_since` 回的是 **dict**（不是 ORM 对象）⇒ 用 key 取；我第一版用 getattr 默认 0，
     #    于是"可逆槽位"永远读成 0 ⇒ 假红（判据自己的 bug，不是产品的）。
-    rev = ev["reversible"] if isinstance(ev, dict) else getattr(ev, "reversible", 0)
+    rev = ev["undoable"] if isinstance(ev, dict) else getattr(ev, "undoable", 0)
     assert int(rev) == 1, f"可撤销的 write 应落在 reversible 槽位上：{ev}"
 
 

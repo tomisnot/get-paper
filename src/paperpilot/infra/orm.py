@@ -323,18 +323,28 @@ class Event(Base):
     """append-only 事件（L2 记录仪，docs/GAPS.md §3）。
 
     只 INSERT，不 UPDATE/DELETE——由 `infra/db.py` 的触发器在数据库层钉死
-    （判据：任何 UPDATE/DELETE 必须失败）。字段对齐 Energy Level mecha/bus.py：
-    actor（谁写的）/ reason（为什么）/ op / target / before / after / reversible。
+    （判据：任何 UPDATE/DELETE 必须失败）。**列名与 mecha 账事件同名**（2026-09-30 对齐）：
+    `seq/kind/op/target/after/before/actor/reason/call_id/ts/undoable` —— 这份表就是
+    mecha 账的**落地点**（`infra/ledger.py::SqlLedger`）：**配置写 / 域写 / 命令审计共用同一个序列**。
     """
 
     __tablename__ = "events"
 
     seq: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     ts: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    #: "state"（会进框架那份**配置快照**）| "history"（只记史）。⚠ **GP 的域事件一律 `history`**
+    #: —— `kind` 判的是"进不进配置快照"，**不是**"是不是状态变更"（域状态在表里、不由账折叠出来）。
+    kind: Mapped[str] = mapped_column(String(16), default="history")
     actor: Mapped[str] = mapped_column(String(32), default="", index=True)
     reason: Mapped[str] = mapped_column(Text, default="")
     op: Mapped[str] = mapped_column(String(48), default="", index=True)
     target: Mapped[str] = mapped_column(String(200), default="")
     before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     after: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    reversible: Mapped[int] = mapped_column(Integer, default=1)
+    #: 能不能撤（对齐 mecha 的**三态**槽位）：`True` / `False` / `None`＝未声明。
+    #: ⚠ **不给列默认值**：给了就会把 mecha 的 `None`（未声明，如命令审计）**悄悄填成 True**
+    #: —— 那会让 `undo` 选中一条审计行（实测踩过），也会把"没声明"冒充成"可撤"。
+    #: 域侧的可撤性是**显式**的（`repo._event(undoable=…)`，默认 True 在那一层）。
+    undoable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    #: 调用链标识（与 mecha 审计互引；GP 的域写目前留空）。
+    call_id: Mapped[str] = mapped_column(String(64), default="")

@@ -19,6 +19,7 @@ from ..domain.models import PaperSummary, RelevanceScore
 from ..infra.ai.errors import AIError
 from .arxiv import NormalizedPaper
 from .fts import PaperIndex, PaperTextIndex
+from .ledger import SqlLedger, ledger_session
 from .orm import (
     AICall,
     Base,  # noqa: F401  （re-export 便于外部 import）
@@ -53,6 +54,8 @@ class PaperRepository:
         self.sf = session_factory
         self.index = index                    # 标题/摘要/卡片（papers_fts）
         self.text_index = text_index          # 正文块级（paper_text_fts，精读体系）
+        #: 统一账本（`infra/ledger.py`）：域写与 mecha 的账**同表同序列**。
+        self.ledger = SqlLedger(session_factory)
 
     # ---------------------------------------------------------------- 事件（L2 记录仪）
     def _event(
@@ -65,20 +68,21 @@ class PaperRepository:
         target: str = "",
         before: dict | None = None,
         after: dict | None = None,
-        reversible: int = 1,
+        undoable: bool | None = True,
     ) -> Event:
-        """在**当前事务内** append 一条事件（调用方负责 commit）。"""
-        event = Event(
-            actor=actor or "system",
-            reason=reason or "",
-            op=op,
-            target=target,
-            before=before,
-            after=after,
-            reversible=reversible,
-        )
-        s.add(event)
-        return event
+        """在**当前事务内** append 一条事件（调用方负责 commit）。
+
+        ⚠ 2026-09-30 起**不再自己建行**：改走统一账本（`infra/ledger.py::SqlLedger`）——
+        与 mecha 的账**同表同序列**；`ledger_session(s)` 保证它落进**当前事务**（上面那句承诺
+        原样保持：调用方 commit，事件才落地）。GP 的域事件一律 `kind="history"`
+        （域状态在表里、不由账折叠出来 ⇒ `fold` 不该碰它们）。
+        """
+        with ledger_session(s):
+            return self.ledger.append({
+                "kind": "history", "op": op, "target": target, "actor": actor or "system",
+                "reason": reason or "", "before": before, "after": after,
+                "undoable": undoable,
+            })
 
     def events_since(
         self,
@@ -88,36 +92,33 @@ class PaperRepository:
         op: str = "",
         limit: int = 50,
     ) -> dict:
-        """diff-since-seq 读事件（只读；GAPS.md §3）。"""
-        with self.sf() as s:
-            stmt = select(Event)
-            if since_seq:
-                stmt = stmt.where(Event.seq > since_seq)
-            if actor:
-                stmt = stmt.where(Event.actor == actor)
-            if op:
-                stmt = stmt.where(Event.op == op)
-            stmt = stmt.order_by(Event.seq.desc()).limit(max(1, min(int(limit), 200)))
-            events = list(s.scalars(stmt))
-            last_seq = s.scalar(select(func.max(Event.seq))) or 0
-            return {
-                "last_seq": int(last_seq),
-                "count": len(events),
-                "events": [
-                    {
-                        "seq": e.seq,
-                        "ts": e.ts.isoformat() if e.ts else None,
-                        "actor": e.actor,
-                        "reason": e.reason,
-                        "op": e.op,
-                        "target": e.target,
-                        "reversible": e.reversible,
-                        "before": e.before,
-                        "after": e.after,
-                    }
-                    for e in events
-                ],
-            }
+        """diff-since-seq 读事件（只读；GAPS.md §3）。
+
+        ⚠ 走**统一账本**读口（`SqlLedger.since`：同表同序列）；账本 `since` 是**升序**，
+        本方法按**老行为倒序**返回（页面/工具看到的是"最新在前"）。取最新 N 条：
+        先全取再切尾（账本很小；`History._resume` 本来就是全量读）。
+        """
+        cap = max(1, min(int(limit), 200))
+        rows = list(self.ledger.since(int(since_seq or 0), actor=actor or None,
+                                      op=op or None))
+        return {
+            "last_seq": self.ledger.last_seq(),
+            "count": len(rows[-cap:]),
+            "events": [
+                {
+                    "seq": r["seq"],
+                    "ts": r["ts"] or None,
+                    "actor": r["actor"],
+                    "reason": r["reason"],
+                    "op": r["op"],
+                    "target": r["target"],
+                    "undoable": r["undoable"],
+                    "before": r["before"],
+                    "after": r["after"],
+                }
+                for r in reversed(rows[-cap:])
+            ],
+        }
 
     def undo(self, seq: int = 0, *, actor: str, reason: str = "") -> dict:
         """按 seq 撤销可逆操作（seq=0 = 最近一条可逆事件）。不可逆操作明确拒绝。"""
@@ -126,7 +127,7 @@ class PaperRepository:
                 event = s.get(Event, int(seq))
             else:
                 event = s.scalar(
-                    select(Event).where(Event.reversible == 1).order_by(Event.seq.desc())
+                    select(Event).where(Event.undoable.is_(True)).order_by(Event.seq.desc())
                 )
             if event is None:
                 raise AIError(
@@ -134,7 +135,7 @@ class PaperRepository:
                     kind="nothing_to_undo",
                     hint="undo(seq=0) 撤销最近一条可逆事件；先用 get_activity 看事件列表",
                 )
-            if event.reversible != 1:
+            if not event.undoable:
                 raise AIError(
                     f"操作 #{event.seq}（{event.op}）不可逆",
                     kind="irreversible",
@@ -150,7 +151,7 @@ class PaperRepository:
                 target=f"event:{event.seq}",
                 before=before_now,
                 after=dict(event.before or {}),
-                reversible=0,
+                undoable=0,
             )
             s.commit()
             return {
@@ -497,7 +498,7 @@ class PaperRepository:
                     self._index(s, row)
                     updated += 1
             if new or updated:
-                # 入库不可逆（撤了论文，历史简报/打分就悬空）——标 reversible=0
+                # 入库不可逆（撤了论文，历史简报/打分就悬空）——标 undoable=0
                 self._event(
                     s,
                     op="upsert_papers",
@@ -505,7 +506,7 @@ class PaperRepository:
                     reason=reason,
                     target="papers",
                     after={"new": new, "updated": updated},
-                    reversible=0,
+                    undoable=0,
                 )
             s.commit()
         return {"new": new, "updated": updated}
@@ -584,7 +585,7 @@ class PaperRepository:
                 reason=reason,
                 target=arxiv_id,
                 after={"arxiv_id": arxiv_id, "signal": signal, "source": source},
-                reversible=0,
+                undoable=0,
             )
             paper = s.scalar(select(Paper).where(Paper.arxiv_id == arxiv_id))
             if paper is not None:
@@ -688,7 +689,7 @@ class PaperRepository:
             if seeded:
                 self._event(s, op="profile_seed", actor=actor,
                             reason="空画像播种：以 YAML 主题为先验",
-                            target="profile", after={"seeded": seeded}, reversible=0)
+                            target="profile", after={"seeded": seeded}, undoable=0)
             s.commit()
             return seeded
 
@@ -709,20 +710,20 @@ class PaperRepository:
                             reason=reason or "画像重置（中毒/冷启动重来）",
                             target=kind or "all",
                             before={"rows": snap}, after={"removed": len(snap)},
-                            reversible=1)
+                            undoable=1)
             s.commit()
             return {"ok": True, "removed": len(snap), "kind": kind or "all"}
 
     def record_op(self, op: str, *, target: str = "", after: dict | None = None,
                   actor: str = "system", reason: str = "") -> None:
-        """操作留痕（只读面的使用日志，如 feed 刷新）：进归因总线，reversible=0。
+        """操作留痕（只读面的使用日志，如 feed 刷新）：进归因总线，undoable=0。
 
         读操作不改状态不进 mecha History（监控面按设计只显状态变化），但**谁在刷、
         刷出了什么**属于域归因面，该进 Web /activity 记录仪。
         """
         with self.sf() as s:
             self._event(s, op=op, actor=actor, reason=reason, target=target,
-                        after=after or {}, reversible=0)
+                        after=after or {}, undoable=0)
             s.commit()
 
     def feed_candidates(self, *, days: int, limit: int = 800) -> list[Paper]:
@@ -758,7 +759,7 @@ class PaperRepository:
 
         run_id 用独立的 "card-<hex8>"，不挂任何流水线 run——补卡与日报是两类动作、
         审计分开；卡片只此一份真相，/feed 卡、详情页、read_paper 经 latest_summary 自动复用。
-        reversible=1：undo 删掉这一轮的两行。
+        undoable=1：undo 删掉这一轮的两行。
         """
         import uuid
 
@@ -784,7 +785,7 @@ class PaperRepository:
                         reason=reason or f"AI 补卡：{arxiv_id}", target=arxiv_id,
                         after={"run_id": run_id, "has_score": score is not None,
                                "label": (score or {}).get("label", "")},
-                        reversible=1)
+                        undoable=1)
             s.commit()
             return {"run_id": run_id}
 
@@ -818,7 +819,7 @@ class PaperRepository:
             self._event(s, op="sync_citations", actor=actor,
                         reason=reason or f"落库引文边：{src_arxiv_id}", target=src_arxiv_id,
                         before={"edges": snapshot},
-                        after={"added": added, "replaced": len(old)}, reversible=1)
+                        after={"added": added, "replaced": len(old)}, undoable=1)
             s.commit()
             return {"added": added, "replaced": len(old)}
 
@@ -881,7 +882,7 @@ class PaperRepository:
                 s.add(PaperTag(arxiv_id=arxiv_id, tag=tag, actor=actor))
             self._event(s, op="tag_paper", actor=actor,
                         reason=reason or f"给 {arxiv_id} 标 {tag}", target=arxiv_id,
-                        before={"tag": snap}, after={"tag": tag}, reversible=1)
+                        before={"tag": snap}, after={"tag": tag}, undoable=1)
             s.commit()
             return {"tag": tag, "replaced": bool(snap)}
 
@@ -925,7 +926,7 @@ class PaperRepository:
                 self._event(s, op="set_tags", actor=actor,
                             reason=reason or f"批量钉标 {len(applied)} 篇",
                             target=f"tags:{len(applied)}",
-                            before={"tags": before}, after={"tags": applied}, reversible=1)
+                            before={"tags": before}, after={"tags": applied}, undoable=1)
             s.commit()
             return {"applied": applied, "count": len(applied)}
 
@@ -957,7 +958,7 @@ class PaperRepository:
             self._event(s, op="set_graph_view", actor=actor,
                         reason=reason or f"发布视图：{name}", target=name,
                         before=snapshot, after={"spec": dict(spec), "is_default": bool(is_default)},
-                        reversible=1)
+                        undoable=1)
             s.commit()
             return {"name": name, "replaced": old is not None, "is_default": bool(is_default)}
 
@@ -1004,7 +1005,7 @@ class PaperRepository:
                 v.is_default = v.name == name
             self._event(s, op="set_default_view", actor=actor,
                         reason=reason or f"默认视图切到 {name}", target=name,
-                        before={"default": prev}, after={"default": name}, reversible=1)
+                        before={"default": prev}, after={"default": name}, undoable=1)
             s.commit()
             return {"name": name, "previous": prev}
 
@@ -1021,7 +1022,7 @@ class PaperRepository:
             s.delete(row)
             self._event(s, op="set_graph_view", actor=actor,
                         reason=reason or f"删除视图：{name}", target=name,
-                        before=snap, after={"deleted": True}, reversible=1)
+                        before=snap, after={"deleted": True}, undoable=1)
             s.commit()
             return {"deleted": name}
 
@@ -1041,7 +1042,7 @@ class PaperRepository:
     def add_citation_edges(self, rows: list[dict], *, actor: str = "ai",
                            reason: str = "", target: str = "") -> int:
         """增量幂等加边（P4 反向边用）：已存在的 (src,dst) 跳过。
-        增量加边标 reversible=0——整篇出边重建用 sync_citations（快照替换语义）。"""
+        增量加边标 undoable=0——整篇出边重建用 sync_citations（快照替换语义）。"""
         from .orm import CitationEdge
         with self.sf() as s:
             have = {(e.src_arxiv_id, e.dst_arxiv_id)
@@ -1062,7 +1063,7 @@ class PaperRepository:
                 added += 1
             self._event(s, op="sync_cited_by", actor=actor,
                         reason=reason or f"反向补边 {added} 条", target=target,
-                        after={"added": added}, reversible=0)
+                        after={"added": added}, undoable=0)
             s.commit()
             return added
 
@@ -1135,7 +1136,7 @@ class PaperRepository:
                         reason=reason or "发布 feed 一期",
                         target=str(row.id),
                         after={"id": row.id, "count": len(items), "params": params},
-                        reversible=1)
+                        undoable=1)
             s.commit()
             return int(row.id)
 
@@ -1336,7 +1337,7 @@ class PaperRepository:
                 status="draft",
             )
             s.add(briefing)
-            # 定稿不可逆（旧 briefing 已被标 superseded，回滚会丢历史）——reversible=0
+            # 定稿不可逆（旧 briefing 已被标 superseded，回滚会丢历史）——undoable=0
             self._event(
                 s,
                 op="save_briefing",
@@ -1348,7 +1349,7 @@ class PaperRepository:
                     "run_id": run_id,
                     "selected": len(stats.get("items", [])) if isinstance(stats, dict) else 0,
                 },
-                reversible=0,
+                undoable=0,
             )
             s.commit()
             s.refresh(briefing)
@@ -1405,7 +1406,7 @@ class PaperRepository:
             self._event(
                 s, op="delete_briefing", actor=actor, reason=reason,
                 target=date, before=snap, after={"deleted": True},
-                reversible=1,
+                undoable=1,
             )
             s.commit()
         return {"ok": True, "date": date, "deleted": len(rows), "already": False}
@@ -1673,7 +1674,7 @@ class PaperRepository:
                         target=arxiv_id, before=before,
                         after={"status": row.status, "sha256": row.sha256,
                                "version": row.version, "blocks": row.blocks},
-                        reversible=0)
+                        undoable=0)
             s.commit()
             return {"arxiv_id": arxiv_id, "status": row.status, "version": row.version,
                     "blocks": row.blocks, "chars": row.chars,
@@ -1753,7 +1754,7 @@ class PaperRepository:
             s.flush()
             snap = self._mark_snapshot(row)
             self._event(s, op="mark_paper", actor=actor, reason=reason or "加批注",
-                        target=f"{arxiv_id}#{row.id}", after=snap, reversible=1)
+                        target=f"{arxiv_id}#{row.id}", after=snap, undoable=1)
             s.commit()
             return snap
 
@@ -1780,7 +1781,7 @@ class PaperRepository:
                 row.quote = quote
             self._event(s, op="mark_paper", actor=actor, reason=reason or "改批注",
                         target=f"{row.arxiv_id}#{mark_id}", before=before,
-                        after=self._mark_snapshot(row), reversible=1)
+                        after=self._mark_snapshot(row), undoable=1)
             s.commit()
             return self._mark_snapshot(row)
 
@@ -1795,7 +1796,7 @@ class PaperRepository:
             s.delete(row)
             self._event(s, op="mark_paper", actor=actor, reason=reason or "删批注",
                         target=f"{snap['arxiv_id']}#{mark_id}", before=snap,
-                        after={"id": mark_id, "deleted": True}, reversible=1)
+                        after={"id": mark_id, "deleted": True}, undoable=1)
             s.commit()
             return snap
 

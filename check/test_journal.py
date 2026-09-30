@@ -80,7 +80,7 @@ def test_pipeline_events_have_actor(loaded, pipeline):
     assert "save_briefing" in ops
     briefing_event = [e for e in _all_events(loaded) if e.op == "save_briefing"][0]
     assert briefing_event.actor == "ai"
-    assert briefing_event.reversible == 0  # 定稿不可逆
+    assert briefing_event.undoable == 0  # 定稿不可逆
     assert briefing_event.after["date"] == result.date
 
 

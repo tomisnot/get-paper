@@ -62,11 +62,11 @@ def test_cockpit_four_routes(tmp_path):
         targets = {e["target"] for e in act["events"]}
         assert "add_note" in audit_cmds and "scoring.max_papers" in targets
 
-        # /history：飞行记录 9 键（新形状：target/after/before/reason/call_id/ts）
+        # /history：飞行记录 **10 键**（mecha `2d00c00` 起 wire 补了 `op` —— 命令审计的"哪个命令"）
         st, hist = _get(base + "/history")
         assert st == 200 and hist["ok"] is True
         h0 = hist["events"][0]
-        assert set(h0) == {"seq", "kind", "actor", "target", "after",
+        assert set(h0) == {"seq", "kind", "op", "actor", "target", "after",
                            "before", "reason", "call_id", "ts"}
 
         # /config：schema 树（6 个**域**配置键）。
@@ -128,9 +128,14 @@ def test_cockpit_empty_history_is_honest_not_fake(tmp_path):
         st, status = _get(ep.url + "/status")
         assert status["mode"] == "locked"                 # 出厂 LOCKED 如实透出
         st, act = _get(ep.url + "/activity")
-        # 种子配置已落史（seed），故 events 非空且全是 bootstrap 的配置键
+        # ⚠ 2026-09-30 换账后**期望更新**（这是"一本账"的直接后果，不是回退）：
+        #   框架 History 现在从**同一张 `events` 表**续（`_resume(sink.since(0))`）⇒ 它看得见
+        #   域侧启动痕（`actor="system"`：migrate / sync_topics_boot）⇒ 不再"全是 bootstrap"。
+        #   仍然成立的三条**诚实**断言：① 有事件（不是空表假装）；② 种子（bootstrap）在账上；
+        #   ③ 没有任何 `command.` **target**（审计的 target 本来就是空串）。
         assert act["ok"] is True
-        assert all(e["actor"] == "bootstrap" for e in act["events"])
-        assert not any(e["target"].startswith("command.") for e in act["events"])
+        assert act["events"], "空表 vs 空表不算通过：种子事件必须真落史（R8）"
+        assert any(e["actor"] == "bootstrap" for e in act["events"]), "种子事件应当在账上"
+        assert not any(str(e["target"]).startswith("command.") for e in act["events"])
     finally:
         ep.stop()

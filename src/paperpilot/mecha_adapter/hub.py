@@ -89,7 +89,12 @@ def build_stack(container, data_root: str | Path | None = None,
     root = Path(data_root) if data_root is not None else Path(container.settings.data_dir)
     sw = assemble(root=root, data_dir_name=data_dir_name, engine=engine,
                   summarizer=paperpilot_summarizer, validate=make_validator(engine),
-                  mode=mode, project="paperpilot")
+                  mode=mode, project="paperpilot",
+                  # ⭐ **账的落地点换成 GP 自己的库**（2026-09-30）：账必须住在**状态旁边**——
+                  # GP 的域状态在 SQLite 里，只有同库同事务才能做到"状态变了、账不可能没记"。
+                  # ⇒ "配置写 / 域写 / 命令审计"共用 `events` 表、**同一个序列**
+                  # （实现：`infra/ledger.py::SqlLedger`；框架出厂默认是本机 JSONL）。
+                  log_sink=container.repo.ledger)
     engine.attach_gate(sw.gate)             # 让 Engine.run 叠加 gate 配置
     ai = sw.channels["ai"]
     command_names = build_commands(container, sw)
