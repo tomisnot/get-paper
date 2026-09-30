@@ -1,4 +1,4 @@
-"""CLI：paperpilot（无参数 = 统一启动 Web + MCP + cockpit + 每日调度）。
+"""CLI：paperpilot（无参数 = 统一启动 Web + MCP + cockpit）。
 
 常用：
   paperpilot / serve           统一启动入口：Web（人类面）+ mecha MCP（AI 面）+ cockpit（监控面）+ 调度（共享一个 mecha 栈）
@@ -464,7 +464,7 @@ def web(
     port: int = typer.Option(8080, "--port", "-p"),
     config: Path = typer.Option(None, "--config", "-c"),
 ) -> None:
-    """只启动 Web（不带每日调度；不接 mecha 栈 ⇒ `/settings` 的写权卡如实报「未接监控面」）。"""
+    """只启动 Web（不接 mecha 栈 ⇒ `/settings` 的写权卡如实报「未接监控面」）。"""
     import uvicorn
 
     from ..config import load_settings

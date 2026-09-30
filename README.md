@@ -84,7 +84,7 @@ python -m venv .venv
 # 离线演示：不联网，用内置样例灌库并生成今日简报
 .venv\Scripts\paperpilot demo
 
-# 打开面板（默认 127.0.0.1:8080，内置每天 07:30 自动跑批）
+# 打开面板（默认 127.0.0.1:8080）
 .venv\Scripts\paperpilot
 ```
 
@@ -107,7 +107,7 @@ python -m venv .venv
 ## 日常使用
 
 ```bash
-paperpilot                 # 统一启动：Web + mecha MCP + cockpit + 每日调度（自动开浏览器到工作台）
+paperpilot                 # 统一启动：Web + mecha MCP + cockpit（自动开浏览器到工作台）
 paperpilot --no-open       #   同上，但不自动弹浏览器
 paperpilot ai              # AI 模式：上面那些后台起 + 前台弹 dsh（AI 在 dsh 里驱动）
 paperpilot web             # 只启动 Web（不接 mecha 栈；无 MCP/监控）
@@ -266,7 +266,6 @@ Atom 解析与去重、规则过滤与配额、流水线幂等与降级、**MCP 
 ## 已知取舍
 
 - **实体即 SQLAlchemy ORM 模型**（而非纯 pydantic 领域模型）：个人自用项目的务实简化，Port 层保证业务不依赖具体 IO。
-- **进程内调度**：APScheduler 适合单机常驻；若进程被杀，用 Windows 任务计划/cron 调 `paperpilot run` 兜底。
 - **arXiv 官方 API**（3s 限速）而非爬 HTML：合规且稳定；只抓关注领域，请求量很小。
 - **DSH 插件的 client 半**（简报面板）需真 `dsh web` 活体验证；host 半（工具+重连）已本地全验证。
 - **编排面（CodeAct）未做**（`docs/GAPS.md`）：当前"流水线即编排"（三段评审协议）；如要 ad-hoc 多步组合再加。

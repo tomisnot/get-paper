@@ -358,7 +358,7 @@ erDiagram
 | `/papers/{arxiv_id}` | 详情 | 原文摘要、AI 总结、评分理由、PDF 链接、笔记、已读/收藏开关 |
 | `/settings` | 设置 | 主题 CRUD、阈值/配额、抓取时间、AI provider、通知 |
 | `/settings/run` | 触发一次运行 | HTMX POST，进度条轮询 |
-| `/healthz` | 健康检查 | 供 CLI/调度器探测 |
+| `/healthz` | 健康检查 | 供 CLI 探测 |
 
 运行方式：`paperpilot web` → `http://127.0.0.1:8080`；`paperpilot run daily` 跑当天流水线；`paperpilot fetch --days 3` 补抓。无常驻定时（2026-09-26 用户裁决删调度器）：想看日报就打开软件点「立即生成」或到 dsh 让 AI 跑——脉冲式，用完即走。
 
