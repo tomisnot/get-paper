@@ -60,7 +60,7 @@ class ToolDecl:
 #: 参数描述不在此（N8）——由 ``_derive_parameters`` 从能力 ``ToolSpec.params`` 透传。
 TOOL_DECLS: tuple[ToolDecl, ...] = (
 
-    # ⚠ 这 5 条的**声明面已切投影**（见 _PROJECTED_WRITE_TOOLS）⇒ 它们在这里只为**命令面**（uild_commands 也遍历本表）而留；**工具面**由 project() 生成。
+    # ⚠ 这 5 条的**声明面已切投影**（见 _PROJECTED_TOOLS）⇒ 它们在这里只为**命令面**（uild_commands 也遍历本表）而留；**工具面**由 project() 生成。
     ToolDecl("mark_read", "mark_read", "write",
              "标记论文为已读或未读。",
              omit=("actor",)),
@@ -315,7 +315,7 @@ def _raise_from_envelope(res: Mapping[str, object]) -> None:
 #: ⚠ `delete_note` / `set_config_batch` 也在本列，但它们的 scope **只给人** ⇒ `project()`
 #: 经 policy 判为**不投影**（返回 None）⇒ 仍不可见：
 #: **"看不见"由 scope 派生，不再靠"没人把它写进工具面"**。
-_PROJECTED_WRITE_TOOLS: tuple[str, ...] = (
+_PROJECTED_TOOLS: tuple[str, ...] = (
     "mark_read", "star_paper", "skip_paper", "add_note", "delete_briefing",
     "tag_paper", "tag_papers", "resolve_mark", "set_default_view", "sync_citations",
     "delete_note", "set_config_batch",
@@ -354,7 +354,7 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
     # （命令面 `build_commands` 也遍历它），但**工具面**由下面 `project()` 生成 ⇒ 这里跳过它们
     # （防"两处表达同一件事"）。
     for decl in TOOL_DECLS:
-        if decl.mecha_name in _PROJECTED_WRITE_TOOLS:
+        if decl.mecha_name in _PROJECTED_TOOLS:
             continue
         cap_params = _cap_params(container, decl.cap_name)
         parameters = _derive_parameters(cap_params, decl)
@@ -381,12 +381,12 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
     specs_by_name = {s.name: s for s in sw.commands.specs()}
     cap_rev = {c["name"]: bool(c["reversible"]) for c in capabilities.specs(container)}
     policy = getattr(sw.commands, "_scope_policy", None)
-    for mecha_name in _PROJECTED_WRITE_TOOLS:
+    for mecha_name in _PROJECTED_TOOLS:
         spec = specs_by_name.get(mecha_name)
         if spec is None:
             raise MechaError(f"投影清单里的命令 {mecha_name!r} 不在命令面上",
                              kind="capability_missing",
-                             hint="补命令注册，或把它从 _PROJECTED_WRITE_TOOLS 里去掉")
+                             hint="补命令注册，或把它从 _PROJECTED_TOOLS 里去掉")
         projected = project(
             spec,
             execute=_make_command_bridge(sw.commands, sw.gate, channel, mecha_name,
