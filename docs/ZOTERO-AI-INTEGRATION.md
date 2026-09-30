@@ -26,7 +26,7 @@
 
 | # | 判据 | 落到我们代码里的样子 |
 | --- | --- | --- |
-| L1-1 | **中性能力层**：typed + self-describing（name/描述/入参 schema/结构化返回/read\|write/reversible） | `capabilities/` 能力注册表 + `PARAM_DESCRIPTIONS`（漂移即启动报错） |
+| L1-1 | **连接层**：typed + self-describing（name/描述/入参 schema/结构化返回/read\|write/reversible） | `capabilities/` 能力注册表 + `PARAM_DESCRIPTIONS`（漂移即启动报错） |
 | L1-2 | **两个门面**：进程内可直接 import，进程外有 CLI/HTTP | `import paperpilot...` + `paperpilot call <tool> --json` |
 | L1-3 | **投影即权限**：给 AI 的工具面是**显式白名单**，不是把库全开 | `mecha_adapter/tools.py::TOOL_DECLS`（不列入者 AI 不可见） |
 | L1-4 | **回程能浓缩**：体积闸 + 截断必须给"怎么续读" | 65536 字节闸；`next_offset`；列表键截断 |
@@ -90,7 +90,7 @@
 
 | 判据 | Zotero 现状 | 判定 |
 | --- | --- | --- |
-| L1-1 中性能力层 | Local API = 官方 typed/文档化 REST + JSON；schema 版本头 `Zotero-Schema-Version` | ✅ **直接可用** |
+| L1-1 连接层 | Local API = 官方 typed/文档化 REST + JSON；schema 版本头 `Zotero-Schema-Version` | ✅ **直接可用** |
 | L1-2 两个门面 | 有 HTTP（本地/远程）；无 CLI（要自带） | ✅ 够用 |
 | L1-3 投影即权限 | **无此概念**：key 不分区、不看调用方是谁；读接口把整个库摊开 | ❌ **要自己包一层** |
 | L1-4 回程浓缩 | 本地 API **默认不分页**（一次返回全部命中）——对 AI 上下文**不友好** | ❌ **要自己加闸** |
@@ -229,7 +229,7 @@ HTML 从哪来        → ① arXiv 直接有 HTML；② 无 HTML 的用 PDF→�
    同一趟顺手验 `POST /api/local/authorize` 是否弹框（确认本地写可用）。
 2. **HTML 供给**：arXiv HTML 直接另存快照；**无 HTML 的论文用 PDF→结构化 HTML 转换补上**
    —— 这是"HTML 根基"能否普及的**唯一瓶颈**（只有 arXiv 覆盖不了全部文献）。
-3. **AI 能力层**：`zotero_*` 能力（查条目/取批注/取全文/按保存搜索/写批注）接进中性能力层 +
+3. **AI 能力层**：`zotero_*` 能力（查条目/取批注/取全文/按保存搜索/写批注）接进连接层 +
    投影白名单；**自带体积闸与 `kind/hint/suggest`**（Zotero 默认不分页、错误码不可教学）。
 4. **纪律层照旧由我们兜**：批注删除是**永久**的、且**看不到谁改的** ⇒ 我们的
    append-only + actor/reason + 可撤销在这里比在自己仓里更值钱。

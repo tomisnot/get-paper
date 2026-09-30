@@ -1,4 +1,4 @@
-"""跑在 LLMPort 上的默认 AI 实现：统一框架就绪后，这些类当天即可投产。
+"""跑在 LLMPort 上的默认 AI 实现。
 
 结构（DESIGN.md §4.1 / §17）：
     统一 AI 框架 / OpenAI 兼容接口 → UnifiedAIAdapter(LLMPort) → LLMRanker / LLMSummarizer

@@ -1,4 +1,4 @@
-"""中性能力层：PaperPilot 的"手脚"，protocol-agnostic、自描述、可外部调用。
+"""连接层：PaperPilot 的"手脚"，protocol-agnostic、自描述、可外部调用。
 
 对外 Python API（docs/SPEC.md §4）：
     from paperpilot.capabilities import build_registry, invoke, specs

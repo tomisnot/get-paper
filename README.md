@@ -15,7 +15,7 @@ arXiv 每日文献情报系统：**抓取 → AI 智能筛选 → AI 结构化�
 
 | 项目 | 是什么 | 用 mecha 的哪一面 |
 | --- | --- | --- |
-| **mecha** | **框架**（操作者无关层）：Gate / History / Surface / Monitor + Provider 层 | —— |
+| **mecha** | **框架**（人机同门）：Gate / History / Surface / Monitor + Provider 层 | —— |
 | **get-paper** | 论文管理与推荐（**本仓**） | **命令面 + 工具面（MCP）** |
 | **energy-level** | 物理仿真 | **CodeAct 通道** |
 | **ml-toolbox** | 机器学习试验台 | **宿主适配 + 面板** |
@@ -115,7 +115,7 @@ paperpilot fetch --days 3  # 抓取近 3 天提交的新论文入库（遵守 ar
 paperpilot run             # 立即跑一次「打分→精读→简报」
 paperpilot run --force     # 当天已有简报也重跑
 paperpilot topics          # 查看当前主题
-paperpilot tools           # 列出全部能力（中性能力层，自描述；--json 供程序解析）
+paperpilot tools           # 列出全部能力（连接层，自描述；--json 供程序解析）
 paperpilot call <能力> -p k=v  # 调用一个能力，输出统一信封 JSON（外部程序/AI 用）
 paperpilot backup          # 打包 data/ 到 backups/
 ```
@@ -128,9 +128,9 @@ Web 页面：`/` 今日简报 · `/digest/{date}` 历史简报 · `/papers` 论�
 > **Web 侧不再有第二套审计视图**。**`POST /monitor/mode` 控制端点仍在**（人类控制端点，路径与鉴权未动），
 > 它的 UI 落点搬到了 `/settings` 的「写权模式」卡。
 
-## AI 接入：mecha 操作者无关层
+## AI 接入：mecha 人机同门
 
-**AI 对话、模型管理、界面全部复用 DSH（DeepSeek Harness）**；PaperPilot 经 **mecha** 把中性能力层投影成
+**AI 对话、模型管理、界面全部复用 DSH（DeepSeek Harness）**；PaperPilot 经 **mecha** 把连接层投影成
 AI 面（MCP 工具）+ 监控面（cockpit），人机同过**一道写权门**（authority）：
 
 ```
@@ -208,7 +208,7 @@ topics:
 ## AI 接入（两轨，见 `docs/DESIGN.md`）
 
 **主轨 = DSH/MCP**（`paperpilot ai`，上面那节）：AI 对话、模型管理、UI 全部复用 DSH，
-PaperPilot 把中性能力层投影成语义工具（经 mecha 命令/门/审计）。错误可教学
+PaperPilot 把连接层投影成语义工具（经 mecha 命令/门/审计）。错误可教学
 （`{ok:false, error:{kind,hint,suggest}}`）、回程过体积闸（截断必带「截了多少/完整数据去哪看」）、
 工具与 CLI/Web 走同一批 service。
 

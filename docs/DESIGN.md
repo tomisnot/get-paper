@@ -3,7 +3,6 @@
 > 版本：v1.0 · 状态：设计评审稿
 > 上位文档：**[`PRINCIPLES.md`](PRINCIPLES.md)（宪法 / 基调）→ [`SPEC.md`](SPEC.md)（要实现什么）** —— 本文是它们的技术实现展开；冲突时以 `PRINCIPLES.md` 为准。
 > 定位：基于 arXiv 的**每日论文抓取 → AI 智能筛选 → AI 结构化总结 → 每日简报（本地 Web）**的个人文献调研工具。
-> 重要边界：**本项目不实现任何 AI 调用逻辑**。统一 AI 接入框架由外部团队开发，本项目只定义「AI 能力契约（Port）」与本地 Mock 实现，框架就绪后追加一个 Adapter 即可切换（见 §5）。
 
 ---
 
@@ -316,7 +315,7 @@ class SummarizerPort(Protocol):
 | 组合过滤 | 分类 / 日期 / 最低分 / 必读标签 / 已读未读 | M3 |
 | 收藏与笔记 | `notes` 表，详情页内嵌编辑 | M5 |
 | 导出 | BibTeX / Markdown 引用 | M5 |
-| 语义检索 | 向量检索（sqlite-vec 或 numpy 暴力余弦） | M5+（AI 框架就绪后复用其 embedding，避免自建模型） |
+| 语义检索 | 向量检索（sqlite-vec 或 numpy 暴力余弦） | M5+（复用 mecha 的 embedding，避免自建模型） |
 
 ---
 
@@ -500,7 +499,7 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 ### 17.3 验证结果
 
 - `pytest`：**71 passed**（契约 / 解析 / 策略 / 流水线 / Web / MCP 工具直调 / **MCP 活体协议** /
-  **归因与记录仪 13 条判据**）
+  **归因与记录仪判据**）
 - `ruff check .`：All checks passed
 - `dsh`：`npm test` 14/14、`tsc --noEmit` 零错误、`npm run bundle` 产出 host 15.1kB +
   client 7.1kB，host bundle 独立加载 OK
@@ -518,13 +517,13 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 
 ---
 
-## 18. 中性能力层（P0 落地，2026-09-25）
+## 18. 连接层（P0 落地，2026-09-25）
 
-按 docs/PRINCIPLES.md 信条 9 与 docs/SPEC.md §4，把"手脚"从 MCP 里解绑，做成 protocol-agnostic、自描述、可外部调用的中性能力层。**本轮不碰 AI 接入。**
+按 docs/PRINCIPLES.md 信条 9 与 docs/SPEC.md §4，把"手脚"从 MCP 里解绑，做成 protocol-agnostic、自描述、可外部调用的连接层。**本轮不碰 AI 接入。**
 
 ### 18.1 结构
 - `capabilities/base.py`：`ToolSpec`（name/description/入参 schema/kind=read|write/reversible）+ `Registry`（注册/自省 specs/调度 invoke）+ 统一信封 `ok()/err()` + `gate()` 体积闸 + 可教学错误；入参 schema 从函数签名自动推导。
-- `capabilities/tools.py`：`build_registry(container)`——19 个能力，全部薄封装既有 service（repo/pipeline/retrieval/settings），**逻辑不重写**（单一事实源）。
+- `capabilities/tools.py`：`build_registry(container)`——能力全部薄封装既有 service（repo/pipeline/retrieval/settings），**逻辑不重写**（单一事实源）。
 - `capabilities/__init__.py`：Python API 门面 `invoke(container, name, **params)` / `specs(container)`（在 container 上缓存 registry）。
 
 ### 18.2 两个门面（外部调用形式）
@@ -538,7 +537,7 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 - Web：`POST /papers/{id}/download`（经能力层，actor=human）+ `GET /papers/{id}/pdf`（有本地发本地、无则回退 arXiv）；日报每条加「⬇ 下载归档」按钮。
 
 ### 18.4 与旧 MCP server 的关系（**下一步 = AI 接入决策，本轮止步于此**）
-- `mcp_server.py` 的 18 工具**保持不动、测试不破**；与中性能力层暂时并存（二者都是 service 的薄封装，无业务逻辑重复）。
+- `mcp_server.py` 的 18 工具**保持不动、测试不破**；与连接层暂时并存（二者都是 service 的薄封装，无业务逻辑重复）。
 - 二者如何统一（MCP 降为中性层之上的薄 adapter，还是替换/移除）属于"AI 如何接入"的决策——**按用户要求停在此处，待明确 AI 接入方式后再动**。
 
 ### 18.5 验证
@@ -558,7 +557,7 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 
 ## 20. mecha v2 接入（Scheme E · commands-centric hybrid，Phase 1-4 已落地）
 
-设计交接文档见 `.qoder/plans/PaperPilot_接入_mecha_v2_d71d2059.md`。核心基调：mecha 是「操作者无关层」（Gate/History/Surface/Monitor + providers），AI 与人是平级操作者过同一道写入门；**领域实现单一来源仍是 `capabilities/`（22 能力），mecha 适配层只做薄投影，不复制业务逻辑**（信条 9）。
+核心基调：mecha 是「人机同门」（Gate/History/Surface/Monitor + providers），AI 与人是平级操作者过同一道写入门；**领域实现单一来源仍是 `capabilities/`，mecha 适配层只做薄投影，不复制业务逻辑**（信条 9）。
 
 状态归属（Scheme E）：配置态标量 → mecha `Gate`/`History`（KV）；论文库异构写 → mecha **命令**（`side_effect=True`，Phase 2）+ 域数据/undo 仍留 `repo.events`，两份 journal 靠命令审计的 `result_ref` 互引（非 split-brain）；读 → Surface QUERY + 只读工具；每日流水线 → `Engine.run`。
 

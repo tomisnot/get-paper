@@ -1,4 +1,4 @@
-"""中性能力层框架（docs/SPEC.md §4 / docs/PRINCIPLES.md 信条 9）。
+"""连接层框架（docs/SPEC.md §4 / docs/PRINCIPLES.md 信条 9）。
 
 把"手脚"整理成 **protocol-agnostic、自描述、可外部调用** 的工具，与任何具体 AI
 接入协议解耦。三条纪律沿用仓库既有实践，但**不绑定 MCP**：

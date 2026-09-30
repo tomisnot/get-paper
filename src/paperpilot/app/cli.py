@@ -674,7 +674,7 @@ def tools_cmd(
     config: Path = typer.Option(None, "--config", "-c"),
     as_json: bool = typer.Option(False, "--json", help="输出 JSON（供外部程序/AI 解析）"),
 ) -> None:
-    """列出全部能力（中性能力层的自描述清单：名称/说明/入参/读写/可逆）。"""
+    """列出全部能力（连接层的自描述清单：名称/说明/入参/读写/可逆）。"""
     from ..capabilities import build_registry
     from ..config import load_settings
     from .container import build_container

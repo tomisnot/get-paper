@@ -131,10 +131,7 @@ repo/MCP/pipeline 三条路径）；② `UPDATE/DELETE events` 抛 `SQLAlchemyEr
 3. **P2** catch-all hint。✅ 已完成
 4. **P3** 编排面（可选）。⬜ 待办
 
-补齐后已加 3 条判据（`tests/test_journal.py`）：① 每条写入带 actor/reason；② `events` 只增不改
+补齐后已加判据（`tests/test_journal.py`）：① 每条写入带 actor/reason；② `events` 只增不改
 （UPDATE/DELETE 判据失败）；③ 可逆 op 的 undo 往返一致。
 
 ---
-
-*参照的 Energy Level 经验文档：`docs/AI机甲框架-开发原则.md`、`docs/MCP使用体感-不适清单.md`（〇节·已解决）、
-`docs/DSH-MCP现状-给开发者的参考资料.md`。本项目 DESIGN.md §17 记录了已移植部分；本文记录**尚未移植的脊椎层**。*

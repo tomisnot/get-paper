@@ -83,6 +83,6 @@ class LLMTimeoutError(AIError):
 
 
 class UnifiedAINotReady(AIError):
-    """未配置 API key（或框架未接入），unified 档不可用。"""
+    """未配置 API key，unified 档不可用。"""
 
     kind = "not_ready"

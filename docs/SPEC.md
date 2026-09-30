@@ -60,7 +60,7 @@
 | 归因与记录仪（谁/何时/为什么/改了什么）+ 撤销 | `get_activity`/`undo` + append-only `events` | 读+写 |
 | 简报读取 | `get_digest` | 读 |
 
-> 动作：把上述能力从"绑死 MCP"改为经**中性能力层**暴露（§4），逻辑原样复用。
+> 动作：把上述能力从"绑死 MCP"改为经**连接层**暴露（§4），逻辑原样复用。
 
 ### 3.2 缺失、要新建（补齐闭环与调研深度）
 
@@ -112,7 +112,7 @@
 > ✅ **用户已拍板**：采用 **Python API + CLI(`--json`)** 两个门面；暂不加纯 HTTP API，也不以 MCP 为对外中心。
 > 目标：能力实现出来、整理成**任何外部调用方都能用**的形式，但**本轮不绑定任何 AI 协议**。
 
-- **中性能力层**：每个能力 = 一个 typed、self-describing 的工具，带元数据：`name / description / 入参 JSON-schema / 结构化返回 / read|write / reversible`。
+- **连接层**：每个能力 = 一个 typed、self-describing 的工具，带元数据：`name / description / 入参 JSON-schema / 结构化返回 / read|write / reversible`。
 - **统一返回信封**：`{ok, data | error{kind,hint,suggest}, meta}`；沿用仓库已验证的**体积闸**（大回程截断并告知去哪看全量）与**可教学错误**，但**与 MCP 解耦**。
 - **两个 protocol-agnostic 门面**：
   1. **Python API**：`import` 直接调 —— 供可视化界面②与任何进程内消费者。
@@ -158,7 +158,7 @@
 
 | 阶段 | 内容 | 出口 |
 | --- | --- | --- |
-| **P0 ✅ 已完成** | 中性能力层重暴露（Python API + CLI `--json`）＋ `download_paper`(N1) ＋ 日报视图对齐(§5.1) | 83 测试全绿；`paperpilot tools/call` 冒烟通过；核心"看到→下载"闭环打通 |
+| **P0 ✅ 已完成** | 连接层重暴露（Python API + CLI `--json`）＋ `download_paper`(N1) ＋ 日报视图对齐(§5.1) | 83 测试全绿；`paperpilot tools/call` 冒烟通过；核心"看到→下载"闭环打通 |
 | **P1** | `get_fulltext`(N2) ＋ 细粒度画像维护(N3) ＋ 精读问答取数 | 能对单篇深度精读；能对话式微调味道 |
 | **P2** | `similar_papers`(N4)/语义检索(N5)/质量信号(N6)/BibTeX(N7) | 调研深度与沉淀增强 |
 | **P3** | 趋势(N8) ＋ AI 自我迭代闭环(§3.4) | 系统能据使用体验进化 |
