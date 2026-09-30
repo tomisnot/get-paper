@@ -761,8 +761,11 @@ class PaperRepository:
             for (kind, key), row in rows.items():
                 if (kind, key) in want:
                     continue
-                if not (row.source or "").startswith("topic:"):
-                    continue                        # 只撤"主题注入过"的基线
+                # 撤"孤儿基线"：**带基线却没主人**的行就该撤。判据用 `w_base` 而不是只看
+                # `source` 前缀——老库回填后可能 source 已被贴成 signal 但基线还在
+                # （实测：4 个更早配置的中文作者以 0.5 权重阴魂不散）。
+                if abs(row.w_base) < 1e-12 and not (row.source or "").startswith("topic:"):
+                    continue
                 row.w -= row.w_base
                 row.w_base = 0.0
                 row.source = "signal"

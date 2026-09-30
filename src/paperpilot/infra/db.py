@@ -108,6 +108,29 @@ def _ensure_columns(engine: Engine) -> None:
             if not any(r[1] in cols and r[3] for r in rows):   # r[3] = notnull
                 continue
             _repair_nullable(conn, table, rows)
+        _backfill_legacy_seed_baseline(conn)
+
+
+def _backfill_legacy_seed_baseline(conn) -> int:
+    """老库一次性回填：把"旧播种行"的 `w` 认成它的**基线** `w_base`。
+
+    为什么必须做（实测踩过）：`w_base` 是新列，老行拿默认值 **0**；而旧
+    `profile_seed_if_empty` 播下的先验行是 `w=0.5, hits=0, w_base=0` ⇒ 主题池化后的撤权
+    逻辑"减去 w_base（=0）"等于**没撤**，那行还会被贴上 `signal` 变成**幽灵权重**
+    （实测：4 个更早配置里的中文作者名以 0.5 的权重阴魂不散）。
+
+    判据为什么安全：**信号必然会加 `hits`**（`_bump_profile` 里每键都 +1）⇒
+    `hits=0 且 w≠0` 的行**只可能**来自播种。回填后它们就能被 `sync_topic_pool`
+    按"孤儿基线"正确撤掉；仍在配置里的那些因为 key 命中 `want`，`w_base` 正好被改对。
+    """
+    rows = conn.execute(text("PRAGMA table_info(profile_weights)")).fetchall()
+    if not rows:
+        return 0
+    res = conn.execute(text(
+        "UPDATE profile_weights SET w_base = w "
+        "WHERE hits = 0 AND w_base = 0 AND w <> 0"
+    ))
+    return int(res.rowcount or 0)
 
 
 def init_db(engine: Engine) -> None:

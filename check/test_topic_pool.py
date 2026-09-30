@@ -160,6 +160,37 @@ def test_topic_edits_reach_the_pool_every_time(tmp_path):
 
 
 # ---------------------------------------------------------------- 4) 负反馈接线
+def test_legacy_seed_rows_get_a_baseline_and_can_be_released(tmp_path):
+    """**老库回填判据**：`hits=0 且 w≠0` 的行只可能来自旧播种 ⇒ 把 `w` 认成基线，才撤得掉。
+
+    实测事故：`w_base` 是新列，老行拿默认 0 ⇒ 撤权"减去 0"等于没撤，还被贴成 `signal`
+    变成**幽灵权重**（4 个更早配置里的中文作者名以 0.5 权重阴魂不散，可视化里一眼看见）。
+    """
+    from paperpilot.infra.db import init_db
+    from paperpilot.infra.orm import ProfileWeight
+
+    from .test_ai_experience import _reg
+
+    c, _ = _reg(tmp_path)
+    repo = c.repo
+    repo.profile_reset(actor="human", reason="判据：清空重来")
+    engine = repo.sf.kw["bind"]
+
+    # 造一行"旧播种"的样子：w=0.5、hits=0、w_base=0（新列默认值）、source 已被贴成 signal
+    with repo.sf() as s:
+        s.add(ProfileWeight(kind="author", key="旧种子作者", w=0.5, hits=0,
+                            source="signal", w_base=0.0))
+        s.commit()
+
+    init_db(engine)                       # 再跑一次启动路径 ⇒ 回填 w_base
+    with repo.sf() as s:
+        row = s.scalar(select(ProfileWeight).where(ProfileWeight.key == "旧种子作者"))
+        assert row is not None and row.w_base == 0.5, "回填没把旧播种行的 w 认成基线"
+
+    repo.sync_topic_pool([])              # 没有主题要它 ⇒ 按孤儿基线撤掉
+    assert ("author", "旧种子作者") not in _raw(repo), "幽灵基线没被撤掉"
+
+
 def test_skip_and_star_feed_the_profile(tmp_path):
     """`skip_paper`/`star_paper`/`mark_read` 必须喂画像——**同一份意图，不管从哪条通道表达**。
 
