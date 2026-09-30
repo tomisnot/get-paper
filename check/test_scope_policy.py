@@ -71,10 +71,14 @@ def test_scope_policy_table_matches_intent(tmp_path):
     """
     policy = getattr(_stack(tmp_path)[1]["commands"], "_scope_policy", None)
     assert isinstance(policy, ScopePolicy), "装配期应当注入 ScopePolicy"
-    for scope in ("library", "topics", "review", "pipeline", "config", "undo"):
+    for scope in ("library", "topics", "review", "pipeline", "undo"):
         assert policy.allows("human", scope) is True, f"human 应当能碰 {scope}"
         assert policy.allows("ai", scope) is True, f"ai 应当能碰 {scope}（设计如此）"
     assert policy.allows("human", "profile") is True, "人当然能重置画像"
+    assert policy.allows("human", "config") is True, "human 有通用配置写口"
+    assert policy.allows("ai", "config") is True, "AI 有受白名单约束的配置写工具（set_config，设计如此）"
+    assert policy.allows("human", "library_admin") is True, "库管理动作归人"
+    assert policy.allows("ai", "library_admin") is False, "库管理动作不归 AI（管理≠使用）"
     assert policy.allows("ai", "profile") is False, (
         "ai 不该能碰 profile —— 那是「改自己的标尺」")
     assert policy.allows("human", "views") is True, "人当然能删自己画过的图"

@@ -35,7 +35,7 @@ from mecha.scopes import ScopePolicy
 #: ⇒ **默认拒绝**（绑定 = 必须逐块表态，而不是"默认全开再逐个关"）。
 #: 与判据 `test_scope_policy_table_matches_intent` **互为见证**：改这里就要改那条判据。
 _GRANTS: dict[str, tuple[str, ...]] = {
-    "human": ("library", "topics", "review", "pipeline", "config", "undo", "profile",
+    "human": ("library", "topics", "review", "pipeline", "config", "undo", "profile", "library_admin", "config_batch",
               "views", "marks"),
     # ⭐ `profile` **只给人**：`reset_profile` 是"改自己的标尺"那类动作，它的声明原文就是
     #    "人类专属：不投影给 AI，防自改锚点" —— 这里把那个**意图落成规则**（而不只是注释）。
