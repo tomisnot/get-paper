@@ -1,4 +1,5 @@
-"""PaperPilot 的 AI 工具面：把 22 个中性能力包装成 mecha ``define_tool``。
+"""PaperPilot 的 AI 工具面：把 `TOOL_DECLS` 的**声明**（55 条：30 写 + 25 读）经
+`mecha.projection.project()` 投影成 mecha 工具（不再手写 `define_tool`）。
 
 三条纪律（接入指南第 2/3 步 + 交接文档 §7/§8）：
 
@@ -56,11 +57,12 @@ class ToolDecl:
     omit: tuple[str, ...] = ()       # 不作为模型可见参数的能力入参
 
 
-#: 24 能力的投影表（单一来源：参数派生、必填注入、Surface 注册都由它驱动）。
+#: 55 条能力声明的投影表（单一来源：命令面/工具面/参数派生/必填注入都由它驱动）。
 #: 参数描述不在此（N8）——由 ``_derive_parameters`` 从能力 ``ToolSpec.params`` 透传。
 TOOL_DECLS: tuple[ToolDecl, ...] = (
 
-    # ⚠ **已切投影**的这批写条目（见 _PROJECTED_TOOLS）在这里只为**命令面**（build_commands 也遍历本表）而留；**工具面**由 project() 生成（不再手写）。
+    # ⚠ 本表**一份声明驱动两面**：写条目 → **命令面**（build_commands 也遍历本表）**+ 工具面**；
+    # 读条目 → **只有工具面**（只读命令**不进**命令面，见 commands.build_read_command）。两面都不手写。
     ToolDecl("mark_read", "mark_read", "write",
              "标记论文为已读或未读。",
              omit=("actor",)),
@@ -310,38 +312,14 @@ def _raise_from_envelope(res: Mapping[str, object]) -> None:
     raise envelope_to_error(res)
 
 
-#: 已切到 mecha 投影的工具（**分批切换**的当前批）：声明面由 `mecha.projection.project()`
-#: 生成。名字进本表 = "本批切到投影"；未列入的仍走 `build_tool_registry` 里的手写注册。
-#: ⚠ **本表只切"工具面"、不切"命令面"**：写侧那几条的 `ToolDecl` **仍在 `TOOL_DECLS` 里**
-#: （命令面 `build_commands` 也遍历它 ⇒ 那是它们唯一的声明家；表内那段注释已写明），
-#: 读侧那几条同理。**"已切投影"是迁移状态，不是第二份声明**。
-#: ⚠ `delete_note` / `set_config_batch` 也在本列，但它们的 scope **只给人** ⇒ `project()`
-#: 经 policy 判为**不投影**（返回 None）⇒ 仍不可见：
-#: **"看不见"由 scope 派生，不再靠"没人把它写进工具面"**。
-_PROJECTED_TOOLS: tuple[str, ...] = (
-    "mark_read", "star_paper", "skip_paper", "add_note", "delete_briefing",
-    "tag_paper", "tag_papers", "resolve_mark", "set_default_view", "sync_citations",
-    "delete_note", "set_config_batch",
-    # ---- 写侧第二批（2026-09-30 起分批切；动作与读侧同一套，只是口径不同：写侧要剔除 `actor`）
-    "undo_change", "sync_cited_by", "set_graph_view", "materialize_view",
-    "record_signal", "publish_feed", "write_summary", "add_topic",
-    "update_topic", "set_topic_enabled", "fetch_papers", "fetch_paper_by_id",
-    "prepare_review", "submit_review",
-    "finalize_briefing", "run_pipeline", "fetch_paper_html", "annotate_paper",
-    "update_mark", "capture_paper_shot",
-    # ---- 读侧（2026-09-30 起分批切；批 1 = `query_topics`，之后每批 7~8 条）------------
-    # 读条目的声明**仍在 `TOOL_DECLS`**（`kind="read"`，一个事实一个家）；进本表只表示
-    # "工具面改由 `project()` 生成"。⚠ 与写侧的关键差别：读声明的**命令声明不进 `sw.commands`**
-    # （命令面是写治理面，理由与实测见 `commands.build_read_command`）。
-    "query_topics",
-    "read_digest", "review_status", "query_tags", "query_graph_views",
-    "read_activity", "search_papers", "upstream_clusters",
-    "read_paper", "related_papers", "coverage_report", "stats_timeseries",
-    "watch_authors", "paper_metrics", "read_references", "read_citations",
-    "query_briefings", "query_profile", "feed_generate", "read_paper_outline",
-    "search_library_text", "read_paper_text", "search_paper_text", "verify_marks",
-    "read_paper_shots",
-)
+#: 命令面上存在、但**声明不住 `TOOL_DECLS`** 的两条**人类专属**手写命令（删笔记 / 批量配置写）。
+#: 它们也要过一遍 `project()`：这样"看不见"是 **policy 派生**的（`project()` 返回 `None`），
+#: 而不是靠"没人把它写进工具面"（一个事实一个家，见 d64f35b）。
+#: ⚠ 这**不是迁移开关**（那类开关随迁移做完就该退场）：这是**语义**——"谁的声明不在声明表里"，
+#: 不会因为读侧/写侧切完而消失。
+#: ⚠ `set_config` 同样"不在 `TOOL_DECLS`"，但它**有工具面**（手写在 `_register_config_tools`，
+#: 与 `read_config` 配对）⇒ **不在此列**（它进投影会与那份手写注册重复）。
+_ADMIN_ONLY_COMMANDS: tuple[str, ...] = ("delete_note", "set_config_batch")
 
 
 def _params_for_model(decl, cap_params) -> dict:
@@ -360,43 +338,26 @@ def _params_for_model(decl, cap_params) -> dict:
 
 
 def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRegistry:
-    """装配 PaperPilot 的工具面（24 工具 = 22 能力 + set_config/read_config）。
+    """装配 PaperPilot 的工具面（61 = `TOOL_DECLS` 的 55 条声明 + 6 条非能力面）。
 
-    - **只读能力**：``execute`` 直接桥到 ``capabilities.invoke``（不经门，D-4）。
-    - **写入能力**：``execute`` 桥到 ``sw.commands.invoke(gate=sw.gate, channel=ai)``
-      ——写权（authority）与审计（``command.<name>`` 落 History）由命令面治理（Phase 2）。
-    - **配置标量**：``set_config`` 经 ``gate.set`` 写（authority + validate 双闸），
-      ``read_config`` 读快照——配置态归 Gate（Scheme E）。
+    **声明面全部**由 `mecha.projection.project()` 生成（见下面的循环）；本函数只接**两样**项目口径：
+
+    - **只读能力**：``execute`` 桥到 ``capabilities.invoke``（不经门、不留痕，D-4）。
+    - **写入能力**：``execute`` 桥到**命令面**（``invoke_command``）——写权（authority）与审计
+      （``command.<name>`` 落 History）由命令面治理（Phase 2）。
+
+    另有三块**不从声明来**的面（各自手写注册）：``set_config`` / ``read_config``（配置标量，
+    Scheme E）、``read_authority``（写权自省）、``submit_job`` / ``read_job`` / ``cancel_job``
+    （长活 job 化）。
 
     ``channel`` 缺省 = ``sw.channels['ai']``（AI 侧，actor 钉死 'ai'）。
     """
     channel = channel or sw.channels["ai"]
     reg = ToolRegistry()
-    # ⚠ 那张表（`TOOL_DECLS`）**同时**驱动命令面与工具面：已切投影的 5 条**仍留在表里**
-    # （命令面 `build_commands` 也遍历它），但**工具面**由下面 `project()` 生成 ⇒ 这里跳过它们
-    # （防"两处表达同一件事"）。
-    for decl in TOOL_DECLS:
-        if decl.mecha_name in _PROJECTED_TOOLS:
-            continue
-        cap_params = _cap_params(container, decl.cap_name)
-        parameters = _derive_parameters(cap_params, decl)
-        if decl.kind == "write":
-            execute = _make_command_bridge(sw.commands, sw.gate, channel, decl.mecha_name,
-                                           approval=sw.approval)
-        else:
-            execute = _make_capability_bridge(container, decl.cap_name)
-        reg.register(define_tool(
-            name=decl.mecha_name,
-            description=decl.description,
-            parameters=parameters,
-            output_schema={"type": "object", "required": ["ok"]},
-            execute=execute,
-            banned_words=_BANNED_WORDS,
-        ))
-    # ⭐ **已切投影的那批**（分批切换的当前批）：声明面由 `mecha.projection.project()` 生成 ——
-    #   名字（惯例/改名 + 形状律）、描述（透传；有 overrides 就用它）、**scope 不被 policy 允许 ⇒ None**
-    #   （"看不见"）、kind（由 side_effect **翻译**）、reversible（取能力层自己的声明 ⇒ 顺手接通
-    #   "声明了没人喂"的那条链）；参数面由 `_merge_model_params` 并回本仓口径；`actor` 框架自动剔除。
+    # ⭐ **工具面 = 全部声明经 `mecha.projection.project()` 生成**（迁移完成 ⇒ 这里**没有**手写注册
+    #   循环了）：投影给 名字（惯例/改名 + 形状律）、描述（透传；有 overrides 就用它）、
+    #   **scope 不被 policy 允许 ⇒ None**（"看不见"）、kind（由 side_effect **翻译**）、reversible；
+    #   参数面由本侧按**写/读两套口径**并回去（见下面的注释）；`actor` 框架自动剔除。
     #   ⚠ 投影只给**声明面**：`execute` 必须由本侧接上（写 = 命令桥、读 = 能力桥），
     #   否则"列得出调不动"。
     from mecha.projection import ProjectionOverrides, project
@@ -405,14 +366,15 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
     cap_rev = {c["name"]: bool(c["reversible"]) for c in capabilities.specs(container)}
     policy = getattr(sw.commands, "_scope_policy", None)
     decls_by_name = {d.mecha_name: d for d in TOOL_DECLS}
-    for mecha_name in _PROJECTED_TOOLS:
+    # 全部声明（30 写 + 25 读，按声明序）+ 两条人类专属手写命令（见 `_ADMIN_ONLY_COMMANDS`）。
+    for mecha_name in (*decls_by_name, *_ADMIN_ONLY_COMMANDS):
         decl = decls_by_name.get(mecha_name)
         is_read = decl is not None and decl.kind == "read"
         if is_read:
-            # ⭐ **读侧**（2026-09-30）：声明仍在**同一张** `TOOL_DECLS`（一个事实一个家），
-            #   但它的**命令声明不进命令面**——命令面是写治理面，不变式是"每一条都是写命令"
-            #   （要通道 / 要 reason / 要非零预估，两条冻结判据逐条钉着），而读命令进那个面
-            #   **只为投影**、却会让那两条不变式变成假的。理由与实测见 `commands.build_read_command`。
+            # ⭐ **读侧**：声明就住**同一张** `TOOL_DECLS`（一个事实一个家），但它的**命令声明不进
+            #   命令面**——命令面是写治理面，不变式是"每一条都是写命令"（要通道 / 要 reason /
+            #   要非零预估，两条冻结判据逐条钉着），而读命令进那个面**只为投影**、却会让那两条
+            #   不变式变成假的。理由与实测见 `commands.build_read_command`。
             # 延迟导入：commands 依赖 tools（避免模块级循环）。
             from .commands import build_read_command
 
@@ -425,9 +387,10 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
         else:
             spec = specs_by_name.get(mecha_name)
             if spec is None:
-                raise MechaError(f"投影清单里的命令 {mecha_name!r} 不在命令面上",
+                raise MechaError(f"命令 {mecha_name!r} 不在命令面上",
                                  kind="capability_missing",
-                                 hint="补命令注册，或把它从 _PROJECTED_TOOLS 里去掉")
+                                 hint="写命令的声明由 `commands.build_commands` 从 `TOOL_DECLS` 派生；"
+                                      "人类专属命令在 `commands.py` 里手写注册 ⇒ 缺它说明声明与命令面脱节")
             projected = project(
                 spec,
                 execute=_make_command_bridge(sw.commands, sw.gate, channel, mecha_name,
