@@ -327,6 +327,8 @@ _PROJECTED_TOOLS: tuple[str, ...] = (
     "record_signal", "publish_feed", "write_summary", "add_topic",
     "update_topic", "set_topic_enabled", "fetch_papers", "fetch_paper_by_id",
     "prepare_review", "submit_review",
+    "finalize_briefing", "run_pipeline", "fetch_paper_html", "annotate_paper",
+    "update_mark", "capture_paper_shot",
     # ---- 读侧（2026-09-30 起分批切；批 1 = `query_topics`，之后每批 7~8 条）------------
     # 读条目的声明**仍在 `TOOL_DECLS`**（`kind="read"`，一个事实一个家）；进本表只表示
     # "工具面改由 `project()` 生成"。⚠ 与写侧的关键差别：读声明的**命令声明不进 `sw.commands`**
