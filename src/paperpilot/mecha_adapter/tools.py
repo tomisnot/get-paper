@@ -322,6 +322,9 @@ _PROJECTED_TOOLS: tuple[str, ...] = (
     "mark_read", "star_paper", "skip_paper", "add_note", "delete_briefing",
     "tag_paper", "tag_papers", "resolve_mark", "set_default_view", "sync_citations",
     "delete_note", "set_config_batch",
+    # ---- 写侧第二批（2026-09-30 起分批切；动作与读侧同一套，只是口径不同：写侧要剔除 `actor`）
+    "undo_change", "sync_cited_by", "set_graph_view", "materialize_view",
+    "record_signal", "publish_feed", "write_summary", "add_topic",
     # ---- 读侧（2026-09-30 起分批切；批 1 = `query_topics`，之后每批 7~8 条）------------
     # 读条目的声明**仍在 `TOOL_DECLS`**（`kind="read"`，一个事实一个家）；进本表只表示
     # "工具面改由 `project()` 生成"。⚠ 与写侧的关键差别：读声明的**命令声明不进 `sw.commands`**
@@ -439,9 +442,15 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
         if is_read:
             parameters = _derive_parameters(_cap_params(container, decl.cap_name), decl)
         else:
+            # ⚠ 写侧的 **mecha 名不一定等于能力名**（`undo_change` → 能力 `undo`；`_SCOPES` 里也是
+            #   这么写的）⇒ 能力层取参必须走 `decl.cap_name`。既有的"参数机械派生"判据
+            #   （`check/test_mecha_criteria.py`）对账用的正是 `decl.cap_name` ⇒ 这里跟它同口径
+            #   （从前这里用 mecha 名，只是**已切的那批恰好都同名**才没炸）。
+            #   `delete_note` / `set_config_batch` 不是能力，但它们在上面就被 policy 挡掉、走不到这里。
+            cap_name = decl.cap_name if decl is not None else mecha_name
             parameters = _params_for_model(
-                ToolDecl(mecha_name, mecha_name, "write", "", omit=()),
-                _cap_params(container, mecha_name))
+                ToolDecl(mecha_name, cap_name, "write", "", omit=()),
+                _cap_params(container, cap_name))
         reg.register(define_tool(
             name=projected.name,
             description=projected.description,
