@@ -312,9 +312,13 @@ def _raise_from_envelope(res: Mapping[str, object]) -> None:
 
 #: 已切到 mecha 投影的写工具（**分批切换**的当前批）：声明面由 `mecha.projection.project()`
 #: 生成 ⇒ 它们**不再**出现在手写 `TOOL_DECLS` 里（一个事实一个家）。未列入的仍走手写。
+#: ⚠ `delete_note` / `set_config_batch` 也在本列，但它们的 scope **只给人** ⇒ `project()`
+#: 经 policy 判为**不投影**（返回 None）⇒ 仍不可见：
+#: **"看不见"由 scope 派生，不再靠"没人把它写进工具面"**。
 _PROJECTED_WRITE_TOOLS: tuple[str, ...] = (
     "mark_read", "star_paper", "skip_paper", "add_note", "delete_briefing",
     "tag_paper", "tag_papers", "resolve_mark", "set_default_view", "sync_citations",
+    "delete_note", "set_config_batch",
 )
 
 
