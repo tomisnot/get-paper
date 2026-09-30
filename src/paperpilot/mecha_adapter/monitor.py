@@ -55,7 +55,12 @@ def paperpilot_summarizer(events) -> dict:
         "write_count": len(cmds),
         "failed_writes": failed,
         "last_command": cmds[-1].op[len("command."):] if cmds else "",
-        "config_keys_set": sorted(k for k in snap if not k.startswith("command.")),
+        # ⚠ 这里原先有 `if not k.startswith("command.")` 过滤（"别把审计键当配置键"）——
+        # **已删（死守卫）**：mecha 的 `fold` 现在**只折 `kind=="state"`**（`history.py:114`），
+        # 命令审计（`kind="history"`）**结构上就进不了快照** ⇒ 那个过滤永远为真。
+        # 兜住它的判据在 `tests/test_mecha_cockpit.py`（域快照里没有 `command.*`、`n_keys==6`）
+        # ——框架若回退（审计键又掺进快照）⇒ 那条立刻红（那时才需要加回来）。
+        "config_keys_set": sorted(snap),
     }
     # Claim 对账：复述当前生效的配置值（人话键名 → 原始键），只对存在的键下 Claim
     # （对不存在的键下 Claim 会被判 disputed——那是「概括撒谎」的正确表现）。
