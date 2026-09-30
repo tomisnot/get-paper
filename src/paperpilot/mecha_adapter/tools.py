@@ -329,6 +329,8 @@ _PROJECTED_TOOLS: tuple[str, ...] = (
     "query_topics",
     "read_digest", "review_status", "query_tags", "query_graph_views",
     "read_activity", "search_papers", "upstream_clusters",
+    "read_paper", "related_papers", "coverage_report", "stats_timeseries",
+    "watch_authors", "paper_metrics", "read_references", "read_citations",
 )
 
 
