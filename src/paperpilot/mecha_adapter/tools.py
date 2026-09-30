@@ -59,6 +59,24 @@ class ToolDecl:
 #: 24 能力的投影表（单一来源：参数派生、必填注入、Surface 注册都由它驱动）。
 #: 参数描述不在此（N8）——由 ``_derive_parameters`` 从能力 ``ToolSpec.params`` 透传。
 TOOL_DECLS: tuple[ToolDecl, ...] = (
+
+    # ⚠ 这 5 条的**声明面已切投影**（见 _PROJECTED_WRITE_TOOLS）⇒ 它们在这里只为**命令面**（uild_commands 也遍历本表）而留；**工具面**由 project() 生成。
+    ToolDecl("mark_read", "mark_read", "write",
+             "标记论文为已读或未读。",
+             omit=("actor",)),
+    ToolDecl("star_paper", "star_paper", "write",
+             "收藏或取消收藏论文。",
+             omit=("actor",)),
+    ToolDecl("skip_paper", "skip_paper", "write",
+             "标记论文为不感兴趣（同类下次过滤）。",
+             omit=("actor",)),
+    ToolDecl("add_note", "add_note", "write",
+             "给论文添加笔记（调研沉淀）。",
+             omit=("actor",)),
+    ToolDecl("delete_briefing", "delete_briefing", "write",
+             "删除指定日期的简报（同日多版本一并删）。可撤销——事件里存了 markdown+stats 快照，"
+             "undo_change(seq=0) 一键重建。Web 设置页的「删简报」按钮与此同源。",
+             omit=("actor",)),
     # ------------------------------------------------------------ 只读面（10）
     ToolDecl("query_topics", "list_topics", "read",
              "列出研究主题：名称、关键词、分类白名单、配额、评分阈值、启用状态。"),
@@ -174,22 +192,6 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
              omit=("actor",)),
     ToolDecl("set_topic_enabled", "set_topic_enabled", "write",
              "启用或停用某个研究主题。",
-             omit=("actor",)),
-    ToolDecl("mark_read", "mark_read", "write",
-             "标记论文为已读或未读。",
-             omit=("actor",)),
-    ToolDecl("star_paper", "star_paper", "write",
-             "收藏或取消收藏论文。",
-             omit=("actor",)),
-    ToolDecl("skip_paper", "skip_paper", "write",
-             "标记论文为不感兴趣（同类下次过滤）。",
-             omit=("actor",)),
-    ToolDecl("add_note", "add_note", "write",
-             "给论文添加笔记（调研沉淀）。",
-             omit=("actor",)),
-    ToolDecl("delete_briefing", "delete_briefing", "write",
-             "删除指定日期的简报（同日多版本一并删）。可撤销——事件里存了 markdown+stats 快照，"
-             "undo_change(seq=0) 一键重建。Web 设置页的「删简报」按钮与此同源。",
              omit=("actor",)),
     # ------------------------------------------------------------ 精读面（10）
     # arXiv HTML 正文 + 带位置的批注。分工：判断归 AI（读哪节、标哪句、批注写什么），
@@ -308,6 +310,28 @@ def _raise_from_envelope(res: Mapping[str, object]) -> None:
     raise envelope_to_error(res)
 
 
+#: 已切到 mecha 投影的写工具（**分批切换**的当前批）：声明面由 `mecha.projection.project()`
+#: 生成 ⇒ 它们**不再**出现在手写 `TOOL_DECLS` 里（一个事实一个家）。未列入的仍走手写。
+_PROJECTED_WRITE_TOOLS: tuple[str, ...] = (
+    "mark_read", "star_paper", "skip_paper", "add_note", "delete_briefing",
+)
+
+
+def _merge_model_params(decl, cap_params) -> dict:
+    """**投影产物 + 本仓的"模型面参数口径"** ⇒ 给模型的参数 schema（在本侧合并）。
+
+    ⚠ 为什么在本侧合并（n=1，R1）：`project()` 搬的是**命令面** schema，而
+    ① "给模型的参数说明"住**能力层**（N8 单一事实源）；
+    ② "对模型是否必填"是**工具面口径**（今天：全部可选 —— 命令面必填 ≠ 对模型必填）；
+    这两样都是**项目口径**，框架不知道也不该知道 ⇒ 由本函数并回去（框架只搬不解释）。
+    ⚠ `actor` 在这里显式去掉：投影产物自带框架的自动剔除，但**本函数覆盖了参数**
+    ⇒ 被覆盖的那份由本函数负责（不是"两处表达同一件事"：框架那份已被丢弃）。
+    """
+    params = _derive_parameters(cap_params, decl)
+    params.pop("actor", None)
+    return params
+
+
 def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRegistry:
     """装配 PaperPilot 的工具面（24 工具 = 22 能力 + set_config/read_config）。
 
@@ -321,7 +345,12 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
     """
     channel = channel or sw.channels["ai"]
     reg = ToolRegistry()
+    # ⚠ 那张表（`TOOL_DECLS`）**同时**驱动命令面与工具面：已切投影的 5 条**仍留在表里**
+    # （命令面 `build_commands` 也遍历它），但**工具面**由下面 `project()` 生成 ⇒ 这里跳过它们
+    # （防"两处表达同一件事"）。
     for decl in TOOL_DECLS:
+        if decl.mecha_name in _PROJECTED_WRITE_TOOLS:
+            continue
         cap_params = _cap_params(container, decl.cap_name)
         parameters = _derive_parameters(cap_params, decl)
         if decl.kind == "write":
@@ -335,6 +364,41 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
             parameters=parameters,
             output_schema={"type": "object", "required": ["ok"]},
             execute=execute,
+            banned_words=_BANNED_WORDS,
+        ))
+    # ⭐ **已切投影的那批**（分批切换的当前批）：声明面由 `mecha.projection.project()` 生成 ——
+    #   名字（惯例/改名 + 形状律）、描述（透传；有 overrides 就用它）、**scope 不被 policy 允许 ⇒ None**
+    #   （"看不见"）、kind（由 side_effect **翻译**）、reversible（取能力层自己的声明 ⇒ 顺手接通
+    #   "声明了没人喂"的那条链）；参数面由 `_merge_model_params` 并回本仓口径；`actor` 框架自动剔除。
+    #   ⚠ 投影只给**声明面**：`execute` 必须由本侧接上（命令桥），否则"列得出调不动"。
+    from mecha.projection import ProjectionOverrides, project
+
+    specs_by_name = {s.name: s for s in sw.commands.specs()}
+    cap_rev = {c["name"]: bool(c["reversible"]) for c in capabilities.specs(container)}
+    policy = getattr(sw.commands, "_scope_policy", None)
+    for mecha_name in _PROJECTED_WRITE_TOOLS:
+        spec = specs_by_name.get(mecha_name)
+        if spec is None:
+            raise MechaError(f"投影清单里的命令 {mecha_name!r} 不在命令面上",
+                             kind="capability_missing",
+                             hint="补命令注册，或把它从 _PROJECTED_WRITE_TOOLS 里去掉")
+        projected = project(
+            spec,
+            execute=_make_command_bridge(sw.commands, sw.gate, channel, mecha_name,
+                                         approval=sw.approval),
+            policy=policy, side="ai",
+            overrides=ProjectionOverrides(reversible=cap_rev.get(mecha_name, False)),
+        )
+        if projected is None:                 # policy 不让 ⇒ 按设计"看不见"
+            continue
+        reg.register(define_tool(
+            name=projected.name,
+            description=projected.description,
+            parameters=_merge_model_params(
+                ToolDecl(mecha_name, mecha_name, "write", "", omit=()),
+                _cap_params(container, mecha_name)),
+            output_schema={"type": "object", "required": ["ok"]},
+            execute=projected.execute,
             banned_words=_BANNED_WORDS,
         ))
     _register_config_tools(reg, sw, channel)
