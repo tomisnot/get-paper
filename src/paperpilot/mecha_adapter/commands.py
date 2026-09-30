@@ -15,17 +15,23 @@ handler 内（``capabilities.invoke`` 直写 SQLite）⇒ LOCKED 态下**域写�
 （`Gate.check` 与 `Gate.set` 共用同一份判定，``invoke`` 在调 handler 之前就查）⇒
 **那份手写闸已删**（留着就是"同一事实两个守卫"）。归因也改成**声明式**：命令声明
 ``wants_channel=True`` ⇒ handler 直接收本次的 ``channel=``（不再用 contextvar 偷渡）。
+
+⭐ **读侧的声明也住本模块**（2026-09-30）：`build_read_command` 把一条只读能力声明变成一条
+**只读命令声明**（`CommandSpec`），但**只当投影源、不进 `sw.commands`**。原因见该函数的
+docstring：本模块这个面是**写治理面**，"**每一条都是写命令**"（要通道 / 要 reason / 要非零
+预估）是它的不变式、且被两条冻结判据逐条钉着；读命令进那个面**只为投影**、却会让那两条
+不变式变成假的 ⇒ 与其改判据，不如让读声明**诚实地不进这个面**。
 """
 
 from __future__ import annotations
 
-from mecha.commands import CommandResult, define_command
+from mecha.commands import CommandResult, CommandSpec, define_command
 from mecha.surface import ExecutionContext
 
 from .. import capabilities
 from ..domain.pipeline import pipeline_config_override
 from .engine import gate_scoring_override
-from .tools import TOOL_DECLS, _cap_params, envelope_to_error
+from .tools import TOOL_DECLS, ToolDecl, _cap_params, envelope_to_error
 
 #: 写权被拒的失败档（框架 ``Authority.gate`` 的两个 kind）。
 _WRITE_DENIED_KINDS = ("authority_locked", "authority_mode_mismatch")
@@ -135,6 +141,42 @@ def _command_params(cap_params: dict, omit: tuple[str, ...]) -> dict:
     #   旧写法在这里回退成"只有 additionalProperties、没有 properties"的宽松形——
     #   那会让 AI **看不到任何参数**，是潜伏的真缺陷）。
     return {"type": "object", "properties": props, "required": required}
+
+
+def build_read_command(container, decl: ToolDecl) -> CommandSpec:
+    """一条**只读能力声明** → 一条**只读命令声明**（`CommandSpec`）；**刻意不 register**。
+
+    ⭐ 读侧为什么也要"命令声明"：工具面的**声明源就是命令声明**——`.tools.build_tool_registry`
+    用 `mecha.projection.project()` 从它一次派生名字/文案/参数/档位/可见性。读工具从前是**手写**
+    `define_tool(...)`；现在与写侧走**同一条**投影缝（重构目标：工具面从声明生成）。
+
+    ⛔ **为什么不进 `sw.commands`（与写命令分家的那条线）**：命令面是**写治理面**，它的不变式是
+    "**命令面里每一条都是写命令**"——要本次通道（归因）、要 `reason`（域 journal 的"为什么"）、
+    要非零预估（AI 据此决定要不要 job 化）。**两条冻结判据逐条遍历整个命令集合钉着它**：
+    `tests/test_mecha_adapter.py::test_write_commands_declare_what_governance_needs`、
+    `check/test_ai_experience.py::test_every_write_command_has_nonzero_estimate`。
+    而读命令：没有写权、没有审计、`scope` 也没有运行时语义 ⇒ 进那个面**只为投影**，
+    代价却是把那两条不变式变成假的 ⇒ 读声明**只当投影源**（本函数只构造、不注册）。
+
+    ⚠ 这不是"把代码换个地方放"：**实测**（探针）`side_effect=False` 的命令经命令面调用
+    **既不过 Gate、也不写任何痕**（账本前后差集为空）⇒ "进命令面"与"不进"在**行为上等价**，
+    差别只在那两条不变式**是否说谎** ⇒ 选不说谎的那边。
+
+    ⚠ 声明里**只写有消费者的字段**：`name`/`description`/`parameters`/`output_schema` 与
+    `side_effect`（`project()` 用它翻出工具面的 read 档）、`scope`（投影期的可见性过滤）。
+    `estimate_sec`/`cancel_supported`/`wants_channel`/`approval_required` **刻意不写**：本 spec
+    不进命令面 ⇒ 那几个字段**没有消费者**（写了就是本项目在治的"不干活的声明"）。
+    """
+    return define_command(
+        name=decl.mecha_name,
+        description=decl.description,
+        parameters=_command_params(_cap_params(container, decl.cap_name), decl.omit),
+        output_schema={"type": "object", "required": ["ok"]},
+        side_effect=False,
+        # `scope` 走 `_scope_for`：读命令都属 `library` 块（缺省值）——**刻意不为它们往 `_SCOPES`
+        # 抄一份同值清单**（那正是"手抄第二份"；默认值就是为这种统一情形留的）。
+        scope=_scope_for(decl.mecha_name),
+    )
 
 
 #: `set_config` 命令的参数契约（手写：它不对应任何能力自描述）。
