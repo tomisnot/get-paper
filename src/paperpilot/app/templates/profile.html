@@ -7,16 +7,22 @@
   .pool-cards b { font-size: 19px; display: block; line-height: 1.3; }
   .pool-cards span { color: var(--muted); font-size: 12px; }
   .pool-cards b.bad { color: var(--warn); }
-  .prow { display: flex; align-items: center; gap: 8px; height: 22px; }
-  .pkey { width: 210px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* ⚠ 布局教训（实测截图揪出）：原来一行里塞**两行文字**（权重 + 下面那行"原始…"），
+     却把行高钉在 22px ⇒ 第二行**溢出到下一行**，数字全长在一起、看着"错位且没对齐"。
+     现在改成**单行多列**：每列固定宽度 + nowrap + 不许收缩，纵向只占一行、横向各占各位。 */
+  .prow { display: flex; align-items: center; gap: 8px; height: 24px; }
+  .pkey { flex: 0 0 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
           font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
-  .ptrack { flex: 1; height: 12px; background: #f1f5f9; border-radius: 3px; overflow: hidden; }
+  .ptrack { flex: 1 1 auto; min-width: 60px; height: 12px; background: #f1f5f9;
+            border-radius: 3px; overflow: hidden; }
   .pfill { height: 100%; border-radius: 3px; background: var(--ok); }
   .pfill.neg { background: var(--warn); }
-  .pnum { width: 108px; text-align: right; font-family: ui-monospace, Consolas, monospace;
-          font-size: 11px; }
-  .pnum .raw { display: block; color: var(--muted); font-size: 10px; }
-  .pmeta { width: 46px; text-align: right; color: var(--muted); font-size: 11px; }
+  .pval { flex: 0 0 64px; text-align: right; white-space: nowrap;
+          font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .praw { flex: 0 0 94px; text-align: right; white-space: nowrap; color: var(--muted);
+          font-size: 10.5px; font-family: ui-monospace, Consolas, monospace; }
+  .phits { flex: 0 0 42px; text-align: right; white-space: nowrap;
+           color: var(--muted); font-size: 11px; }
   .tag { font-size: 10px; padding: 1px 6px; border-radius: 8px; white-space: nowrap; }
   .tag.topic { background: var(--must-bg); color: var(--must); }
   .tag.signal { background: #dcfce7; color: #166534; }
@@ -70,8 +76,9 @@
   <div class="prow">
     <div class="pkey" title="{{ r.key }}">{{ r.key }}</div>
     <div class="ptrack"><div class="pfill {{ 'neg' if r.decayed < 0 }}" style="width:{{ r.pct }}%"></div></div>
-    <div class="pnum">{{ '%+.3f'|format(r.decayed) }}<span class="raw">原始 {{ '%+.2f'|format(r.w) }}</span></div>
-    <div class="pmeta">{{ r.hits }} 次</div>
+    <div class="pval">{{ '%+.3f'|format(r.decayed) }}</div>
+    <div class="praw">原始 {{ '%+.2f'|format(r.w) }}</div>
+    <div class="phits">{{ r.hits }} 次</div>
     {% if r.phits %}<span class="tag ph" title="库内标题/摘要含此短语的论文数">{{ r.phits }} 篇</span>{% endif %}
     {% if r.from_topic %}<span class="tag topic" title="{{ r.source }}">主题包</span>
     {% else %}<span class="tag signal">信号学习</span>{% endif %}
