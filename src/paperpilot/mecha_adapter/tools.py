@@ -322,11 +322,13 @@ _PROJECTED_TOOLS: tuple[str, ...] = (
     "mark_read", "star_paper", "skip_paper", "add_note", "delete_briefing",
     "tag_paper", "tag_papers", "resolve_mark", "set_default_view", "sync_citations",
     "delete_note", "set_config_batch",
-    # ---- 读侧（2026-09-30 起分批切；本批 1 条，机器走通后再按批加）------------
+    # ---- 读侧（2026-09-30 起分批切；批 1 = `query_topics`，之后每批 7~8 条）------------
     # 读条目的声明**仍在 `TOOL_DECLS`**（`kind="read"`，一个事实一个家）；进本表只表示
     # "工具面改由 `project()` 生成"。⚠ 与写侧的关键差别：读声明的**命令声明不进 `sw.commands`**
     # （命令面是写治理面，理由与实测见 `commands.build_read_command`）。
     "query_topics",
+    "read_digest", "review_status", "query_tags", "query_graph_views",
+    "read_activity", "search_papers", "upstream_clusters",
 )
 
 
