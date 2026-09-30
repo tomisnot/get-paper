@@ -11,7 +11,7 @@ import logging
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import TopicCfg
@@ -46,6 +46,11 @@ _PAPER_EAGER = (
 
 # 阅读态三元的字段名（undo 回写用）
 _READING_FIELDS = ("read", "star", "marked_skip")
+
+
+#: 画像权重半衰期（天）——**单一事实源**：读侧的衰减与写侧的"按现值撤投"必须同值，
+#: 否则撤投会对不上账（用户那条"投放应当能被稀释、被加减"的洞察就落不了地）。
+PROFILE_HALF_LIFE_DAYS = 30.0
 
 
 class PaperRepository:
@@ -645,7 +650,7 @@ class PaperRepository:
             row.hits += 1
             row.updated_at = utcnow()
 
-    def profile_rows(self, *, half_life_days: float = 30.0,
+    def profile_rows(self, *, half_life_days: float = PROFILE_HALF_LIFE_DAYS,
                      now: datetime | None = None) -> list[dict]:
         """画像池的**全字段**读数（含溯源与基线），供 /profile 页面与体检工具用。
 
@@ -669,7 +674,7 @@ class PaperRepository:
                 })
         return out
 
-    def profile_view(self, *, top: int = 12, half_life_days: float = 30.0,
+    def profile_view(self, *, top: int = 12, half_life_days: float = PROFILE_HALF_LIFE_DAYS,
                      now: datetime | None = None) -> dict:
         """画像读数：top 权重 + 分类熵（防茧房哨兵）；衰减读侧计算，不改写库。"""
         import math
@@ -695,7 +700,7 @@ class PaperRepository:
                 "distinct_categories": sum(1 for _, w, _ in agg["category"]
                                             if abs(w) > 1e-9)}
 
-    def profile_weights_map(self, *, half_life_days: float = 30.0,
+    def profile_weights_map(self, *, half_life_days: float = PROFILE_HALF_LIFE_DAYS,
                             now: datetime | None = None) -> dict:
         """(kind,key)→衰减后权重，供 M2 打分器/测试消费。"""
         from .orm import ProfileWeight
@@ -710,20 +715,23 @@ class PaperRepository:
 
     def sync_topic_pool(self, topics: Sequence, *, actor: str = "system",
                         reason: str = "") -> dict:
-        """把启用的**主题包幂等注入画像池**（取代"仅空画像才播种一次"的冻结快照）。
+        """主题包 = 往画像池的一次**投放**（直接反馈，不是"主题类型"）。幂等**加减**。
 
-        为什么改：旧实现只在画像**完全为空**时播种，播完那一次之后——`profile_seed_if_empty`
-        再也不跑 ⇒ 之后改主题（加词/改作者）画像**永远不动**。实测后果：库里 8 个作者只有
-        1 个与画像种子对得上，另外 4 个种子还是更早配置里的中文名 ⇒ "填了没用"。
+        ⚠ 2026-09-30 二轮（用户）："主题包可以只是个投放，可以视作是不来源于论文而是更为直接的
+        反馈，可以像其他反馈一样被稀释、被加减，而不是始终作为一种类型长期存在。"
 
-        语义：
-        * 主题的 keywords→`term`、authors→`author`、categories→`category`，各按 `topic.weight`
-          给基线；**多主题共享同一 key 取最大基线**（同一份先验被两个主题声明不该翻倍）；
-        * 幂等：`w += 新基线 − w_base` ⇒ 反复调、改权重都不会越改越胖；
-        * 主题被删/停用/去掉某词 ⇒ `w −= w_base`、`w_base=0`、来源退回 `signal`；
-          若此时 `hits=0` 且权重归零才删行 ⇒ **行为学到的部分不受影响**（这是 `source`/`w_base`
-          两列存在的全部理由）；
-        * 写入带 before/after 快照 ⇒ `undo_change` 可整体回退。
+        模型：**池子里只有 `w` 与它自己的衰减时钟**；`w_base` 降级为"这笔投放的**账面额度**"——
+        只为"能精确撤回"而记，**不参与任何打分**（打分只看 `w` 的衰减读数）。
+
+        * **投放 / 调大**：扣旧投放的账面额、投新额度；改行会刷新时钟 ⇒ 这个键被"重新激活"
+          （与信号同款）——新投放从此刻开始稀释。
+        * **撤投 / 调小**：扣账面额（名义额，见 `share()` 的坑），并**把时钟钉回原值**
+          ⇒ 池子里只剩别处的贡献，且**不会被顺手续期**。
+        * **启动同步不补投**：只对账账面额度、不刷新时钟 ⇒ 投放**随池子一起稀释**（这是
+          "像其他反馈一样"的关键；否则就成了永远不倒的常驻先验）。
+        * **"类型"只剩一个标签**：`source` 只用来显示/审计（页面上那个「投放」徽章），
+          加减与衰减都不看它。删主题＝撤掉那笔投放，池子不会因此变成"另一种东西"。
+        * 幂等：同一份配置反复调，账面一致 ⇒ 什么都不动。
         """
         from .orm import ProfileWeight
 
@@ -766,39 +774,59 @@ class PaperRepository:
                      for r in rows.values()),
                     key=lambda d: (d["kind"], d["key"]))
 
+            def share(row) -> float:
+                """这笔账面投放的**名义额**。
+
+                ⚠ 这里踩过一个坑，留档免得后人再改错：`w` 存的是各笔贡献的**名义和**，
+                衰减是**读数时**统一乘 `f=2^(−age/hl)`。所以撤投要扣**名义额**：
+                `读数' = (w − b)·f = 其余·f` ✅；若改成"扣现值 `b·f`"，会变成
+                `w·f − b·f² ≠ 其余·f` ⇒ **留残渣**（实测：老化 30 天后残留 0.25）。
+                """
+                return row.w_base
+
             before = snap()
             injected = released = 0
             for (kind, key), (w0, label) in want.items():
                 row = rows.get((kind, key))
                 if row is None:
+                    # 新键：一次性投放（w_base 记账面额）
                     s.add(ProfileWeight(kind=kind, key=key, w=w0, hits=0,
                                         source=label, w_base=w0))
                     injected += 1
                     continue
                 if abs(row.w_base - w0) > 1e-9:
-                    row.w += w0 - row.w_base
+                    # 撤旧投新：扣旧投放的**名义额**、投新额度（改行 ⇒ 时钟刷新＝这个键被重新激活）
+                    row.w += w0 - share(row)
                     row.w_base = w0
                     row.source = label
                     injected += 1
                 elif row.source != label:
-                    row.source = label          # 只是换了个主题声明它，权重不动
+                    row.source = label          # 只是换了个主题声明它，账面与权重都不动
             for (kind, key), row in rows.items():
                 if (kind, key) in want:
                     continue
-                # 撤"孤儿基线"：**带基线却没主人**的行就该撤。判据用 `w_base` 而不是只看
-                # `source` 前缀——老库回填后可能 source 已被贴成 signal 但基线还在
-                # （实测：4 个更早配置的中文作者以 0.5 权重阴魂不散）。
-                if abs(row.w_base) < 1e-12 and not (row.source or "").startswith("topic:"):
+                # 撤"孤儿投放"：带账面却没主人（配置里没人再声明它）就该撤。
+                # 判据看 `w_base` 而不是 `source` 前缀——老库回填后 source 可能已被贴成 signal。
+                if abs(row.w_base) < 1e-12:
                     continue
-                row.w -= row.w_base
+                keep_clock = row.updated_at     # 撤投**不该**顺手把别的贡献续期
+                new_w = row.w - share(row)
+                released += 1
+                if row.hits == 0 and abs(new_w) < 1e-9:
+                    s.delete(row)
+                    continue
+                row.w = new_w
                 row.w_base = 0.0
                 row.source = "signal"
-                released += 1
-                if row.hits == 0 and abs(row.w) < 1e-9:
-                    s.delete(row)
+                s.flush()                       # 让 onupdate 先把它刷成"现在"
+                # 再把时钟**钉回原值**：否则残余权重会"诈尸回鲜"（实测：撤投后残余读数从
+                # 0.15 跳回 0.30——因为改行触发了 onupdate）。显式给 updated_at ⇒ 覆盖 onupdate。
+                s.execute(update(ProfileWeight).where(ProfileWeight.id == row.id)
+                          .values(updated_at=keep_clock))
+                s.expire(row)
             if snap() != before:
                 self._event(s, op="sync_topic_pool", actor=actor,
-                            reason=reason or "主题包幂等注入画像池",
+                            reason=reason or "主题包投放对账（按现值加减）",
                             target="profile", before={"rows": before},
                             after={"rows": snap()}, undoable=1)
             s.commit()

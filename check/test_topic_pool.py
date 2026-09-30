@@ -159,6 +159,76 @@ def test_topic_edits_reach_the_pool_every_time(tmp_path):
     assert ("author", "Alice") not in raw, "被移除的作者该撤权"
 
 
+# ---------------------------------------------------------------- 4b) 投放语义（撤投/稀释）
+def test_release_is_nominal_and_keeps_the_clock(tmp_path):
+    """**撤投的两条硬约束**——都由实测踩坑换来（落地用户那条"投放应能被稀释、被加减"时验的）。
+
+    1. **扣名义额，不是现值**：`w` 存的是各笔贡献的**名义和**，衰减是读数时才乘 `f`
+       ⇒ 扣名义额后读数正好剩"其余部分"；扣现值会留残渣（实测老化 30 天残留 0.25）。
+    2. **撤投不刷新时钟**：改行会触发 `onupdate` ⇒ 池子里"别的贡献"被顺手续期、
+       残余读数**诈尸回鲜**（实测 30 天本该 0.15 却跳回 0.30）。
+    """
+    from datetime import datetime, timedelta
+
+    from paperpilot.infra.repo import PROFILE_HALF_LIFE_DAYS
+
+    c, _ = _reg(tmp_path)
+    repo = c.repo
+
+    def scenario(days: int, extra: float) -> float:
+        repo.profile_reset(actor="human", reason="判据：清空重来")
+        repo.sync_topic_pool([TopicCfg(name="T", keywords=["rydberg"], weight=0.5)])
+        if extra:
+            with repo.sf() as s:
+                row = s.scalar(select(ProfileWeight).where(ProfileWeight.key == "rydberg"))
+                row.w += extra            # 模拟信号贡献（账面同名义和）
+                row.hits += 3
+                s.commit()
+        if days:
+            with repo.sf() as s:
+                row = s.scalar(select(ProfileWeight).where(ProfileWeight.key == "rydberg"))
+                row.updated_at = datetime.utcnow() - timedelta(days=days)
+                s.commit()
+        repo.sync_topic_pool([])          # 撤投
+        return repo.profile_weights_map().get(("term", "rydberg"), 0.0)
+
+    for days in (0, 30, 60):
+        f = 2.0 ** (-days / PROFILE_HALF_LIFE_DAYS)
+        assert abs(scenario(days, 0.0)) < 2e-3, f"{days} 天：只撤投放却留下残渣"
+        got = scenario(days, 0.3)
+        assert abs(got - 0.3 * f) < 3e-3, (
+            f"{days} 天：撤投后应剩 {0.3 * f:.4f}（信号按原时钟衰减），实得 {got:.4f}"
+            + ("（残余被续期了）" if abs(got - 0.3) < 3e-3 else ""))
+
+
+def test_deposit_dilutes_and_boot_sync_does_not_top_up(tmp_path):
+    """**投放会稀释**：启动同步只对账账面额度，**不补投、不刷新时钟**。
+
+    这条是"像其他反馈一样被稀释"的判据——若哪天有人把同步改成"每次补齐到配置权重"，
+    投放就退回"永远不倒的常驻先验"，本判据当场红。
+    """
+    from datetime import datetime, timedelta
+
+    from paperpilot.infra.repo import PROFILE_HALF_LIFE_DAYS
+
+    c, _ = _reg(tmp_path)
+    repo = c.repo
+    topics = [TopicCfg(name="T", keywords=["rydberg"], weight=0.5)]
+    repo.profile_reset(actor="human", reason="判据：清空重来")
+    repo.sync_topic_pool(topics)
+    with repo.sf() as s:
+        row = s.scalar(select(ProfileWeight).where(ProfileWeight.key == "rydberg"))
+        row.updated_at = datetime.utcnow() - timedelta(days=PROFILE_HALF_LIFE_DAYS)
+        s.commit()
+    decayed = repo.profile_weights_map()[("term", "rydberg")]
+    assert abs(decayed - 0.25) < 5e-3, f"一个半衰期该减半（0.5→0.25），实得 {decayed:.4f}"
+
+    repo.sync_topic_pool(topics)          # 再同步一次（＝下次启动）
+    again = repo.profile_weights_map()[("term", "rydberg")]
+    assert abs(again - decayed) < 5e-3, (
+        f"启动同步**补投**了（{decayed:.4f} → {again:.4f}）⇒ 投放不再是会稀释的反馈")
+
+
 # ---------------------------------------------------------------- 5) 常驻页面
 def test_profile_page_renders_the_pool(tmp_path):
     """`/profile` 常驻体检页：三件事必须画出来——权重构成、**哪个键在空转**、短语命中数。
@@ -172,7 +242,7 @@ def test_profile_page_renders_the_pool(tmp_path):
     c, _ = _reg(tmp_path)
     page = TestClient(create_app(c, None), follow_redirects=True).get("/profile")
     assert page.status_code == 200
-    for probe in ("画像池体检", "信号学出来的", "暂未出现", "主题包", "多词短语已活化"):
+    for probe in ("画像池体检", "信号学出来的", "暂未出现", "投放", "多词短语已活化"):
         assert probe in page.text, f"页面缺少「{probe}」"
     assert 'href="/profile"' in page.text, "导航里没有入口"
     assert "{{" not in page.text and "{%" not in page.text, "模板有未渲染的残留"

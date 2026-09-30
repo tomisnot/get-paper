@@ -119,7 +119,7 @@ gate 值（`set_config`）直通全段但被显式参数再覆盖。**用户点�
 
 **⚠ 2026-09-30 起：日报线也吃画像（主题="词条包"，不再有每主题配额/阈值）**
 - **候选** = `new` 状态 + 回溯窗内（不再"按主题分类筛"）；**硬门只剩客观项**（非英文标题、作者黑名单）。
-- **分类与排除词都进了画像池**（正/负权重，软影响）——所以"把某方向压下去"要用
+- **分类与排除词都进了画像池**（正/负**额度**，软影响）——所以"把某方向压下去"要用
   `add_topic(exclude_keywords=…)` / `update_topic`，**不要再找配额与阈值**（已废弃）。
 - **一次全局选择**：没有"每主题 quota"了，`scoring.max_papers` 是唯一总量闸。
 - 主题的 `topic` 字段在回执里只是**显示归属**（可能空 =「画像池」），不参与任何决策。
@@ -320,11 +320,13 @@ authors | `read_config` / `review_status` 评审进度 | `read_activity` 事件+
 `skip_paper`（**同时喂画像 uninterested −1.5**，与 Web「不感兴趣」同权）| `add_note` 笔记（笔记≠卡）|
 `write_summary` 单篇补卡 | `delete_briefing` 删某天简报（快照留痕可 undo）。
 
-**主题管理（＝往画像池注入词条包）**：`add_topic` / `update_topic` / `set_topic_enabled`——
-参数是 `keywords` / `authors` / `categories` / `exclude_keywords` / **`weight`**（注入基线，
-默认 0.5）；**每次改都会幂等重注入池子**（按差量调权重，不会越改越胖）。
-`exclude_keywords` 以**负权重**注入（＝「别给我看这类」），不再需要找硬门。
+**主题管理（＝往画像池**投放**一次直接反馈）**：`add_topic` / `update_topic` / `set_topic_enabled`——
+参数是 `keywords` / `authors` / `categories` / `exclude_keywords` / **`weight`**（投放额度，
+默认 0.5）。**投放不是一种"类型"**：投进去就和别的权重混在一起、**一起被稀释**（启动同步
+**不补投**），也可以被加减（改权重＝撤旧投新，删主题＝撤投）。
+`exclude_keywords` 以**负额度**投放（＝「别给我看这类」），不再需要找硬门。
 **配额/阈值已废弃**（传了也没用）；**删主题、改主题名：AI 无门，归人。**
+想知道"池子现在长什么样、哪些键在空转"：让用户看 **`/profile`**（或你自己 `query_profile`）。
 
 **配置与治理**：`set_config`（gate 值，重启回 YAML）| `read_config` | `read_authority` |
 `undo_change`（seq=0 撤最近可逆）| `submit_job` / `read_job` / `cancel_job`（长活用）。

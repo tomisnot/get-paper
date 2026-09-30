@@ -55,13 +55,15 @@
   {% for name, v in pool.signals %}<code>{{ name }} {{ '%+g'|format(v) }}</code>{% if not loop.last %} / {% endif %}{% endfor %}；
   <b>正向单次限幅 {{ pool.pos_cap }}</b>（负向不放大）。所以给关键词之外的文章高回馈，
   <b>确实会凭空长出新键</b>。<br>
+  <b>主题包只是"一次投放"</b>：它不来自论文，是更直接的反馈；投进去之后<b>和别的权重混在一起、
+  一起被稀释</b>（启动同步<b>不补投</b>），也可以被加减（改权重＝撤旧投新，删主题＝撤投）。<br>
   权重存<b>原始累计值</b>，衰减在读侧算（<code>w·2^(−天数/{{ pool.half_life_days|int }})</code>）——
   免写放大、可审计。含空格的键走<b>子串命中</b>（与日报线同一套语义），
   紫色徽章是它当前命中的论文篇数。
 </div>
 
 {% if pool.topics %}
-<p class="muted">已注入的主题包：{% for t in pool.topics %}<span class="chip">{{ t }}</span>{% endfor %}</p>
+<p class="muted">已投放的主题包：{% for t in pool.topics %}<span class="chip">{{ t }}</span>{% endfor %}</p>
 {% endif %}
 
 {% for sec in pool.sections %}
@@ -80,7 +82,7 @@
     <div class="praw">原始 {{ '%+.2f'|format(r.w) }}</div>
     <div class="phits">{{ r.hits }} 次</div>
     {% if r.phits %}<span class="tag ph" title="库内标题/摘要含此短语的论文数">{{ r.phits }} 篇</span>{% endif %}
-    {% if r.from_topic %}<span class="tag topic" title="{{ r.source }}">主题包</span>
+    {% if r.from_topic %}<span class="tag topic" title="主题包「{{ r.topic_name }}」的一次**投放**：直接反馈、不来自论文；会随池子一起稀释，删主题＝撤投">投放</span>
     {% else %}<span class="tag signal">信号学习</span>{% endif %}
     {% if not r.live %}<span class="tag unseen" title="{{ r.why_unseen }}">暂未出现</span>{% endif %}
   </div>
@@ -96,8 +98,10 @@
   <ul style="margin:0; padding-left:20px;">
     <li><b>红标「暂未出现」</b>＝你声明的键在空转。最典型的是<b>作者名写法不一致</b>——
       作者键是逐字匹配，库里是 <code>Chao-Yang Lu</code> 而配置写 <code>Chaoyang Lu</code> 就永远命不中。</li>
-    <li><b>黄标「主题包」</b>＝这条权重是你声明的先验（在
-      <a href="/settings">设置</a> 页新建/删除主题包）。删主题<b>只撤掉这份基线</b>，绿标学到的部分保留。</li>
+    <li><b>黄标「投放」</b>＝这条权重来自你<b>直接声明</b>（在
+      <a href="/settings">设置</a> 页新建/删除主题包）——它不来自论文，是更直接的反馈。
+      投进去就和别的权重混在一起、<b>一起被稀释</b>（启动不补投）；删主题＝撤投，
+      按账面额扣掉、<b>不会顺手把绿标那部分续期</b>。</li>
     <li><b>想纠正偏好</b>：给个别论文 <code>star</code>/<code>mark_read</code>/<code>skip_paper</code>
       比手改词表更准——它按<b>那篇论文自己的特征</b>加权。</li>
     <li>本页只读；清空画像（人类专属）在 <a href="/settings">设置</a> 页。</li>
