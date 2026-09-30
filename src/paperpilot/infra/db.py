@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import MetaData, create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -40,6 +40,37 @@ _RENAMED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "events": [("reversible", "undoable")],     # 对齐 mecha 的三态槽位（`None`＝未声明）
 }
 
+#: 需要【重建表】才能修的**列可空性**：{表: (列, …)}。
+#: 为什么不能只 ALTER：SQLite 不支持改列的可空性 ⇒ 只能"按 ORM 建新表 → 搬数据 → 换名"。
+#: 场景（实测踩过）：`undoable` 是从旧列 `reversible`（**NOT NULL**）**改名**来的 ⇒ 约束跟着名字
+#: 留在老库里；而 ORM 说这列该可空（mecha 记的是**三态**：`None`＝未声明）⇒ 不修就会在插 `None`
+#: 时炸：`gate.seed` 走 mecha 的默认 `undoable=None` ⇒ `IntegrityError: NOT NULL constraint
+#: failed: events.undoable`。**全新库**按 ORM 建 ⇒ 天然可空，不会走到这里。
+_NULLABLE_REPAIRS: dict[str, tuple[str, ...]] = {
+    "events": ("undoable",),
+}
+
+
+def _repair_nullable(conn, table: str, rows) -> None:
+    """把 `table` 重建一遍，只让指定列从 NOT NULL 变成可空。
+
+    ⚠ **新表按 ORM 建**（`Event.__table__`）⇒ 列名/类型/默认值/其余约束与 ORM 逐字段一致
+    （不手写 DDL —— 手写就有跟 ORM 漂移的风险）。搬数据按**列名交集**显式列列名，不靠列序。
+    ⚠ `DROP TABLE` 会连表上的 append-only 触发器一起删，而 `init_db` 后半段用
+    `CREATE TRIGGER IF NOT EXISTS` 重建 ⇒ 顺序上安全（本函数在触发器重建之前跑）。
+    """
+    from .orm import Event  # 延迟导入：不与 orm 的模块级次序耦合
+
+    tmp = f"{table}__rebuilt"
+    fresh = Event.__table__.to_metadata(MetaData(), name=tmp)
+    fresh.create(conn)
+    old_cols = {r[1] for r in rows}
+    cols = [c.name for c in fresh.columns if c.name in old_cols]
+    collist = ", ".join(f'"{c}"' for c in cols)
+    conn.execute(text(f'INSERT INTO "{tmp}" ({collist}) SELECT {collist} FROM "{table}"'))
+    conn.execute(text(f'DROP TABLE "{table}"'))
+    conn.execute(text(f'ALTER TABLE "{tmp}" RENAME TO "{table}"'))
+
 
 def _ensure_columns(engine: Engine) -> None:
     """给既有表**补新列 / 改列名**（幂等；老库第一次跑 init_db 时静默补齐）。"""
@@ -62,6 +93,15 @@ def _ensure_columns(engine: Engine) -> None:
                     continue
                 conn.execute(text(
                     f"ALTER TABLE {table} ADD COLUMN {name} {ddl} DEFAULT {default}"))
+        # ⚠ 放最后：上面的**改名**（`reversible`→`undoable`）正是老库留下 NOT NULL 的来源
+        #   ⇒ 必须先改完名，这里才探得到"该可空却仍 NOT NULL"。
+        for table, cols in _NULLABLE_REPAIRS.items():
+            rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+            if not rows:
+                continue
+            if not any(r[1] in cols and r[3] for r in rows):   # r[3] = notnull
+                continue
+            _repair_nullable(conn, table, rows)
 
 
 def init_db(engine: Engine) -> None:
