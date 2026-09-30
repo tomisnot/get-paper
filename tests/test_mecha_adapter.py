@@ -311,7 +311,7 @@ def test_locked_denies_write_and_no_domain_change(tmp_path):
     detail = _call(tools, "read_paper", arxiv_id="2608.01101")
     assert detail["notes"] == []
     # mecha History 也没有审计事件（未产生副作用）
-    assert not [e for e in stack["history"].events() if e.key == "command.add_note"]
+    assert not [e for e in stack["history"].events() if e.op == "command.add_note"]
 
 
 def test_write_commands_declare_what_governance_needs(tmp_path):
@@ -376,9 +376,9 @@ def test_open_gate_write_audits_history_with_result_ref(tmp_path):
     tools = stack["tools"]
     out = _call(tools, "add_note", arxiv_id="2608.01101", content="审计互引")
     assert out["ok"] is True
-    audits = [e for e in stack["history"].events() if e.key == "command.add_note"]
+    audits = [e for e in stack["history"].events() if e.op == "command.add_note"]
     assert len(audits) == 1
-    record = audits[0].value
+    record = audits[0].after
     assert record["command"] == "add_note" and record["ok"] is True
     assert record["side_effect"] is True and record["scope"] == ["library"]
     # result_ref 与域实体互引（arxiv_id）——不放结果体
@@ -405,7 +405,7 @@ def test_set_config_gated(tmp_path):
     wrote = _call(tools, "set_config", key="scoring.max_papers", value=2)
     assert wrote["ok"] and wrote["readback"] == 2 and wrote["before"] == 8
     assert stack["gate"].snapshot["scoring.max_papers"] == 2
-    assert any(e.key == "scoring.max_papers" for e in stack["history"].events())
+    assert any(e.target == "scoring.max_papers" for e in stack["history"].events())
 
 
 def test_gate_config_is_authoritative_over_run(tmp_path):
@@ -444,9 +444,10 @@ def test_set_config_via_tool_leaves_command_audit(tmp_path):
     out = _call(stack["tools"], "set_config", key="scoring.max_papers", value=3,
                 reason="测试操作审计")
     assert out["ok"] is True and out["readback"] == 3
-    keys = [e.key for e in stack["history"].events()]
-    assert "scoring.max_papers" in keys, "域键事件丢了（gate.set 那条路必须还在）"
-    assert "command.set_config" in keys, (
+    targets = [e.target for e in stack["history"].events()]
+    ops = [e.op for e in stack["history"].events()]
+    assert "scoring.max_papers" in targets, "域键事件丢了（gate.set 那条路必须还在）"
+    assert "command.set_config" in ops, (
         "框架账上没有 `command.set_config` ⇒ set_config 没走命令面（本批的全部意义）")
 
 
@@ -459,8 +460,8 @@ def test_read_config_stays_ungated(tmp_path):
     _container, stack = _stack(tmp_path, open_ai=False)        # 出厂 LOCKED
     out = _call(stack["tools"], "read_config")
     assert out["ok"] is True and out["config"]["scoring.threshold"] == 0.5
-    keys = [e.key for e in stack["history"].events()]
-    assert "command.read_config" not in keys, "read_config 不该有命令审计（它不经门）"
+    ops = [e.op for e in stack["history"].events()]
+    assert "command.read_config" not in ops, "read_config 不该有命令审计（它不经门）"
 
 
 # ======================================================== 设计师复审回归（三项修复）
@@ -476,7 +477,7 @@ def test_write_reason_reaches_domain_journal(tmp_path):
     events = container.repo.events_since(since_seq=0, actor="ai", op="add_note")
     assert "因为要复核" in [e["reason"] for e in events["events"]]
     # mecha History 审计侧同一 reason（两份 journal 的 reason 维度互引不断裂）
-    audits = [e for e in stack["history"].events() if e.key == "command.add_note"]
+    audits = [e for e in stack["history"].events() if e.op == "command.add_note"]
     assert audits and audits[-1].reason == "因为要复核"
 
 
@@ -507,9 +508,9 @@ def test_undo_result_ref_cross_references_undone_seq(tmp_path):
     _call(tools, "add_note", arxiv_id="2608.01101", content="待撤销")
     out = _call(tools, "undo_change", seq=0)
     assert out["ok"]
-    audits = [e for e in stack["history"].events() if e.key == "command.undo_change"]
+    audits = [e for e in stack["history"].events() if e.op == "command.undo_change"]
     assert audits, "undo 应落一条命令审计"
-    ref = audits[-1].value["result_ref"]
+    ref = audits[-1].after["result_ref"]
     assert ref is not None and ref.get("undone_seq") is not None
 
 
@@ -567,6 +568,6 @@ def test_boot_writes_leave_domain_traces(tmp_path):
     repo = container.repo
     assert repo.events_since(since_seq=0, actor="system", op="migrate")["count"] >= 1
     assert repo.events_since(since_seq=0, actor="system", op="sync_topics_boot")["count"] >= 1
-    hist_keys = {e.key for e in stack["history"].events()}
+    hist_keys = {e.target for e in stack["history"].events()}
     assert "migrate" not in hist_keys and "sync_topics_boot" not in hist_keys, (
         "启动留痕属于域 journal（/activity），不该混进 mecha History")

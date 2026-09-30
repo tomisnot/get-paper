@@ -48,13 +48,13 @@ def paperpilot_summarizer(events) -> dict:
     整份读数存疑（disputed）。
     """
     snap = fold(events)
-    cmds = [e for e in events if e.key.startswith("command.")]
+    cmds = [e for e in events if e.op.startswith("command.")]
     failed = sum(1 for e in cmds
-                 if isinstance(e.value, Mapping) and not e.value.get("ok", True))
+                 if isinstance(e.after, Mapping) and not e.after.get("ok", True))
     summary: dict = {
         "write_count": len(cmds),
         "failed_writes": failed,
-        "last_command": cmds[-1].key[len("command."):] if cmds else "",
+        "last_command": cmds[-1].op[len("command."):] if cmds else "",
         "config_keys_set": sorted(k for k in snap if not k.startswith("command.")),
     }
     # Claim 对账：复述当前生效的配置值（人话键名 → 原始键），只对存在的键下 Claim

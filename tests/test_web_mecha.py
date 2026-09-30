@@ -54,7 +54,7 @@ def test_web_write_goes_through_gate_both_journals(tmp_path):
     events = container.repo.events_since(since_seq=0, actor="human", op="star_paper")
     assert events["count"] >= 1
     # mecha History：command.star_paper 审计，actor=human（人机同路、同一审计面）
-    audits = [e for e in stack["history"].events() if e.key == "command.star_paper"]
+    audits = [e for e in stack["history"].events() if e.op == "command.star_paper"]
     assert audits and audits[-1].actor == "human"
 
 
@@ -83,7 +83,7 @@ def test_view_management_lists_views_and_deleting_is_human_work(tmp_path):
     assert container.repo.get_graph_view("我读出来的脉络") is None
     assert container.repo.events_since(since_seq=0, actor="human",
                                        op="set_graph_view")["count"] >= 1
-    audits = [e for e in stack["history"].events() if e.key == "command.delete_graph_view"]
+    audits = [e for e in stack["history"].events() if e.op == "command.delete_graph_view"]
     assert audits and audits[-1].actor == "human"
 
     # ④ 可撤销：undo 把整张图（含 spec）恢复回来
@@ -214,8 +214,8 @@ def test_open_mode_keeps_attribution(tmp_path):
     assert container.repo.events_since(since_seq=0, actor="human", op="star_paper")["count"] >= 1
     assert container.repo.events_since(since_seq=0, actor="ai", op="add_note")["count"] >= 1
     # 框架 History：命令审计的 actor 也各归各的
-    audits = [(e.key, e.actor) for e in stack["history"].events()
-              if e.key in ("command.star_paper", "command.add_note")]
+    audits = [(e.op, e.actor) for e in stack["history"].events()
+              if e.op in ("command.star_paper", "command.add_note")]
     assert ("command.star_paper", "human") in audits
     assert ("command.add_note", "ai") in audits
 
@@ -313,8 +313,11 @@ def test_cockpit_history_route_is_cockpit_json_with_cors(tmp_path):
     assert r.headers.get("access-control-allow-origin") == "*"   # dsh :3081 跨源必需
     body = r.json()
     assert body["ok"] is True and body["mode"] == "open"          # 人写不再改模式（抢占已删）
-    assert "command.star_paper" in {e["target"] for e in body["events"]}
-    # 9 键契约（含 before/after/reason）——与 mecha cockpit history_records 对齐
+    # ⚠ mecha 新形状（2026-09-30）：命令审计的 `target` 现在是**空**、wire **不发 `op`**
+    # ⇒ 命令名只能从 `after["command"]` 读出来（这正是本轮报给框架的 wire 缺口）。
+    assert "star_paper" in {e["after"].get("command") for e in body["events"]
+                            if isinstance(e.get("after"), dict)}
+    # 9 键契约（新形状：target/after/before/reason/ts）——与 mecha cockpit history_records 对齐
     assert {"seq", "kind", "actor", "target", "before", "after", "reason"} <= set(body["events"][0])
 
 
@@ -355,7 +358,7 @@ def test_activity_undo_button_and_gated_undo(tmp_path):
     resp = client.post("/activity/undo", data={"seq": 0}, follow_redirects=False)
     assert resp.status_code == 303
     assert container.repo.events_since(since_seq=0, op="undo")["count"] >= 1
-    assert any(e.key == "command.undo_change" for e in stack["history"].events())
+    assert any(e.op == "command.undo_change" for e in stack["history"].events())
 
 
 def test_activity_undo_hidden_without_stack(tmp_path):
@@ -382,7 +385,7 @@ def test_reset_profile_human_entry_but_still_not_for_ai(tmp_path):
     assert 'action="/settings/profile/reset"' in page.text
     assert client.post("/settings/profile/reset", data={"kind": ""},
                        follow_redirects=False).status_code == 303
-    assert any(e.key == "command.reset_profile" for e in stack["history"].events())
+    assert any(e.op == "command.reset_profile" for e in stack["history"].events())
     tool_names = {s["name"] for s in stack["tools"].schemas()}
     assert "reset_profile" not in tool_names, (
         "reset_profile 不该出现在 AI 工具面（它改的是 AI 自己的标尺）")
@@ -406,7 +409,7 @@ def test_settings_general_gate_keys_go_through_gate(tmp_path):
     client, _container, stack = _gated(tmp_path)
     resp = client.post("/settings/general", data=_GENERAL_FORM, follow_redirects=False)
     assert resp.status_code == 303
-    assert any(e.key == "command.set_config_batch" for e in stack["history"].events()), (
+    assert any(e.op == "command.set_config_batch" for e in stack["history"].events()), (
         "框架账上没有 command.set_config_batch ⇒ 这 6 个键没走门（又回到两个真相源）")
     snap = stack["gate"].snapshot
     assert snap["scoring.max_papers"] == 9 and snap["lookback_days"] == 4, (
@@ -452,8 +455,10 @@ def test_activity_links_domain_events_to_framework_audit(tmp_path):
     from paperpilot.app.web import link_audit_to_targets
 
     linked = link_audit_to_targets([
-        {"target": "command.star_paper", "value": {"ok": True, "arxiv_id": "2608.01101"}},
-        {"target": "command.run_pipeline", "value": {"ok": True}},        # 无实体标识 ⇒ 不上号
+        # ⚠ mecha 新形状（2026-09-30）：命令名在 `op`，实体值在 `after`（命令审计落 `after.result_ref`）
+        {"op": "command.star_paper", "target": "",
+         "after": {"ok": True, "result_ref": {"arxiv_id": "2608.01101"}}},
+        {"op": "command.run_pipeline", "target": "", "after": {"ok": True}},   # 无实体标识 ⇒ 不上号
     ])
     assert linked == {"2608.01101": ["command.star_paper"]}
 
@@ -487,7 +492,7 @@ def test_delete_note_human_entry_but_still_not_for_ai(tmp_path):
                        follow_redirects=False)
     assert resp.status_code == 303
     assert container.repo.events_since(since_seq=0, op="delete_note")["count"] >= 1
-    assert any(e.key == "command.delete_note" for e in stack["history"].events()), (
+    assert any(e.op == "command.delete_note" for e in stack["history"].events()), (
         "删笔记没走命令面 ⇒ 框架账上没有这条操作审计")
     assert "delete_note" not in {s["name"] for s in stack["tools"].schemas()}, (
         "delete_note 不该出现在 AI 工具面（人类专属的管理动作）")

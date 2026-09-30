@@ -466,8 +466,9 @@ def _set_config(gate, channel: Channel, key: str, value, reason: str):
     ev = gate.set(channel, key, _coerce_config(key, value), reason=reason,
                   call_id=CURRENT_CALL_ID.get())
     # 回执自带回读：resolved=实际落地值、readback=从快照读回值、before=写前旧值。
+    # ⚠ 对齐 mecha 新事件形状（2026-09-30）：事件的 `value` 改名 `after`。
     return {"ok": True, "key": key, "before": before,
-            "resolved": ev.value, "readback": gate.snapshot.get(key)}
+            "resolved": ev.after, "readback": gate.snapshot.get(key)}
 
 
 def _read_config(gate):

@@ -55,15 +55,19 @@ def test_cockpit_four_routes(tmp_path):
         assert act["events"], "空表 vs 空表不算通过：必须自证事件真落史（R8）"
         e0 = act["events"][0]
         assert set(e0) == {"kind", "actor", "target", "value", "seq", "call_id"}
+        # ⚠ mecha 2026-09-30 事件改名（key→target / value→after）：命令审计的 `target` 现在是**空**，
+        # 命令名落在 `value["command"]` ⇒ 判据按**新语义**核对"审计 + 配置写都到了"。
+        audit_cmds = {e["value"].get("command") for e in act["events"]
+                      if isinstance(e["value"], dict)}
         targets = {e["target"] for e in act["events"]}
-        assert "command.add_note" in targets and "scoring.max_papers" in targets
+        assert "add_note" in audit_cmds and "scoring.max_papers" in targets
 
-        # /history：飞行记录 9 键（含 before/after/reason）
+        # /history：飞行记录 9 键（新形状：target/after/before/reason/call_id/ts）
         st, hist = _get(base + "/history")
         assert st == 200 and hist["ok"] is True
         h0 = hist["events"][0]
-        assert set(h0) == {"seq", "kind", "actor", "target", "value",
-                           "before", "after", "reason", "call_id"}
+        assert set(h0) == {"seq", "kind", "actor", "target", "after",
+                           "before", "reason", "call_id", "ts"}
 
         # /config：schema 树（6 个**域**配置键）。
         # ⚠ 框架 2026-09-26 起：**审计键不再进域快照**（`Gate.record` 只记史、不改快照）⇒

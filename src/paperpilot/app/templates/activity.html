@@ -82,10 +82,10 @@
   <tr>
     <td>{{ a.seq }}</td>
     <td><span class="chip">{{ a.actor }}</span></td>
-    <td><code>{{ a.target }}</code></td>
+    <td><code>{{ a.op }}</code></td>
     <td class="muted" style="font-size:12px;">
       {% if a.reason %}<div>{{ a.reason }}</div>{% endif %}
-      <details class="json-d"><summary>回执结果</summary><pre class="json">{{ a.value | prettyjson }}</pre></details>
+      <details class="json-d"><summary>回执结果</summary><pre class="json">{{ a.after | prettyjson }}</pre></details>
     </td>
     <td class="muted" style="font-size:12px;"><code>{{ a.call_id or "—" }}</code></td>
   </tr>

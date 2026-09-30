@@ -15,7 +15,7 @@ from ..capabilities import registry_for
 from ..config import TopicCfg, save_settings
 from .container import Container, run_in_background
 
-#: 域事件 ↔ 框架账 的**互引键**：框架事件的 `value` 里带这些实体标识，域事件的 `target` 是同一个标识。
+#: 域事件 ↔ 框架账 的**互引键**：框架事件的 `after` 里带这些实体标识，域事件的 `target` 是同一个标识。
 #: ⚠ 域事件**没有** `call_id`（`repo._event` 的字段里就没有它）⇒ 互引只能**按实体标识**尽力而为：
 #: 匹配不上是**正常**的（读操作 / 被门拒 / 启动痕 / YAML 键都没有命令审计）。
 _AUDIT_REF_KEYS = ("arxiv_id", "note_id", "topic", "added", "date", "run_id",
@@ -25,18 +25,22 @@ _AUDIT_REF_KEYS = ("arxiv_id", "note_id", "topic", "added", "date", "run_id",
 def link_audit_to_targets(audit: list[dict]) -> dict[str, list[str]]:
     """框架账 → ``{域 target: [命令键, …]}``：把两册**对上号**（对不上的就不出现在结果里）。
 
-    为什么单独一个纯函数：页面渲染难断言，而"**能对上号**"是这次给用户的核心价值
+    ⚠ **对齐 mecha 新事件形状（2026-09-30）**：账事件是
+    ``seq/kind/op/target/after/before/actor/reason/call_id/ts/undoable``
+    ⇒ 命令名在 **`op`**（`command.<name>`），实体值在 **`after`**（命令审计里落在 `after.result_ref`）。
+    为什么单独一个纯函数：页面渲染难断言，而"**能对上号**"是给用户的核心价值
     ⇒ 把它做成可直测的映射（判据 `test_activity_links_domain_events_to_framework_audit`）。
     """
     linked: dict[str, list[str]] = {}
     for rec in audit:
-        value = rec.get("value")
-        if not isinstance(value, dict):
+        payload = rec.get("after")
+        if not isinstance(payload, dict):
             continue
-        for ref in _AUDIT_REF_KEYS:
-            got = value.get(ref)
+        ref = payload.get("result_ref") if isinstance(payload.get("result_ref"), dict) else {}
+        for key in _AUDIT_REF_KEYS:
+            got = payload.get(key, ref.get(key))
             if isinstance(got, (str, int)) and str(got):
-                linked.setdefault(str(got), []).append(str(rec.get("target") or ""))
+                linked.setdefault(str(got), []).append(str(rec.get("op") or ""))
                 break
     return linked
 
@@ -747,9 +751,11 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         )
         audit: list[dict] = []
         if stack is not None:
-            from mecha.cockpit import history_records
-
-            audit = list(history_records(_cockpit_source(), 0))[-60:][::-1]
+            # ⚠ **直读 mecha History**（不再经 cockpit 的 `/history` wire）：新形状里命令审计的
+            # `target` 为空、命令名在 **`op`**，而 wire **不发 `op`** ⇒ 经 wire 会把命令名丢掉。
+            # 这里只要"经门的操作"，所以按 `op` 前缀筛（顺带把 seed/state 事件排除在审计区外）。
+            audit = [e.to_record() for e in stack["history"].events()
+                     if str(getattr(e, "op", "")).startswith("command.")][-60:][::-1]
         return render(
             request,
             "activity.html",
