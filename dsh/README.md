@@ -60,8 +60,8 @@ types/dsh-shims.d.ts       本地最小类型 shim（@deepseek-ai/* 是宿主提
 ## 面板地址：**同源只读路由**（不回落、现读、读不到就报错）
 
 面板（client 半）**不能自己读磁盘**，而 Web 的端口是**运行期决定**的 ⇒ 地址必须由 host 半
-转一次。本插件按 `mecha/mecha/dsh-panel/` 的**共享参考实现**做（[复制约定](src/panel/README.md)
-的正文除外逐字一致）：
+转一次。本插件按 `mecha/mecha/dsh-panel/` 的**共享参考实现**做（除 `panel-config.ts` 外逐字一致；
+⚠ **本仓不保留副本 `README.md`**——权威在框架侧那份，见 `mecha/dsh-panel/README.md`）：
 
 1. launcher（`paperpilot serve` / `ai` / `web`）在 Web **真的开始 listen 之后**把裸端口写进
    项目根 **`.web-port`**（照 `mecha.portfile` 规则：启动前清陈旧、收尾只删自己的）；

@@ -13,7 +13,7 @@
  * ⚠ **本文件不再自持第二份实现**（2026-10-01）：桥 / 会话工厂 / 端点解析 / 工具注册 / 面板地址
  * 五件**全部**取自 mecha 的共享资产 `mecha/dsh-panel/`，逐字复制在 `./panel/`；
  * **GP 的值只住在 `gp-params.ts`（浏览器安全）与 `host/gp-hub.ts`（node-only）**，
- * 经参数注入（参数表见 `panel/README.md`；类名 `MechaMcpBridge` **不是**项目参数）。
+ * 经参数注入（参数表在框架侧 `mecha/dsh-panel/README.md`；类名 `MechaMcpBridge` **不是**项目参数）。
  *
  * 安全红线：**只 connect、绝不 spawn 服务**（人启动 launcher = 权威）。换 harness 只丢
  * 本插件，PaperPilot 的独立 MCP server 照用（跨 harness）。
