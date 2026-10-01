@@ -8,12 +8,10 @@
  * `mecha/mecha/dsh-panel/`（提交 `eab7b9e`），**不许改**；项目自己的**反面语料**
  * （"不许回落到历史默认 8080"这类）就放本文件。
  *
- * 钉三件事：
+ * 钉三件事（**2026-10-01 收窄**：通用形态已由资产共享单测覆盖，见各用例内的 ⚠ 注释）：
  *  1. **地址不回落**：端口文件缺失/非法 ⇒ 路由 `503` 且失败体**没有 `base`**，且**不许**
  *     回落到任何默认端口（本项目曾有一份静态默认 `http://127.0.0.1:8080/`）。
- *  2. **取址缝是真的**（资产 `fetchMonitorBase(doFetch, routePath)`）：喂假 fetch 真的决定
- *     结果，且**只**打 `PANEL_CONFIG.ROUTE_PATH`；形状不对（空/非 `http(s)://`）也归
- *     `address` 档——不许让垃圾地址一路走到"连不上"被误读成"权威离线"。
+ *  2. **取址打的是本项目自己的路由**（单一来源，不是别家的 `ROUTE_PATH`），且失败侧不回落。
  *  3. **client 入口 import 闭包零 `node:`**（浏览器安全靠结构，不靠树摇的运气）。
  *
  * 〔历史〕原钉 3/4 两件（renderPanel 不空白 / 两跳可诊断）盯的是📄简报 iframe 链，
@@ -25,11 +23,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { makeMonitorUrlHandler, resolveMonitorBase } from '../src/panel/monitor-url.ts'
+import { makeMonitorUrlHandler } from '../src/panel/monitor-url.ts'
 // ⚠ `BASIC_ROUTES` / `DEFAULT_ROUTE_PATH` 已随资产 `c44b01f` 迁到**浏览器安全**的 `routes.ts`
 //   （原先它们在 node-only 的 `monitor-url.ts` 里 ⇒ client 半取值导入会把 `node:fs` 拖进
 //   浏览器 bundle；资产已把这条边界结构化，并加了一条 import 闭包守卫）。
-import { BASIC_ROUTES, DEFAULT_ROUTE_PATH } from '../src/panel/routes.ts'
+//   ⚠ 2026-10-01：`BASIC_ROUTES.length === 4`（四基础路由）已由**资产共享单测**覆盖
+//   （`monitor-url.test.ts` 的"默认路由是中性的"一例逐字断言四条）⇒ 本项目不再重抄一遍。
+import { DEFAULT_ROUTE_PATH } from '../src/panel/routes.ts'
 import { PANEL_CONFIG } from '../src/panel/panel-config.ts'
 import { fetchMonitorBase, isOriginLike } from '../src/panel/monitor-client.ts'
 
@@ -80,22 +80,9 @@ test('参数块按项目填好（不是参考实现的中性默认，也不是�
   assert.equal(PANEL_CONFIG.ROUTE_PATH, '/paperpilot/monitor-url')
   assert.notEqual(PANEL_CONFIG.ROUTE_PATH, DEFAULT_ROUTE_PATH)
   assert.ok(PANEL_CONFIG.TITLE.length > 0)
-  assert.equal(BASIC_ROUTES.length, 4)
 })
 
 // ---------------------------------------------------------------- ① 地址不回落
-
-test('端口文件在 ⇒ 路由 200 + {base}（读的正是项目根 .web-port）', () => {
-  withTmp((dir) => {
-    writeFileSync(join(dir, PANEL_CONFIG.PORT_FILE), '8123', 'utf8')
-    assert.equal(resolveMonitorBase({ root: dir, portFile: PANEL_CONFIG.PORT_FILE }),
-      'http://127.0.0.1:8123')
-    const res = fakeRes()
-    makeMonitorUrlHandler({ root: dir, portFile: PANEL_CONFIG.PORT_FILE })({} as any, res)
-    assert.equal(res.statusCode, 200)
-    assert.deepEqual(JSON.parse(res.body), { base: 'http://127.0.0.1:8123' })
-  })
-})
 
 test('⭐ 端口文件缺失 ⇒ 503 + 无 base，且**绝不回落到历史默认**', () => {
   withTmp((dir) => {
@@ -118,6 +105,9 @@ test('⭐ 端口文件缺失 ⇒ 503 + 无 base，且**绝不回落到历史默�
 })
 
 test('端口文件坏内容（旧式整条 URL / 越界 / 0）⇒ 503（不猜、不截断）', () => {
+  // ⚠ 2026-10-01：三种坏内容的**逐条**枚举已由**资产共享单测**覆盖
+  //   （`monitor-url.test.ts` 的"内容非数字 / 越界 ⇒ 抛错"逐字用了同样三个输入）
+  //   ⇒ 本项目只留"handler 把它们如实转成 503"这一层的对偶（resolve 抛 ⇒ 503，不是 200 空 base）。
   withTmp((dir) => {
     for (const bad of [`${HISTORICAL_DEFAULT}/mcp`, '70000', '0']) {
       writeFileSync(join(dir, PANEL_CONFIG.PORT_FILE), bad, 'utf8')
@@ -129,48 +119,34 @@ test('端口文件坏内容（旧式整条 URL / 越界 / 0）⇒ 503（不猜�
   })
 })
 
-test('端口漂移自愈：文件一改，下一次解析就落在新端口（不缓存）', () => {
-  withTmp((dir) => {
-    const pf = join(dir, PANEL_CONFIG.PORT_FILE)
-    writeFileSync(pf, '8123', 'utf8')
-    assert.equal(resolveMonitorBase({ root: dir, portFile: PANEL_CONFIG.PORT_FILE }),
-      'http://127.0.0.1:8123')
-    writeFileSync(pf, '8180', 'utf8')
-    assert.equal(resolveMonitorBase({ root: dir, portFile: PANEL_CONFIG.PORT_FILE }),
-      'http://127.0.0.1:8180')
-  })
-})
-
 // ---------------------------------------------------------------- ② client 取址（走**共享** fetchMonitorBase）
 
-test('fetchMonitorBase：真形状 ⇒ base；只打本项目的 ROUTE_PATH', async () => {
+test('⭐ client 取址打的是本项目自己的 ROUTE_PATH（缝是真的，且不回落）', async () => {
+  // ⚠ 2026-10-01 收窄：真形状 ⇒ base、以及"注入的 doFetch 真的被调用（换掉它结果就变）"这两条
+  //   **通用形态**已由**资产共享单测**覆盖（`monitor-client.test.ts` 的"⭐ fetchMonitorBase：
+  //   注入的 doFetch 真的被调用，且换掉它结果就变（R16）"）⇒ 本项目只留资产不知道的那一件：
+  //   **打的是本项目自己的 `PANEL_CONFIG.ROUTE_PATH`**（单一来源，不是别家的路由），
+  //   且成功侧/失败侧结论不同（缝真有消费者）。
   const seen: string[] = []
-  const r = await fetchMonitorBase(
+  const ok = await fetchMonitorBase(
     fakeFetch(() => jsonRes(200, { base: 'http://127.0.0.1:8123' }), seen),
-    PANEL_CONFIG.ROUTE_PATH)
-  assert.equal(r.ok, true)
-  assert.equal(r.ok === true && r.data, 'http://127.0.0.1:8123')
-  assert.deepEqual(seen, [PANEL_CONFIG.ROUTE_PATH])          // 单一来源：不是别的项目的路由路径
-})
-
-test('⭐ 取址缝是真的（R1）：喂不同 fetch 得到不同结果，且都不回落', async () => {
-  // 同一个调用点，替身一换结论就变 ⇒ 缝真的在被使用（不是"声明了没人用"的假缝）
-  const ok = await fetchMonitorBase(fakeFetch(() => jsonRes(200, { base: 'http://127.0.0.1:9' })),
     PANEL_CONFIG.ROUTE_PATH)
   const dead = await fetchMonitorBase(fakeFetch(() => new Error('ECONNREFUSED')),
     PANEL_CONFIG.ROUTE_PATH)
   assert.equal(ok.ok, true)
+  assert.equal(ok.ok === true && ok.data, 'http://127.0.0.1:8123')
+  assert.deepEqual(seen, [PANEL_CONFIG.ROUTE_PATH])          // 单一来源：不是别的项目的路由路径
   assert.equal(dead.ok, false)
   assert.notDeepEqual(ok, dead)
 })
 
-test('地址失败一律落 address 档：非 2xx / 正文非 JSON / 缺 base / 形状不对 / 连不上', async () => {
+test('地址失败一律落 address 档，且**绝不回落到历史默认**（GP 反面语料）', async () => {
+  // ⚠ 2026-10-01 收窄：形状枚举（缺 base / 空 / 相对串 / 路径 / 非 JSON）已由**资产共享单测**
+  //   覆盖（`monitor-client.test.ts` 的"地址形状自检"与"连不上 / 非 JSON"两例）
+  //   ⇒ 本项目只留两件资产不知道的：① 真实失败落 `address` 档（不是被误读成 offline）；
+  //   ② **本项目历史的静态默认地址**绝不许出现在失败信息里。
   const cases: Array<[string, () => Response | Error]> = [
     ['503', () => jsonRes(503, { error: '监控端点未知' })],
-    ['缺 base', () => jsonRes(200, { error: 'oops' })],
-    ['base 为空', () => jsonRes(200, { base: '' })],
-    ['base 是相对串', () => jsonRes(200, { base: 'monitor' })],
-    ['base 是路径', () => jsonRes(200, { base: '/monitor' })],
     ['连不上', () => new Error('ECONNREFUSED')],
   ]
   for (const [label, reply] of cases) {

@@ -48,12 +48,6 @@ test('端口文件：含数字的任意串也能提出端口', async () => {
   assert.equal(url, 'http://127.0.0.1:8123/mcp')
 })
 
-test('没有端口文件 → 回落 GP 的默认端点（不抛，交给桥重连）', async () => {
-  const url = await gpResolveHubUrl({ mcpPortFile: '/nonexistent/.mcp-port' })
-  assert.equal(url, GP_BRIDGE.defaultUrl)
-  assert.equal(url, 'http://127.0.0.1:8780/mcp')
-})
-
 test('buildRequestInit：无 token/头 → undefined', () => {
   assert.equal(buildRequestInit({}), undefined)
 })
@@ -65,13 +59,18 @@ test('buildRequestInit：token → Authorization: Bearer', () => {
   assert.equal(headers['X-Trace'], '1')
 })
 
-test('⭐ GP 的项目值真的接上了（R17）：默认端口文件名 + 默认端点都来自 gp-params', () => {
+test('⭐ GP 的项目值真的接上了（R17）：默认端点/端口文件名都来自 gp-params，且读取回落不抛', async () => {
   const cfg = gpHubUrlConfig({})
   assert.equal(cfg.mcpPortFile, '.mcp-port')
   assert.equal(cfg.mcpPortFile, GP_BRIDGE.mcpPortFile)
   assert.equal(cfg.defaultUrl, GP_BRIDGE.defaultUrl)
   // 反面：端口文件名可被调用方覆盖（不是写死的常量）
   assert.equal(gpHubUrlConfig({ mcpPortFile: '  /tmp/x.port  ' }).mcpPortFile, '/tmp/x.port')
+  // 端口文件读不到 ⇒ **回落** GP 的默认端点（不抛，交给桥后台重连）
+  //（原「没有端口文件 → 回落」独立用例与本节断言同一事实 ⇒ 合并，R13/D1）
+  assert.equal(await gpResolveHubUrl({ mcpPortFile: '/nonexistent/.mcp-port' }),
+    GP_BRIDGE.defaultUrl)
+  assert.equal(GP_BRIDGE.defaultUrl, 'http://127.0.0.1:8780/mcp')
 })
 
 test('⭐ 资产默认是"空默认、不猜端口"（不传项目值时解析出空串，不是某个端口）', async () => {
