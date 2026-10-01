@@ -2,7 +2,7 @@
  * 端点解析 / 鉴权头 纯函数单测（移植自 re0-mecha-dsh；2026-10-01 改为测**资产版**）：
  *
  * 被测对象不再是 GP 自建的 `src/host/config.ts`（已删），而是
- * ① 共享资产的 `src/panel/config.ts`（`resolveHubUrl` / `buildRequestInit`），
+ * ① **资产包** `@mecha/dsh-panel/config.ts`（`resolveHubUrl` / `buildRequestInit`），
  * ② **GP 的参数接线** `src/host/gp-hub.ts`（`gpHubUrlConfig` / `gpResolveHubUrl`）。
  *
  * ⚠ 用例集**一条不少**地保留（R12：换实现不许顺手削弱断言）；只把参数名换成资产的词
@@ -14,7 +14,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildRequestInit, resolveHubUrl } from '../src/panel/config.ts'
+import { buildRequestInit, resolveHubUrl } from '@mecha/dsh-panel/config.ts'
 import { gpHubUrlConfig, gpResolveHubUrl } from '../src/host/gp-hub.ts'
 import { GP_BRIDGE } from '../src/gp-params.ts'
 import { test } from './harness.ts'

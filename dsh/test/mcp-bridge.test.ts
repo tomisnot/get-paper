@@ -6,9 +6,9 @@
  * 桥的**状态机**（首连成功 / 404 自愈 / ECONNREFUSED 自愈 / 首连失败不抛 / 重连耗尽抛可读离线 /
  * 首连失败后再调用也抛可读离线 / 非连接类错误不被冒充成"服务离线" / 业务错误原样抛 /
  * 鸭子类型判别 / offlineHint 与 logLabel 是真参数 …）现在由**资产自带的共享单测**逐例覆盖：
- * `../src/panel/mcp-bridge.test.ts`（13 例，随资产发货，并在本仓 `npm test` 与
- * `tests/test_dsh_panel.py` 里**真跑**）⇒ 本文件再写一遍同义断言就是**两个守卫守同一事实**
- * （本工程明令禁止）。
+ * `@mecha/dsh-panel/mcp-bridge.test.ts`（13 例，随包发货，由**框架自己的门禁**跑：
+ * `mecha/checks/dsh_panel_selfcheck.py`，挂在 `checks/run_all.py` 里，硬依赖 node）
+ * ⇒ 本文件再写一遍同义断言就是**两个守卫守同一事实**（本工程明令禁止）。
  *
  * 本文件留下的这条是**资产结构上守不了**的：`gp-params.ts` 里的项目值
  * （`logLabel` / `offlineHint`）**必须真的走到桥上**——资产不知道 GP 填了什么，
@@ -16,7 +16,7 @@
  * ⚠ 它同时是 `gpBridgeOptions` 的消费者证据：删掉它，`gp-params.ts` 就没人读了。
  */
 import assert from 'node:assert/strict'
-import { MechaMcpBridge } from '../src/panel/mcp-bridge.ts'
+import { MechaMcpBridge } from '@mecha/dsh-panel/mcp-bridge.ts'
 import { gpBridgeOptions } from '../src/host/gp-hub.ts'
 import { GP_BRIDGE } from '../src/gp-params.ts'
 import { test } from './harness.ts'

@@ -7,13 +7,12 @@
  * 原先"两面板共用右栏必须互斥"的约束随之退役（不是缺陷被修，是需要性消失）。
  *
  * 贡献：① 会话头部「◈ 监控」按钮（`conversation.session.header.actions`）；
- * ② 右栏页签类型 + body——数据/呈现全部来自共享资产 `dsh-panel/`
- * （`panel-data.ts` / `panel-view.ts` / `MonitorTabBody.tsx`），**本项目只提供
- * 参数块**（`panel-config.ts`），注册形状抄 EL。注册与副作用经 `ctx.effect` 可逆。
+ * ② 右栏页签类型 + body——数据/呈现全部来自**依赖包** `@mecha/dsh-panel`
+ * （`panel-data.ts` / `panel-view.ts` / `MonitorTabBody.tsx`），本项目只**注入参数**
+ * （`configurePanel({...GP_PANEL})`，值在 `gp-params.ts`）。注册与副作用经 `ctx.effect` 可逆。
  *
- * 地址唯一来源仍是：host 同源只读路由 `PANEL_CONFIG.ROUTE_PATH`（读项目根
- * `PANEL_CONFIG.PORT_FILE` 的裸端口，**绝不回落默认端口**）——由共享资产
- * `monitor-client.ts` 自己消费，本入口不再碰。
+ * 地址唯一来源仍是：host 同源只读路由（注入的 `routePath`；读项目根注入的 `portFile` 的裸端口，
+ * **绝不回落默认端口**）——由包里的 `monitor-client.ts` 自己消费，本入口不再碰。
  *
  * ⚠ client 半经 tsdown 打成 CJS + `__ModuleLoader__.load` 包装；改本目录源码后须
  * `npm run bundle` 并重启 dsh 才生效。

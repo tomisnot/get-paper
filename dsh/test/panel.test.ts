@@ -1,12 +1,11 @@
 /**
  * PaperPilot **面板判据**（项目自己那份）。
  *
- * 跑：`node --test test/panel.test.ts`
- * （**零 npm 依赖**：只用 `node:test` / `node:assert` / `node:fs` —— Node ≥ 22.6 原生剥类型）
+ * 跑：`npm run test:panel`（`node --preserve-symlinks --import tsx --test test/panel.test.ts`）
  *
- * 共享件（`src/panel/*.ts` 与它们的 `.test.ts`）**逐字复制**自
- * `mecha/mecha/dsh-panel/`（提交 `eab7b9e`），**不许改**；项目自己的**反面语料**
- * （"不许回落到历史默认 8080"这类）就放本文件。
+ * 面板来自**依赖包** `@mecha/dsh-panel`（`file:` junction，唯一副本在 mecha 仓）——
+ * **本仓不再持有副本**，故"逐字一致"不再需要判据（结构保证，见 `dsh/README.md`）；
+ * 项目自己的**反面语料**（"不许回落到历史默认 8080"这类）放本文件。
  *
  * 钉三件事（**2026-10-01 收窄**：通用形态已由资产共享单测覆盖，见各用例内的 ⚠ 注释）：
  *  1. **地址不回落**：端口文件缺失/非法 ⇒ 路由 `503` 且失败体**没有 `base`**，且**不许**
@@ -23,15 +22,19 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { makeMonitorUrlHandler } from '../src/panel/monitor-url.ts'
-// ⚠ `BASIC_ROUTES` / `DEFAULT_ROUTE_PATH` 已随资产 `c44b01f` 迁到**浏览器安全**的 `routes.ts`
-//   （原先它们在 node-only 的 `monitor-url.ts` 里 ⇒ client 半取值导入会把 `node:fs` 拖进
-//   浏览器 bundle；资产已把这条边界结构化，并加了一条 import 闭包守卫）。
+import { makeMonitorUrlHandler } from '@mecha/dsh-panel/monitor-url.ts'
+// ⚠ `BASIC_ROUTES` / `DEFAULT_ROUTE_PATH` 在资产的**浏览器安全** `routes.ts` 里
+//   （不在 node-only 的 `monitor-url.ts` ⇒ client 半取值导入不会把 `node:fs` 拖进浏览器 bundle）。
 //   ⚠ 2026-10-01：`BASIC_ROUTES.length === 4`（四基础路由）已由**资产共享单测**覆盖
 //   （`monitor-url.test.ts` 的"默认路由是中性的"一例逐字断言四条）⇒ 本项目不再重抄一遍。
-import { DEFAULT_ROUTE_PATH } from '../src/panel/routes.ts'
-import { PANEL_CONFIG } from '../src/panel/panel-config.ts'
-import { fetchMonitorBase, isOriginLike } from '../src/panel/monitor-client.ts'
+import { DEFAULT_ROUTE_PATH } from '@mecha/dsh-panel/routes.ts'
+import { configurePanel, panelConfig } from '@mecha/dsh-panel/panel-config.ts'
+import { fetchMonitorBase, isOriginLike } from '@mecha/dsh-panel/monitor-client.ts'
+import { GP_PANEL } from '../src/gp-params.ts'
+
+// ⚠ **注入一次**（依赖化后资产不存项目值）：与 host 半 / client 半各自在 apply 里做的是同一件事
+// ——本项目这份判据也要注入自己的项目值才能用面板（资产未注入 `panelConfig()` 会抛）。
+configurePanel({ ...GP_PANEL })
 
 /** 本项目**历史**的静态默认地址（迁移前写在插件配置里）——只作为**反面语料**。 */
 const HISTORICAL_DEFAULT = 'http://127.0.0.1:8080'
@@ -75,11 +78,15 @@ function withTmp(fn: (dir: string) => void): void {
 
 // ---------------------------------------------------------------- 参数块
 
-test('参数块按项目填好（不是参考实现的中性默认，也不是空）', () => {
-  assert.equal(PANEL_CONFIG.PORT_FILE, '.web-port', 'PORT_FILE 必须指向 Web 真正写的那个文件')
-  assert.equal(PANEL_CONFIG.ROUTE_PATH, '/paperpilot/monitor-url')
-  assert.notEqual(PANEL_CONFIG.ROUTE_PATH, DEFAULT_ROUTE_PATH)
-  assert.ok(PANEL_CONFIG.TITLE.length > 0)
+test('⭐ GP 注入的参数是项目值（依赖化后参数不再是资产里的文件）', () => {
+  assert.equal(panelConfig().portFile, '.web-port', 'portFile 必须指向 Web 真正写的那个文件')
+  assert.equal(panelConfig().routePath, '/paperpilot/monitor-url')
+  assert.notEqual(panelConfig().routePath, DEFAULT_ROUTE_PATH)   // 不是资产的中性默认
+  assert.ok(panelConfig().title.length > 0)
+  // 反面：注入的值就是 gp-params 里那几个（**单一来源**，不是这里手抄的第二份）
+  assert.equal(panelConfig().routePath, GP_PANEL.routePath)
+  assert.equal(panelConfig().portFile, GP_PANEL.portFile)
+  assert.equal(panelConfig().title, GP_PANEL.title)
 })
 
 // ---------------------------------------------------------------- ① 地址不回落
@@ -87,7 +94,7 @@ test('参数块按项目填好（不是参考实现的中性默认，也不是�
 test('⭐ 端口文件缺失 ⇒ 503 + 无 base，且**绝不回落到历史默认**', () => {
   withTmp((dir) => {
     const res = fakeRes()
-    makeMonitorUrlHandler({ root: dir, portFile: PANEL_CONFIG.PORT_FILE })({} as any, res)
+    makeMonitorUrlHandler({ root: dir, portFile: panelConfig().portFile })({} as any, res)
     assert.equal(res.statusCode, 503)
     const body = JSON.parse(res.body)
     assert.equal(body.base, undefined)                       // 不许回半截地址
@@ -110,9 +117,9 @@ test('端口文件坏内容（旧式整条 URL / 越界 / 0）⇒ 503（不猜�
   //   ⇒ 本项目只留"handler 把它们如实转成 503"这一层的对偶（resolve 抛 ⇒ 503，不是 200 空 base）。
   withTmp((dir) => {
     for (const bad of [`${HISTORICAL_DEFAULT}/mcp`, '70000', '0']) {
-      writeFileSync(join(dir, PANEL_CONFIG.PORT_FILE), bad, 'utf8')
+      writeFileSync(join(dir, panelConfig().portFile), bad, 'utf8')
       const res = fakeRes()
-      makeMonitorUrlHandler({ root: dir, portFile: PANEL_CONFIG.PORT_FILE })({} as any, res)
+      makeMonitorUrlHandler({ root: dir, portFile: panelConfig().portFile })({} as any, res)
       assert.equal(res.statusCode, 503, `坏内容 ${bad} 必须是 503`)
       assert.equal(JSON.parse(res.body).base, undefined)
     }
@@ -125,17 +132,17 @@ test('⭐ client 取址打的是本项目自己的 ROUTE_PATH（缝是真的，�
   // ⚠ 2026-10-01 收窄：真形状 ⇒ base、以及"注入的 doFetch 真的被调用（换掉它结果就变）"这两条
   //   **通用形态**已由**资产共享单测**覆盖（`monitor-client.test.ts` 的"⭐ fetchMonitorBase：
   //   注入的 doFetch 真的被调用，且换掉它结果就变（R16）"）⇒ 本项目只留资产不知道的那一件：
-  //   **打的是本项目自己的 `PANEL_CONFIG.ROUTE_PATH`**（单一来源，不是别家的路由），
+  //   **打的是本项目自己的 `panelConfig().routePath`**（单一来源，不是别家的路由），
   //   且成功侧/失败侧结论不同（缝真有消费者）。
   const seen: string[] = []
   const ok = await fetchMonitorBase(
     fakeFetch(() => jsonRes(200, { base: 'http://127.0.0.1:8123' }), seen),
-    PANEL_CONFIG.ROUTE_PATH)
+    panelConfig().routePath)
   const dead = await fetchMonitorBase(fakeFetch(() => new Error('ECONNREFUSED')),
-    PANEL_CONFIG.ROUTE_PATH)
+    panelConfig().routePath)
   assert.equal(ok.ok, true)
   assert.equal(ok.ok === true && ok.data, 'http://127.0.0.1:8123')
-  assert.deepEqual(seen, [PANEL_CONFIG.ROUTE_PATH])          // 单一来源：不是别的项目的路由路径
+  assert.deepEqual(seen, [panelConfig().routePath])          // 单一来源：不是别的项目的路由路径
   assert.equal(dead.ok, false)
   assert.notDeepEqual(ok, dead)
 })
@@ -150,7 +157,7 @@ test('地址失败一律落 address 档，且**绝不回落到历史默认**（G
     ['连不上', () => new Error('ECONNREFUSED')],
   ]
   for (const [label, reply] of cases) {
-    const r = await fetchMonitorBase(fakeFetch(reply), PANEL_CONFIG.ROUTE_PATH)
+    const r = await fetchMonitorBase(fakeFetch(reply), panelConfig().routePath)
     assert.equal(r.ok, false, `${label} 必须失败`)
     assert.equal(r.ok === false && r.failure.tier, 'address', `${label} 必须落 address 档`)
     assert.ok(r.ok === false && r.failure.detail.length > 0, `${label} 必须给 detail`)
