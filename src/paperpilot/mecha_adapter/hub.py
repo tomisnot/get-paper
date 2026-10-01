@@ -5,8 +5,8 @@
 uvicorn 后台线程与端口回读、instructions 体积守卫、端口文件启停清理）**逐条**已是框架
 行为（``mecha.providers.mcp``），本文件不再有第二份实现。
 
-⚠ **别传 ``toolhost=``**：``assemble()`` 建出的 ``sw.tools`` 是**空表**（PaperPilot 的
-22 工具注册在 ``build_tool_registry`` 里，从不写进 ``sw.tools``）；把它当 toolhost 传进
+⚠ **别传 ``toolhost=``**：``assemble()`` 建出的 ``sw.tools`` 是**空表**（PaperPilot 的工具
+注册在 ``build_tool_registry`` 里，从不写进 ``sw.tools``）；把它当 toolhost 传进
 端点会让工具「列得出、调不动」（``toolhost_registry_mismatch``）。缺省让框架用
 ``LocalToolHost(真注册表)``。
 
@@ -78,8 +78,11 @@ def build_stack(container, data_root: str | Path | None = None,
     """装配 PaperPilot 的 v2 栈——**经 mecha.assembly.assemble() 具名装配点**。
 
     接线顺序（engine 先于 gate 建成，故 attach_gate 回填）：
-    assemble → engine.attach_gate → build_commands（13 写命令进 sw.commands）
-    → _seed_config（标量配置种进 gate）→ build_tool_registry（24 工具）。
+    assemble → engine.attach_gate → build_commands（``TOOL_DECLS`` 的写声明派生的命令全进
+    sw.commands，另有几条人类专属命令）→ _seed_config（标量配置种进 gate）
+    → build_tool_registry（工具面）。
+
+    ⚠ **本仓不手抄计数**：各面的条数以 ``check/test_capability_map.py`` 的期望表为准。
 
     返回里**只带真注册表**（``tools``），**不带** ``toolhost``（见模块 docstring）。
     ``data_root`` 缺省 = 项目数据目录（``settings.data_dir``）；journal 落
