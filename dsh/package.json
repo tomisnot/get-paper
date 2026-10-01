@@ -28,8 +28,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --preserve-symlinks --import tsx test/run.ts && npm run test:panel",
-    "test:panel": "node --preserve-symlinks --import tsx --test test/panel.test.ts",
+    "test": "node --preserve-symlinks --preserve-symlinks-main --import tsx test/run.ts && npm run test:panel",
+    "test:panel": "node --preserve-symlinks --preserve-symlinks-main --import tsx --test test/panel.test.ts",
     "bundle": "tsdown"
   },
   "dependencies": {

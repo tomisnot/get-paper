@@ -16,9 +16,10 @@ const dshExternal = [/^@deepseek-ai\//]
  * → `lib/index.mjs`）时，运行期要去 node_modules 里加载 `.ts`，而 **Node 原生剥类型明确拒绝
  * `node_modules` 下的 `.ts`**（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`）⇒ 运行时就炸。
  * 与本文件既有的"自包含、运行时不依赖 dsh 解析我们的 node_modules"同一条意图。
- * ⚠ 这是**消费者侧**的打包配置（mecha 未核这一条；若框架给出别的标准做法，改这里即可）。
+ * ⚠ 这是**消费者侧**的打包配置（mecha 未核这一条；EL 已独立实测同一结论并采用同样的
+ * `deps.alwaysBundle`；本仓前缀与 EL 对齐为 `@mecha/`，将来 mecha 再发包自动覆盖）。
  */
-const panelInline = [/^@mecha\/dsh-panel/]
+const panelInline = [/^@mecha\//]
 
 export default defineConfig([
   {
