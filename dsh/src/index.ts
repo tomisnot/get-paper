@@ -19,13 +19,13 @@
  * 本插件，PaperPilot 的独立 MCP server 照用（跨 harness）。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { MechaMcpBridge } from './panel/mcp-bridge.ts'
-import { buildRequestInit } from './panel/config.ts'
-import { syncTools, type ToolDisposers } from './panel/register-tools.ts'
+import { MechaMcpBridge } from '@mecha/dsh-panel/mcp-bridge.ts'
+import { buildRequestInit } from '@mecha/dsh-panel/config.ts'
+import { syncTools, type ToolDisposers } from '@mecha/dsh-panel/register-tools.ts'
+import { makeMonitorUrlHandler } from '@mecha/dsh-panel/monitor-url.ts'
+import { configurePanel, panelConfig } from '@mecha/dsh-panel/panel-config.ts'
 import { gpBridgeOptions, gpResolveHubUrl, gpSessionFactory } from './host/gp-hub.ts'
-import { GP_BRIDGE, GP_TOOLS } from './gp-params.ts'
-import { makeMonitorUrlHandler } from './panel/monitor-url.ts'
-import { PANEL_CONFIG } from './panel/panel-config.ts'
+import { GP_BRIDGE, GP_PANEL, GP_TOOLS } from './gp-params.ts'
 
 /** Cordis 插件显示名（诊断用；工具命名空间默认同此）。 */
 export const name = 'paperpilot'
@@ -67,6 +67,9 @@ export interface Config {
 
 /** 挂载 host 桥：连服务、注册工具、状态信号；teardown 时注销工具并关桥。 */
 export async function apply(ctx: Context, config: Config = {}): Promise<void> {
+  // ⚠ **面板参数必须由项目注入**（资产不存项目值；未注入 ⇒ 资产 `panelConfig()` 当场抛）。
+  // host 半一次、client 半另一次（两个进程/两份 bundle）；teardown 时清回"未注入"（可逆）。
+  const releasePanel = configurePanel({ ...GP_PANEL })
   await ctx.effect(async () => {
     const serverName = config.serverName || GP_TOOLS.serverName
     let disposers: ToolDisposers = new Map()
@@ -111,8 +114,8 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       },
     ))
 
-    // 面板地址的**同源只读路由**（共享资产 `panel/monitor-url.ts`，逐字复制）：
-    // 读项目根 `PANEL_CONFIG.PORT_FILE` 里的裸端口 → `{base}`。**绝不回落默认端口**
+    // 面板地址的**同源只读路由**（依赖包 `@mecha/dsh-panel/monitor-url.ts`）：
+    // 读项目根注入的**端口文件名**里的裸端口 → `{base}`。**绝不回落默认端口**
     // （回落会把"Web 没起来"显示成"连上了但空白"）；每次被 fetch 都现读文件 ⇒ Web 换端口后
     // 下一拍落在新端口，不需要重启 dsh。
     //
@@ -126,14 +129,15 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
         // 参数用 `any`：`unknown` 与本插件实现的 `IncomingMessage`/`ServerResponse` 逆变不兼容
         handler: (req: any, res: any) => void }): () => void } }).webServer
       const root = config.projectRoot?.trim() || process.cwd()
+      const panel = panelConfig()          // 注入态（上面 configurePanel 给的 GP_PANEL）
       const disposeRoute = webServer.register({
         kind: 'exact',
-        path: PANEL_CONFIG.ROUTE_PATH,
-        handler: makeMonitorUrlHandler({ root, portFile: PANEL_CONFIG.PORT_FILE }),
+        path: panel.routePath,
+        handler: makeMonitorUrlHandler({ root, portFile: panel.portFile }),
       })
       ctx.logger?.info?.(
-        `[paperpilot] 注册面板地址路由 ${PANEL_CONFIG.ROUTE_PATH}` +
-        `（读 ${root}\\${PANEL_CONFIG.PORT_FILE}，不回落默认端口）`)
+        `[paperpilot] 注册面板地址路由 ${panel.routePath}` +
+        `（读 ${root}\\${panel.portFile}，不回落默认端口）`)
       return disposeRoute
     })
 
@@ -145,6 +149,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
         try { dispose() } catch { /* ignore */ }
       }
       await bridge.close()
+      releasePanel()       // 面板参数注入态清回"未注入"（可逆）
     }
   }, 'paperpilot: host MCP bridge')
 }

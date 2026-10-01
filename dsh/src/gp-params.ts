@@ -41,3 +41,16 @@ export const GP_BRIDGE = {
 export const GP_TOOLS = {
   serverName: 'paperpilot',
 } as const
+
+/**
+ * 面板参数（**注入**给资产 `@mecha/dsh-panel` 的 `configurePanel`）。
+ *
+ * 原先是资产目录里那个"参数块"（`panel/panel-config.ts`）的三个值；**依赖化之后参数必须住进
+ * 项目侧**——三个项目共用同一份资产，资产里放不下项目值（会互相覆盖）。
+ * ⚠ host 半与 client 半**各注入一次**（两个进程 / 两份 bundle）。
+ */
+export const GP_PANEL = {
+  routePath: '/paperpilot/monitor-url',
+  portFile: '.web-port',
+  title: '操作审计',
+} as const

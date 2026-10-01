@@ -16,7 +16,11 @@
     "noUnusedParameters": true,
     "types": ["node"],
     "allowImportingTsExtensions": true,
-    "erasableSyntaxOnly": true
+    "erasableSyntaxOnly": true,
+    // ⚠ **必须**：`@mecha/dsh-panel` 是 `file:` 依赖 ⇒ `node_modules` 里是 **Junction**。
+    // 不开这一项时 TypeScript 会按**真实路径**（资产仓）去找依赖 ⇒ 找不到装在本仓 `node_modules`
+    // 里的 `@modelcontextprotocol/sdk`（TS2307 + TS7006）。mecha 已实测，EL 与 GP 都要加。
+    "preserveSymlinks": true
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "types/**/*.d.ts", "test/**/*.ts"]
 }

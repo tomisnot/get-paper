@@ -184,7 +184,14 @@ test('isOriginLike：只认 http(s):// 的源样字符串', () => {
 test('⭐ 本项目 client 入口的 import 闭包里没有 node:（浏览器安全靠结构，不靠树摇的运气）', () => {
   const here = dirname(fileURLToPath(import.meta.url))
   const src = join(here, '..', 'src')
+  // ⚠ 2026-10-01（依赖化改造）：面板改从**包** `@mecha/dsh-panel` 取（junction）⇒ 闭包走到
+  //   **包边界就不再往下走**（本判据不解析 node_modules）。分工因此变成：
+  //   · 包**内部**那条"零 `node:`"由**资产自己的**闭包守卫守（`monitor-client.test.ts`，
+  //     随包发货、在本仓 `npm test` 里真跑）；
+  //   · **本判据守本仓这一侧**：GP 自己的文件不许带 `node:`，且裸包只许宿主注入的 `react`
+  //     与这个资产包（别的裸包一律拒）。
   const ALLOWED_BARE = new Set(['react', 'react/jsx-runtime'])
+  const ASSET_PKG = '@mecha/dsh-panel'
   const stripComments = (s: string) => s
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1')
@@ -198,6 +205,7 @@ test('⭐ 本项目 client 入口的 import 闭包里没有 node:（浏览器安
   const seen = new Set<string>()
   const nodeHits: string[] = []
   const bareHits: string[] = []
+  const assetHits: string[] = []
   while (queue.length) {
     const rel = queue.shift() as string
     if (seen.has(rel)) continue
@@ -212,20 +220,29 @@ test('⭐ 本项目 client 入口的 import 闭包里没有 node:（浏览器安
         queue.push(resolveRel(rel, spec))
         continue
       }
+      if (spec === ASSET_PKG || spec.startsWith(`${ASSET_PKG}/`)) {
+        assetHits.push(`${rel} → ${spec}`)                // 包边界：不再深入（见上）
+        continue
+      }
       if (!ALLOWED_BARE.has(spec)) bareHits.push(`${rel} → ${spec}`)
     }
   }
   assert.deepEqual(nodeHits, [],
     `client 闭包里出现 node 内建：${nodeHits.join('、')} ⇒ 浏览器 bundle 会失败`
-    + '（node-only 的实现只许留在 panel/monitor-url.ts，且 client 侧不许 import 它）')
+    + '（node-only 的实现只许留在资产包的 monitor-url.ts 一侧，且 client 侧不许 import 它）')
   assert.deepEqual(bareHits, [],
-    `client 闭包 import 了非白名单裸包：${bareHits.join('、')} ⇒ 只许宿主注入的 react + 相对路径`)
+    `client 闭包 import 了非白名单裸包：${bareHits.join('、')}`
+    + ' ⇒ 只许宿主注入的 react + 资产包 @mecha/dsh-panel + 相对路径')
   // R8 自证：闭包必须**真的走过若干文件**，否则"没命中"只是因为什么都没读到
-  assert.ok(seen.size >= 8, `闭包只走了 ${seen.size} 个文件 ⇒ 检查可能没生效：${[...seen]}`)
-  // 对偶（不许误报）：闭包**必须包含**资产里那两个纯模块——否则这条可能根本没走进资产
-  for (const must of ['panel/panel-data.ts', 'panel/panel-view.ts', 'panel/MonitorTabBody.tsx']) {
+  // （依赖化后 GP 侧只剩这几个文件；包内文件由资产自己的守卫走）
+  assert.ok(seen.size >= 4, `闭包只走了 ${seen.size} 个文件 ⇒ 检查可能没生效：${[...seen]}`)
+  // 对偶（不许误报）：闭包**必须包含** GP 自己那几个 client 侧文件
+  for (const must of ['client/MonitorButton.tsx', 'client/ReviewSopButton.tsx', 'gp-params.ts']) {
     assert.ok(seen.has(must), `闭包里应当有 ${must}：${[...seen]}`)
   }
+  // ⭐ 反向对偶：面板**必须**来自包 —— 不是某个残留的相对副本路径（依赖化改造的验收）
+  assert.ok(assetHits.length >= 2,
+    `client 半没有从 ${ASSET_PKG} 取面板（是不是还在 import 旧副本？）：${[...seen]}`)
 })
 
 

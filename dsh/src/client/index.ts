@@ -19,8 +19,9 @@
  * `npm run bundle` 并重启 dsh 才生效。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { PANEL_CONFIG } from '../panel/panel-config.ts'
-import { MonitorTabBody } from '../panel/MonitorTabBody.tsx'
+import { configurePanel, panelConfig } from '@mecha/dsh-panel/panel-config.ts'
+import { MonitorTabBody } from '@mecha/dsh-panel/MonitorTabBody.tsx'
+import { GP_PANEL } from '../gp-params.ts'
 import { MonitorButton, type MonitorInjected } from './MonitorButton.tsx'
 import { ReviewSopButton } from './ReviewSopButton.tsx'
 
@@ -36,6 +37,9 @@ export const inject = ['slots', 'layout', 'sidebarRight', 'sidebarRightTabs']
 const MONITOR_TAB_ID = 'pp-monitor'
 
 export async function apply(ctx: Context): Promise<void> {
+  // ⚠ client 半是**另一份 bundle/另一个进程** ⇒ 面板参数要在这里**再注入一次**
+  // （资产不存项目值；未注入 ⇒ `panelConfig()` 抛，面板宁可炸也不假装空）。
+  const releasePanel = configurePanel({ ...GP_PANEL })
   await ctx.effect(() => {
     // 「◈ 监控」按钮：开右栏 → 打开我们的页签（按钮不自己开合，宿主侧动作，与 EL 同形）。
     const disposeMonitorBtn = ctx.slots.inject('conversation.session.header.actions', () =>
@@ -60,7 +64,7 @@ export async function apply(ctx: Context): Promise<void> {
 
     // 页签类型 + body：零 react 判据在资产自测里；.tsx 壳只过 typecheck。
     const releaseTabType = ctx.sidebarRightTabs?.register?.({
-      id: MONITOR_TAB_ID, kind: MONITOR_TAB_ID, title: () => PANEL_CONFIG.TITLE,
+      id: MONITOR_TAB_ID, kind: MONITOR_TAB_ID, title: () => panelConfig().title,
     }) ?? null
     const disposeTabBody = ctx.slots.inject('sidebar.right.pane.tab', () =>
       ctx.slots.register(
@@ -73,6 +77,7 @@ export async function apply(ctx: Context): Promise<void> {
       if (disposeTabBody) { try { disposeTabBody() } catch { /* ignore */ } }
       if (typeof releaseTabType === 'function') { try { releaseTabType() } catch { /* ignore */ } }
       try { disposeMonitorBtn?.() } catch { /* ignore */ }
+      releasePanel()       // 注入态清回"未注入"（可逆）
     }
   }, 'paperpilot: monitor tab')
 }

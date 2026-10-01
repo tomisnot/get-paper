@@ -33,6 +33,7 @@
     "bundle": "tsdown"
   },
   "dependencies": {
+    "@mecha/dsh-panel": "file:../../../../../../../code-nosync/mecha/mecha/dsh-panel",
     "@modelcontextprotocol/sdk": "1.30.0",
     "ws": "^8.21.0"
   },
