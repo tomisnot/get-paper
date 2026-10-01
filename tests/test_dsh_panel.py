@@ -4,13 +4,14 @@
 写在 TS 里，而本仓的门禁是 pytest。不把入口挂在这里 ⇒ 那些判据**存在于仓外**，
 改坏了没人知道——正是 R10（"全绿只对判据覆盖到的路径成立"）要防的。
 
-跑的是三份文件：
-* `src/panel/monitor-url.test.ts` / `src/panel/monitor-client.test.ts` —— **共享单测**，
-  与 `mecha/mecha/dsh-panel/` 的参考实现逐字一致（**不许改**）；
+跑的是这两类文件：
+* 资产副本的**共享单测** —— `monitor-url` / `monitor-client` / `panel-data` / `panel-view`（面板四件）
+  与 `mcp-bridge`（opt-in 的桥，2026-10-01 加）；它们与 `mecha/mecha/dsh-panel/` 的参考实现逐字一致
+  （**不许改**）；
 * `test/panel.test.ts` —— **项目自己的**判据（含反面语料："不许回落到历史默认 8080"
   "缺地址不许指向相对路径"）。
 
-⚠ 这三份都**零 npm 依赖**（只用 `node:test` / `node:assert` / `node:fs`；Node ≥ 22.6
+⚠ 这些判据**零 npm 依赖**（只用 `node:test` / `node:assert` / `node:fs`；Node ≥ 22.6
 原生剥类型）⇒ **不需要 `dsh/node_modules`**，只需要 PATH 上有 `node`。
 缺 node **即红**，不软跳过——软跳过就是"存在但从不执行"的假绿（框架侧同款纪律）。
 """
@@ -28,12 +29,14 @@ import pytest
 DSH_DIR = Path(__file__).resolve().parents[1] / "dsh"
 PANEL_DIR = DSH_DIR / "src" / "panel"
 
-#: 相对 `dsh/` 的判据文件（**资产四份在前**，项目自己那份在后）。
+#: 相对 `dsh/` 的判据文件（**资产件在前**，项目自己那份在后）。
 PANEL_TEST_FILES = (
     "src/panel/monitor-url.test.ts",
     "src/panel/monitor-client.test.ts",
     "src/panel/panel-data.test.ts",
     "src/panel/panel-view.test.ts",
+    # opt-in 侧：桥的共享单测（随桥一起复制；2026-10-01 加）
+    "src/panel/mcp-bridge.test.ts",
     "test/panel.test.ts",
 )
 
@@ -119,6 +122,13 @@ REFERENCE_REVISION = "mecha@5ee78e4 (2026-09-26) mecha/dsh-panel/"
 #: 4. **`README.md` 不进表**：prose 的就地批注不改变行为，钉它只制造噪声（复制时仍逐字抄）。
 #:
 #: ⇒ 资产 `c44b01f` 共 **12 个文件**，减去上面两个不钉的 = **本表 10 项**。
+#:
+#: ⭐ **2026-10-01 增补：opt-in 六件也进表**（`mcp-bridge.ts` / `mcp-session-http.ts` /
+#: `config.ts` / `register-tools.ts` / `mcp-sdk-shims.d.ts` / `mcp-bridge.test.ts`）。
+#: 为什么必须钉：opt-in 件**同样是逐字复制**的资产件，而本表原先只覆盖那 10 件
+#: ⇒ 抄进来的桥被就地改一个字符，**没有任何判据会红**（正是本资产要治的"漏一个文件"病，
+#: 只不过这次漏的是"漏进指纹表"）。它们的来源提交是 `mecha@22e41cc`（2026-10-01，
+#: 含把本仓此前自修的两处缺陷回流资产：`ensureReady()` 移入 try + 非连接类错误不冒充"服务离线"）。
 REFERENCE_SHA256 = {
     "routes.ts": "e2b5bc35d84d368548146a4c7d6c4a2ef733b3191480f6a9d0131045c1295963",
     "monitor-url.ts": "9808f71a7179857f56baa25652cfc77e2d109f3d92d643aaf2c3ebc42f95c2a3",
@@ -130,6 +140,13 @@ REFERENCE_SHA256 = {
     "monitor-client.test.ts": "8dcff14f8fe5fb2f505ba7e9e845adab4f8c28c4af87c0234856817cecea4487",
     "panel-data.test.ts": "b3ece6c3f436f22b5abd3f7ffb295d3799f0fadf2628d4d791312bbd4445152a",
     "panel-view.test.ts": "bd2afe86800130e9ff8c03081a5696bd2c9f4c23fe71070c3fca57c72931d1b4",
+    # ---- opt-in 六件（mecha@22e41cc，2026-10-01）----
+    "mcp-bridge.ts": "59c5078fce46c4610a319d2a70628ef7827ea11c01734be02eca67d35ca2d510",
+    "mcp-session-http.ts": "423dca6f422491690e91c03b1576296b578162aa5be72684419bc510445fa194",
+    "config.ts": "537668e2c0b4af8bc0b624ec42cd9e5c0f126205ab676e7700bc592e137c4207",
+    "register-tools.ts": "4eadbf2f495f2f16e09a197db920b1662cb17ddbf051f563509fbe08e0174bf0",
+    "mcp-sdk-shims.d.ts": "d2fc24f0d7131fa2c2e700e9d669c51578f0698023c7919b3b3d36f027aa331e",
+    "mcp-bridge.test.ts": "4fba5f5e963da321a1b3d33a4fc67323e0506cfad18d2fdadf7df7cc7962dc7e",
 }
 
 

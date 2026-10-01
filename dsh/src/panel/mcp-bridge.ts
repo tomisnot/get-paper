@@ -242,11 +242,18 @@ export class MechaMcpBridge {
   /**
    * 调工具（自愈）：遇 session 失效 / 连不上 → 重连（重新 initialize 拿新 session）→ **重试一次**。
    * 重连仍失败 → 抛**可读的离线错误**（断联显式信号，不再是静默 404）。
+   *
+   * ⚠ **`ensureReady()` 必须在 `try` 之内**（2026-10-01 修，**这是一处被移植时丢掉的修复**）：
+   * 它在 try 外时，"首连失败（`start()` 失败 ⇒ offline、无 session）**之后**再调 `callTool`"
+   * 会让 `ensureReconnecting()` 直接抛 ⇒ **裸 404 冒到调用方**，下面那句精心写的
+   * `服务离线… + offlineHint` **永远跑不到**（消费者的学习成本就从"重连耗尽"变成"看不懂的 404"）。
+   * 两个消费者都要求这一条，且 EL 已用判据钉住它
+   * （`dsh/test/reconnect.test.ts` 的「Hub 宕机：调用抛**可读离线错误**（非静默 404）」）。
    */
   async callTool(name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
     if (this.closed) throw new Error(`${this.tag} 桥已关闭`)
-    await this.ensureReady()
     try {
+      await this.ensureReady()
       return await this.session!.callTool(name, args, signal)
     } catch (err) {
       if (signal?.aborted) throw err
@@ -255,6 +262,13 @@ export class MechaMcpBridge {
       try {
         await this.ensureReconnecting()
       } catch (reconnectErr) {
+        // ⚠ **只有连接/会话类失败才配叫"服务离线"**（2026-10-01 补）：
+        // `ensureReady()` 移入 `try` 之后，重连路径里冒出的**编程错**（TypeError 之类）
+        // 也会落到这一支；若一律包装成"服务离线…"，就是**把 bug 伪装成域失败**
+        // （本仓明确不许，见 commands.invoke 的同款纪律）——会让人去查网络，而真因在代码里。
+        if (!isSessionInvalidError(reconnectErr) && !isConnectionError(reconnectErr)) {
+          throw reconnectErr
+        }
         throw new Error(
           `${this.tag} 服务离线：调用 ${name} 时连接失效且重连未成功（${msgOf(reconnectErr)}）。`
           + this.offlineHint,

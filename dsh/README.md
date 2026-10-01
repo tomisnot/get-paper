@@ -11,19 +11,22 @@
 
 dsh 的 MCP 桥只在 `transport.onclose` 时重连；streamable-http 的 POST 失败（服务重启后旧
 `Mcp-Session-Id` → 404）**只抛错、不触发 onclose**，客户端永久卡死，只能重启 dsh Host。
-本插件用**自写的自愈桥**接管：任何一次调用遇 session 失效/连不上 → 拆旧连接 → 重新
+本插件用**共享资产的自愈桥**接管（`src/panel/mcp-bridge.ts`，逐字复制自 `mecha/dsh-panel/`；
+2026-10-01 起不再是本仓自写）：任何一次调用遇 session 失效/连不上 → 拆旧连接 → 重新
 `initialize`（拿**新** session）→ 重试；并有后台退避重连、健康信号、服务未起时不阻塞加载。
 
 ## 架构（分层，核心可独立单测）
 
 ```
 src/index.ts               HOST 入口：apply(ctx,config) → 建桥 + 注册工具 + 状态信号 + 面板地址路由
-src/host/mcp-bridge.ts     自愈重连桥（**零 SDK/零 dsh 依赖**，纯逻辑，可注入 fake 单测）
-src/host/mcp-session-http.ts  唯一 import @modelcontextprotocol/sdk：每次新建会话（=重连拿新 session）
-src/host/register-tools.ts MCP 工具 → ctx.tools.register（照 dsh mcp-client/tools.ts 的两阶段 swap）
-src/host/config.ts         端点解析（mcpUrl / .mcp-port / 默认 8780）
+src/gp-params.ts           **GP 的参数家**（logLabel/offlineHint/clientInfo/defaultUrl/mcpPortFile/serverName；浏览器安全）
+src/host/gp-hub.ts         node 侧参数接线：把上面的值填进资产件（本目录唯一保留的 host 文件）
+src/panel/mcp-bridge.ts    自愈重连桥（**共享资产**逐字副本；零 SDK/零 dsh 依赖，纯逻辑，可注入 fake 单测）
+src/panel/mcp-session-http.ts  唯一 import @modelcontextprotocol/sdk：每次新建会话（=重连拿新 session）
+src/panel/register-tools.ts    MCP 工具 → ctx.tools.register（两阶段 swap）
+src/panel/config.ts        端点解析（`hubUrl` > 端口文件 > 项目默认；**缺省不猜端口**）
 src/panel/*                面板共享资产（**逐字复制**自 mecha 参考实现，只有 panel-config.ts 是本项目的值）
-src/client/*               CLIENT 半：📄简报 开关 + 右栏 iframe + 错误卡 + 面板模式 CSS
+src/client/*               CLIENT 半：◈监控 按钮 + 右栏页签注册 + ☀评审今日按钮（📄简报 iframe 链已退役）
 types/dsh-shims.d.ts       本地最小类型 shim（@deepseek-ai/* 是宿主提供的 peer，本地装不到）
 ```
 
@@ -136,11 +139,12 @@ dsh 升级后先跑 `paperpilot dsh-config` 确认 `webserver` 表达式行未�
 
 | 字段 | 默认 | 含义 |
 | --- | --- | --- |
-| `mcpUrl` | `''` | 显式 MCP 端点；留空则从 `mcpPortFile` 解析 |
+| `hubUrl` | `''` | 显式 MCP 端点；留空则从 `mcpPortFile` 解析 |
 | `mcpPortFile` | `.mcp-port` | launcher 写的端口文件（相对 dsh 的 cwd） |
 | `serverName` | `paperpilot` | 工具命名空间 → `mcp__paperpilot__<tool>` |
 | `projectRoot` | `process.cwd()` | 面板端口文件（`.web-port`）所在的项目根；launcher 已把 dsh 的 cwd 钉在项目根 |
-| `mcpToken` | `''` | 远程鉴权 token（→ `Authorization: Bearer`）；本地默认空 |
+| `hubToken` | `''` | 远程鉴权 token（→ `Authorization: Bearer`）；本地默认空 |
+| `hubHeaders` | `{}` | 额外请求头 |
 
 > 面板地址**没有**配置项：它只能来自 `.web-port` + 同源路由。曾经有个 `webUrl`（默认
 > `http://127.0.0.1:8080/`）——与 `settings.yaml` 的 `web.port` **各写一份**，换端口即漂移，

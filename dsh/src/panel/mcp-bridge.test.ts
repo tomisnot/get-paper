@@ -39,20 +39,6 @@ import {
 
 const noSleep = (): Promise<void> => Promise.resolve()
 
-/**
- * `start()`（首连失败时**不抛**，转后台重连）之后，等后台那一轮把
- * `maxAttempts` 耗尽并落到 `offline`。
- *
- * ⚠ 为什么必须等：`sleep: noSleep` ⇒ 后台重连是**热循环**，不等它就可能与
- * `callTool` 抢同一个 in-flight 重连（`ensureReconnecting` 是单飞的），
- * 于是 `callTool` 会一直等那一轮——**表现成挂起**，而不是我们要断言的那条抛错路径。
- * 用真 `setTimeout` 让出事件循环；`noSleep` 只替代退避延时，两者不冲突。
- */
-async function startAndSettle(bridge: MechaMcpBridge): Promise<void> {
-  await bridge.start()
-  await new Promise(r => setTimeout(r, 50))
-}
-
 /** 断言里用的不可达端点（RFC 5737 测试网段 + 端口 1；**不是**任何项目的默认端口）。 */
 const UNREACHABLE = 'http://192.0.2.1:1/mcp'
 
@@ -108,14 +94,15 @@ function sessionFactory(sessions: FakeSession[]): SessionFactory {
 /**
  * 造一台"**连得上、后来调不动、且再也连不上**"的桥（自愈耗尽 ⇒ 离线错误那一支）。
  *
- * ⚠ 为什么必须这么造（**语义是实测出来的，不是猜的**）：桥的离线错误
- * （`服务离线…` + `offlineHint`）**只在"重连本身失败"时**产生，且前置条件是
- * **`start()` 已经成功**：
- *  - 若**首连就失败** ⇒ `ensureReady()` 在 `callTool` 的 `try` **之外**抛 ⇒ 裸错误出来；
- *  - 若**重连成功、只是重试那一次又失败** ⇒ 第 260 行的重试再抛 ⇒ 也是**裸错误**
- *    （它已经在 `catch` 块里，不再被同一个 `catch` 接住）。
- * ⇒ 唯一形状：**首连成功**（`start()` ready）→ **调用失败**（触发自愈）→ **重连也失败**
- *   （`ensureReconnecting` 抛出 ⇒ 才进第 255 行那一支）。
+ * ⚠ 为什么必须这么造：桥的离线错误（`服务离线…` + `offlineHint`）要求
+ * **"调用失败 → 自愈 → 重连也失败"** 这条链走完：
+ *  - 若重连成功、只是重试那一次又失败 ⇒ 补丁里的重试再抛 ⇒ 也是**裸错误**
+ *    （它已经在 `catch` 块里，不再被同一个 `catch` 接住）；
+ *  - 若**首连就失败**：2026-10-01 起 `ensureReady()` 已在 `try` **之内**，
+ *    所以同样会走到离线错误那一支 —— 那条路径由
+ *    「首连失败之后再调用，也抛可读离线错误」这个用例单独钉住。
+ * ⇒ 本函数专造**第一种**形状：**首连成功**（`start()` ready）→ **调用失败**
+ *   → **重连也失败**。
  * ⚠ 两个坑都踩过：① 恒返回死会话 ⇒ 连 `start()` 都过不去；
  *   ② 会话一直健康 ⇒ 调用直接成功、根本进不了自愈。
  */
@@ -209,6 +196,70 @@ test('首连失败不抛（转后台重连），插件照常加载', async () =>
   await new Promise(r => setTimeout(r, 20))     // 等后台重连成功
   assert.equal(bridge.getStatus(), 'ready')
   assert.ok(statuses.includes('offline'))
+})
+
+test('⭐ 首连失败之后再调用，也抛**可读的离线错误**（不是裸 404）', async () => {
+  // ⚠ 这条钉的是一处**曾被移植丢掉的修复**（2026-10-01 补）：`callTool` 原先把
+  //   `await this.ensureReady()` 放在 `try` **之外** ⇒ 首连失败（无 session、status=offline）
+  //   之后再调用，`ensureReconnecting()` 直接抛 ⇒ **裸错误冒出去**，`offlineHint` 那支
+  //   永远跑不到。两个消费者（GP 的 DESIGN 明文、EL 的判据）都要求这里给可读错误。
+  // ⚠ 能红证据（确定性，R7）：把 `ensureReady()` 挪回 `try` 之外 ⇒ 本用例**必红**
+  //   （消息退化成 `Session not found`，两条断言都失败）。**已实测**（见提交说明）。
+  const dead = new FakeSession('dead', { connectFails: true })
+  const bridge = new MechaMcpBridge({
+    sessionFactory: sessionFactory([dead]),
+    sleep: noSleep,
+    offlineHint: '请运行 launcher.py 重新启动权威。',
+    reconnect: { initialDelayMs: 0, maxDelayMs: 0, maxAttempts: 1 },
+  })
+  await bridge.start()                            // ⭐ 不抛
+  assert.equal(bridge.getStatus(), 'offline')     // 自证前置条件：真的没连上
+  await assert.rejects(
+    () => bridge.callTool('read_digest', {}),
+    (err: Error) => {
+      assert.match(err.message, /服务离线/)          // 不是静默 404
+      assert.ok(err.message.includes('请运行 launcher.py 重新启动权威。'),
+        `显式 offlineHint 没进消息：${err.message}`)
+      assert.ok(err.message.includes('read_digest'),
+        `离线消息里没有调用名：${err.message}`)
+      return true
+    },
+  )
+})
+
+test('⭐ 非连接类错误不被冒充成"服务离线"（别把 bug 伪装成域失败）', async () => {
+  // `ensureReady()` 移入 `try` 之后，它抛出的错也会进那个 catch ⇒ 必须确认
+  // **只有连接/会话类失败才被转成离线错误**：重连里冒出的编程错（如 TypeError）
+  // 若被写成"服务离线…"，就是在**把 bug 伪装成域失败**（本仓明确不许：会让人去查网络）。
+  // ⚠ 实测结论：此时错误**原样**冒到调用方（不掺 `服务离线`/`offlineHint`）。
+  // 第 1 次：连得上，但**调用就抛会话失效**（这才触发自愈 → 去重连）
+  const broken = new FakeSession('broken', { behavior: async () => { throw sessionNotFound() } })
+  let n = 0
+  const bridge = new MechaMcpBridge({
+    sessionFactory: async () => {
+      n++
+      if (n === 1) return broken as unknown as McpSession
+      // 第 2 次起：重连路径里冒**非连接类**错误
+      const bad = new FakeSession('bad', { behavior: async () => ({ ok: true }) })
+      bad.listTools = async () => { throw new TypeError('undefined is not a function') }
+      return bad as unknown as McpSession
+    },
+    sleep: noSleep,
+    offlineHint: '不该出现的项目指引',
+    reconnect: { initialDelayMs: 0, maxDelayMs: 0, maxAttempts: 1 },
+  })
+  await bridge.start()
+  await assert.rejects(
+    () => bridge.callTool('read_digest', {}),
+    (err: Error) => {
+      assert.match(err.message, /undefined is not a function/)   // 原样透出
+      assert.ok(!err.message.includes('服务离线'),
+        `编程错被伪装成域失败：${err.message}`)
+      assert.ok(!err.message.includes('不该出现的项目指引'),
+        `编程错被塞进了 offlineHint：${err.message}`)
+      return true
+    },
+  )
 })
 
 test('重连耗尽 → 抛可读的离线错误（默认 offlineHint，且消息含调用名）', async () => {
