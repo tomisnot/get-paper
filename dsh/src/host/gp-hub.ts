@@ -8,8 +8,8 @@
  *
  * ⚠ 本文件**不是**资产件，别把它的内容想成"该跟上游同步"的东西；它随 GP 的部署形态变。
  */
-import type { HubUrlConfig } from '@mecha/dsh-panel/config.ts'
-import { resolveHubUrl } from '@mecha/dsh-panel/config.ts'
+import type { HubUrlConfig } from '@mecha/dsh-panel/host/config.ts'
+import { resolveHubUrl } from '@mecha/dsh-panel/host/config.ts'
 import { GP_BRIDGE } from '../gp-params.ts'
 
 /** GP 的 dsh 插件配置里与端点有关的那两个（用户在 cordis patch 的 entry `config:` 里给）。 */

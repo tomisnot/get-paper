@@ -4,19 +4,19 @@
  * ⚠ **2026-10-01：通用机制已全部上提**——本文件只剩**参数与 GP 自己的知识**：
  * 建桥 / 会话工厂 / logger 转发 / `onTools→syncTools` 两阶段 swap / `onStatus` 三态日志 /
  * 监控地址路由的注册与注销 / 收尾顺序 / 端点每次现解的包装 / **SDK 懒加载**，
- * 现在都在资产包的 `mountHostPlugin`（`@mecha/dsh-panel/mount-host-plugin.ts`）里。
+ * 现在都在资产包的 `mountHostPlugin`（`@mecha/dsh-panel/host/mount-host-plugin.ts`）里。
  * 面板与桥本身同样来自该包（`file:` junction，单一副本在 mecha 仓）。
  *
  * 留给 GP 的只有三样：**参数值**（`gp-params.ts`）、**端点怎么算**（`gpResolveHubUrl`，
  * 显式 URL > 端口文件 > 项目默认是项目知识）、以及 `paperpilot mcp` 那种**没有 web 服务
- * 也要照常工作**的激活语义（⇒ `hostPluginInject({needsWebServer: false})`）。
+ * 也要照常工作**的激活语义（骨架的 `hostPluginInject()` 默认就是这个语义）。
  *
  * 安全红线：**只 connect、绝不 spawn 服务**（人启动 launcher = 权威）。换 harness 只丢
  * 本插件，PaperPilot 的独立 MCP server 照用（跨 harness）。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { buildRequestInit } from '@mecha/dsh-panel/config.ts'
-import { hostPluginInject, mountHostPlugin } from '@mecha/dsh-panel/mount-host-plugin.ts'
+import { buildRequestInit } from '@mecha/dsh-panel/host/config.ts'
+import { hostPluginInject, mountHostPlugin } from '@mecha/dsh-panel/host/mount-host-plugin.ts'
 import { gpResolveHubUrl } from './host/gp-hub.ts'
 import { GP_BRIDGE, GP_PANEL, GP_TOOLS } from './gp-params.ts'
 
@@ -26,12 +26,13 @@ export const name = 'paperpilot'
 /**
  * 顶层 `inject`（cordis 要求它在模块顶层）。
  *
- * ⚠ **`needsWebServer: false` 是刻意的**：GP 有 **headless** 用法（`paperpilot mcp` 只起 MCP，
- * 不进 dsh；换 harness / 无 web 服务时桥仍要活）。骨架那句 `ctx.inject(['webServer'])`
- * 在没有 webServer 时**跳过路由**而不是不激活 ⇒ 顶层不声明它，才保住"没有 web 服务 ≠ AI 工具也没了"。
- * （骨架默认给 `['tools','webServer']`；那条会把面板缺失升级成插件不激活。）
+ * ⚠ **不传参**：`hostPluginInject()` 现在的默认就是 `['tools']`（2026-10-01 mecha 把默认值
+ * 修成正确语义、删掉了 `needsWebServer` 参数）。这正是 GP 要的：GP 有 **headless** 用法
+ * （`paperpilot mcp` 只起 MCP，不进 dsh；换 harness / 无 web 服务时桥仍要活）——顶层不声明
+ * `webServer`，骨架内部那句 `ctx.inject(['webServer'])` 在没有它时**跳过路由**而不是不激活
+ * ⇒ 保住"没有 web 服务 ≠ AI 工具也没了"。
  */
-export const inject = hostPluginInject({ needsWebServer: false })
+export const inject = hostPluginInject()
 
 /**
  * 插件配置（用户在 cordis.patch.yml 的 entry `config:` 里给；全部可选，缺省在 apply 里兜）。

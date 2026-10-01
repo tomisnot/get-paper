@@ -18,8 +18,8 @@
  * `npm run bundle` 并重启 dsh 才生效。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { configurePanel, panelConfig } from '@mecha/dsh-panel/panel-config.ts'
-import { MonitorTabBody } from '@mecha/dsh-panel/MonitorTabBody.tsx'
+import { configurePanel, panelConfig } from '@mecha/dsh-panel/panel/panel-config.ts'
+import { MonitorTabBody } from '@mecha/dsh-panel/panel/MonitorTabBody.tsx'
 import { GP_PANEL } from '../gp-params.ts'
 import { MonitorButton, type MonitorInjected } from './MonitorButton.tsx'
 import { ReviewSopButton } from './ReviewSopButton.tsx'

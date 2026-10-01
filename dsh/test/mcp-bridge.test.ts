@@ -12,7 +12,7 @@
  * 那几个值的**消费者证据**（删掉它，那几行就没人读了）。
  */
 import assert from 'node:assert/strict'
-import { mountHostPlugin, type HostContext } from '@mecha/dsh-panel/mount-host-plugin.ts'
+import { mountHostPlugin, type HostContext } from '@mecha/dsh-panel/host/mount-host-plugin.ts'
 import { GP_BRIDGE, GP_PANEL, GP_TOOLS } from '../src/gp-params.ts'
 import { test } from './harness.ts'
 

@@ -22,14 +22,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { makeMonitorUrlHandler } from '@mecha/dsh-panel/monitor-url.ts'
-// ⚠ `BASIC_ROUTES` / `DEFAULT_ROUTE_PATH` 在资产的**浏览器安全** `routes.ts` 里
-//   （不在 node-only 的 `monitor-url.ts` ⇒ client 半取值导入不会把 `node:fs` 拖进浏览器 bundle）。
+import { makeMonitorUrlHandler } from '@mecha/dsh-panel/host/monitor-url.ts'
+// ⚠ `BASIC_ROUTES` / `DEFAULT_ROUTE_PATH` 在资产的**浏览器安全** `panel/routes.ts` 里
+//   （不在 node-only 的 `host/monitor-url.ts` ⇒ client 半取值导入不会把 `node:fs` 拖进浏览器 bundle）。
 //   ⚠ 2026-10-01：`BASIC_ROUTES.length === 4`（四基础路由）已由**资产共享单测**覆盖
 //   （`monitor-url.test.ts` 的"默认路由是中性的"一例逐字断言四条）⇒ 本项目不再重抄一遍。
-import { DEFAULT_ROUTE_PATH } from '@mecha/dsh-panel/routes.ts'
-import { configurePanel, panelConfig } from '@mecha/dsh-panel/panel-config.ts'
-import { fetchMonitorBase, isOriginLike } from '@mecha/dsh-panel/monitor-client.ts'
+import { DEFAULT_ROUTE_PATH } from '@mecha/dsh-panel/panel/routes.ts'
+import { configurePanel, panelConfig } from '@mecha/dsh-panel/panel/panel-config.ts'
+import { fetchMonitorBase, isOriginLike } from '@mecha/dsh-panel/panel/monitor-client.ts'
 import { GP_PANEL } from '../src/gp-params.ts'
 
 // ⚠ **注入一次**（依赖化后资产不存项目值）：与 host 半 / client 半各自在 apply 里做的是同一件事
@@ -193,8 +193,8 @@ test('⭐ 本项目 client 入口的 import 闭包里没有 node:（浏览器安
   const src = join(here, '..', 'src')
   // ⚠ 2026-10-01（依赖化改造）：面板改从**包** `@mecha/dsh-panel` 取（junction）⇒ 闭包走到
   //   **包边界就不再往下走**（本判据不解析 node_modules）。分工因此变成：
-  //   · 包**内部**那条"零 `node:`"由**资产自己的**闭包守卫守（`monitor-client.test.ts`，
-  //     随包发货、在本仓 `npm test` 里真跑）；
+  //   · 包**内部**那条"零 `node:`"由**资产自己的**闭包守卫守（`panel/monitor-client.test.ts`，
+  //     随包发货，由框架门禁 `mecha/checks/dsh_panel_selfcheck.py` 跑）；
   //   · **本判据守本仓这一侧**：GP 自己的文件不许带 `node:`，且裸包只许宿主注入的 `react`
   //     与这个资产包（别的裸包一律拒）。
   const ALLOWED_BARE = new Set(['react', 'react/jsx-runtime'])
