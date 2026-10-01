@@ -11,24 +11,30 @@
 
 dsh 的 MCP 桥只在 `transport.onclose` 时重连；streamable-http 的 POST 失败（服务重启后旧
 `Mcp-Session-Id` → 404）**只抛错、不触发 onclose**，客户端永久卡死，只能重启 dsh Host。
-本插件用**共享资产的自愈桥**接管（`src/panel/mcp-bridge.ts`，逐字复制自 `mecha/dsh-panel/`；
-2026-10-01 起不再是本仓自写）：任何一次调用遇 session 失效/连不上 → 拆旧连接 → 重新
-`initialize`（拿**新** session）→ 重试；并有后台退避重连、健康信号、服务未起时不阻塞加载。
+本插件用**资产包的自愈桥**接管（`@mecha/dsh-panel/mcp-bridge.ts`，`file:` junction 依赖；
+2026-10-01 起不再是本仓自写、也不再是副本）：任何一次调用遇 session 失效/连不上 → 拆旧连接 →
+重新 `initialize`（拿**新** session）→ 重试；并有后台退避重连、健康信号、服务未起时不阻塞加载。
 
 ## 架构（分层，核心可独立单测）
 
 ```
 src/index.ts               HOST 入口：apply(ctx,config) → 建桥 + 注册工具 + 状态信号 + 面板地址路由
-src/gp-params.ts           **GP 的参数家**（logLabel/offlineHint/clientInfo/defaultUrl/mcpPortFile/serverName；浏览器安全）
-src/host/gp-hub.ts         node 侧参数接线：把上面的值填进资产件（本目录唯一保留的 host 文件）
-src/panel/mcp-bridge.ts    自愈重连桥（**共享资产**逐字副本；零 SDK/零 dsh 依赖，纯逻辑，可注入 fake 单测）
-src/panel/mcp-session-http.ts  唯一 import @modelcontextprotocol/sdk：每次新建会话（=重连拿新 session）
-src/panel/register-tools.ts    MCP 工具 → ctx.tools.register（两阶段 swap）
-src/panel/config.ts        端点解析（`hubUrl` > 端口文件 > 项目默认；**缺省不猜端口**）
-src/panel/*                面板共享资产（**逐字复制**自 mecha 参考实现，只有 panel-config.ts 是本项目的值）
+src/gp-params.ts           **GP 的参数家**（桥参数 + 面板参数 GP_PANEL；浏览器安全）
+src/host/gp-hub.ts         node 侧参数接线：把上面的值填进资产包（本目录唯一保留的 host 文件）
 src/client/*               CLIENT 半：◈监控 按钮 + 右栏页签注册 + ☀评审今日按钮（📄简报 iframe 链已退役）
 types/dsh-shims.d.ts       本地最小类型 shim（@deepseek-ai/* 是宿主提供的 peer，本地装不到）
 ```
+
+> ⭐ **面板/桥全部来自依赖包 `@mecha/dsh-panel`**（`npm install file:<mecha 仓>/mecha/dsh-panel`
+> ⇒ `node_modules/@mecha/dsh-panel` 是 **Junction**，真·单一副本）。
+> **本仓不再持有任何资产副本** ⇒ "副本有没有漂"这个问题**结构上不存在**（改资产 = 改 mecha 仓），
+> 故那条**逐字指纹判据已删**（`tests/test_dsh_panel.py`）。
+> ⚠ 运行期两条实测坑（都在 npm scripts / tsconfig 里处理了）：
+> ① Node 解析 junction 走真实路径 ⇒ 包声明的 optional peer `@modelcontextprotocol/sdk`
+> 在消费者侧解析不到 ⇒ 加 `--preserve-symlinks`（TS 侧对应 `preserveSymlinks: true`）；
+> ② Node 原生剥类型**拒绝 `node_modules` 下的 `.ts`** ⇒ 跑 TS 一律经 `--import tsx`。
+> ⚠ 打包：`tsdown` 默认**外置 dependencies** ⇒ 必须 `deps.alwaysBundle` 把资产**打进** bundle
+> （否则产物里留 `.ts` import，走构建产物那条交付路径运行期必炸）。
 
 > ## ⭐「◈ 监控」= **共享资产的原生页签**（2026-09-26 抄装，用户裁决"几乎完全复用 EL，布局也是"）
 >
@@ -154,17 +160,19 @@ dsh 升级后先跑 `paperpilot dsh-config` 确认 `webserver` 表达式行未�
 
 ```sh
 cd dsh
-npm install --legacy-peer-deps      # @deepseek-ai/* 是 peer（宿主提供），故 legacy-peer-deps
-npm run typecheck                   # tsc --noEmit（host + client + panel 副本 + shim）
-npm test                            # ① 进程内迷你 runner（自愈桥 + config，14 项）
-                                    # ② npm run test:panel ← node --test（面板判据，30 项）
-npm run test:panel                  # 只跑面板判据（src/panel/*.test.ts + test/panel.test.ts）
+npm install                         # 含 @mecha/dsh-panel（file: junction）
+npm run typecheck                   # tsc --noEmit（0 错；preserveSymlinks 已开）
+npm test                            # ① 进程内迷你 runner（本项目侧）② npm run test:panel
+npm run test:panel                  # 面板判据（只剩 test/panel.test.ts；资产自带单测随包走）
+npm run bundle                      # 产物：lib/index.mjs + lib/client.js（资产已内联）
 ```
 
-> 两套 runner 并存是有意的：自愈桥/config 的测试用 `test/harness.ts` 的零依赖进程内 runner
-> （其按文件 spawn 在受限环境会 EPERM）；而**面板判据是共享资产**，随参考实现一起复制、
-> 必须保持 `node:test` 原样（`node --test` 在本机实测可用，且那几份测试**零 npm 依赖**——
-> 只用 `node:test`/`node:assert`/`node:fs` ⇒ 不需要 `node_modules`）。
+> ⚠ **跑 TS 一律经 `--import tsx`**：Node 原生剥类型**拒绝 `node_modules` 下的 `.ts`**
+> （资产包经 junction 就在这里）——`--preserve-symlinks` 又是 peer 解析的必要条件。
+> 两套 runner 并存是有意的：桥/config 的测试用 `test/harness.ts` 的零依赖进程内 runner
+> （其按文件 spawn 在受限环境会 EPERM）；面板判据用 `node:test`。
+> ⚠ **资产自带的共享单测不在本仓跑**（随包走了；执行面在框架的
+> `mecha/checks/dsh_panel_selfcheck.py`，已挂在 `checks/run_all.py`，硬依赖 `node`）。
 
 ## 已知约束（从 re0-mecha-dsh 的踩坑记录移植）
 

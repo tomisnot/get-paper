@@ -462,8 +462,8 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 
 | 从 Energy Level 拿来 | 落地位置 | 说明 |
 | --- | --- | --- |
-| 自愈 MCP 桥（零 SDK 依赖的纯逻辑 + 单测） | `dsh/src/panel/mcp-bridge.ts` | **共享资产** `mecha/dsh-panel/` 的逐字副本（2026-10-01 起；本仓原自写版已删）。本仓曾自行修掉"`ensureReady()` 必须移入 try ⇒ 重连耗尽也抛可读离线错误"，该修复**已回流资产**（`mecha@22e41cc`），副本随之带上 |
-| 工具两阶段 swap 注册 | `dsh/src/panel/register-tools.ts` | 同上（资产件）；GP 的项目值经 `src/gp-params.ts`（浏览器安全）+ `src/host/gp-hub.ts`（node 侧）注入 |
+| 自愈 MCP 桥（零 SDK 依赖的纯逻辑 + 单测） | `@mecha/dsh-panel/mcp-bridge.ts`（依赖包，junction） | **2026-10-01 依赖化**：不再是副本，单一副本在框架仓 `mecha/dsh-panel/`。本仓曾自行修掉"`ensureReady()` 必须移入 try ⇒ 重连耗尽也抛可读离线错误"，该修复**已回流资产**（`mecha@22e41cc`） |
+| 工具两阶段 swap 注册 | `@mecha/dsh-panel/register-tools.ts` | 同上（资产件）；GP 的项目值经 `src/gp-params.ts`（浏览器安全）+ `src/host/gp-hub.ts`（node 侧）注入 |
 | 可教学错误（kind/hint/suggest） | `infra/ai/errors.py` | 从 `mecha/errors.py` 的模式移植，服务 AI 与人两个消费者 |
 | AI 上下文纪律 | prompt 设计 + `_gate` 回程体积闸 | 摘要默认/明细显式要；大回程截断必带「截了多少+去哪看」；prompt 含 json 字样+样例（DeepSeek JSON Output 前提） |
 | 端口文件发现（T4：harness 绝不拉起权威） | `mcp_server.py` + `paperpilot ai` | `.mcp-port` 由 launcher 写，DSH 插件据此 attach |

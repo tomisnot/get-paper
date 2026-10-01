@@ -221,24 +221,27 @@ def test_web_port_published_only_when_listening(tmp_path):
 
 
 def test_web_port_file_name_matches_dsh_panel_config():
-    """**跨语言单一来源**：Python 写的端口文件名 == dsh 插件参数块的 `PORT_FILE`。
+    """**跨语言单一来源**：Python 写的端口文件名 == dsh 插件**注入给面板的** `portFile`。
 
     两边各写一份的后果就是本轮要修的那个病：**地址漂移 ⇒ 面板空白且零报错**。
     这里**按内容读**那个 `.ts`（**不经 git**——本工程有"gitignore 的文件逃出验收"的教训）。
+
+    ⚠ 2026-10-01（依赖化）：面板改从包 `@mecha/dsh-panel` 取，项目值收进 `src/gp-params.ts`
+    （`GP_PANEL`，经 `configurePanel` 注入）⇒ 本守卫跟着改读那份**唯一的项目参数家**。
     """
-    ts_path = cli.DSH_DIR / "src" / "panel" / "panel-config.ts"
-    assert ts_path.is_file(), f"找不到 dsh 插件参数块：{ts_path}"
+    ts_path = cli.DSH_DIR / "src" / "gp-params.ts"
+    assert ts_path.is_file(), f"找不到 dsh 插件参数家：{ts_path}"
     ts = ts_path.read_text(encoding="utf-8")
 
-    port_file = re.search(r"PORT_FILE:\s*'([^']*)'", ts)
-    assert port_file, "panel-config.ts 里找不到 PORT_FILE 的字符串值（形状变了 ⇒ 本守卫要跟着改）"
+    port_file = re.search(r"portFile:\s*'([^']*)'", ts)
+    assert port_file, "gp-params.ts 里找不到 portFile 的字符串值（形状变了 ⇒ 本守卫要跟着改）"
     assert port_file.group(1) == cli.WEB_PORT_FILE, (
         f"端口文件名漂移：dsh 侧 {port_file.group(1)!r} != Python 侧 {cli.WEB_PORT_FILE!r}")
 
-    route = re.search(r"ROUTE_PATH:\s*'([^']*)'", ts)
-    assert route, "panel-config.ts 里找不到 ROUTE_PATH 的字符串值"
+    route = re.search(r"routePath:\s*'([^']*)'", ts)
+    assert route, "gp-params.ts 里找不到 routePath 的字符串值"
     assert route.group(1).startswith("/") and len(route.group(1)) > 1, (
-        f"ROUTE_PATH 必须是非空绝对路径：{route.group(1)!r}")
+        f"routePath 必须是非空绝对路径：{route.group(1)!r}")
 
 
 # ---------------------------------------------------------------- 本批两件 CLI 欠账
