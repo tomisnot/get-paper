@@ -18,5 +18,12 @@
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "types/**/*.d.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "types/**/*.d.ts", "test/**/*.ts"],
+  // ⚠ 唯一一处排除：**资产副本自己的单测**（逐字复制，本仓不许改）。
+  //    实测（2026-10-01）：它里面有一个**没人调用的 helper** `startAndSettle`
+  //    ⇒ 在本仓更严的 `noUnusedLocals` 下报 `TS6133`（资产自测只跑 `--strict`，
+  //    不含这一档 ⇒ 资产侧看不见）。已回报 mecha 删除该 helper；**它删掉后请撤掉本行**
+  //    （本仓不为资产放松任何严格度旗标，只把"上游待修的那一个文件"移出本仓类型面）。
+  //    运行时不受影响：该文件仍由 `npm test` 的 `node --test` 真跑（11 例全绿）。
+  "exclude": ["src/panel/mcp-bridge.test.ts"]
 }
