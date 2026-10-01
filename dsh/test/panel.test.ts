@@ -1,7 +1,7 @@
 /**
  * PaperPilot **面板判据**（项目自己那份）。
  *
- * 跑：`npm run test:panel`（`node --preserve-symlinks --import tsx --test test/panel.test.ts`）
+ * 跑：`npm run test:panel`（= `node --test test/panel.test.ts`，**裸跑**：不加任何旗标/loader）
  *
  * 面板来自**依赖包** `@mecha/dsh-panel`（`file:` junction，唯一副本在 mecha 仓）——
  * **本仓不再持有副本**，故"逐字一致"不再需要判据（结构保证，见 `dsh/README.md`）；

@@ -30,9 +30,14 @@ types/dsh-shims.d.ts       本地最小类型 shim（@deepseek-ai/* 是宿主提
 > **本仓不再持有任何资产副本** ⇒ "副本有没有漂"这个问题**结构上不存在**（改资产 = 改 mecha 仓），
 > 故那条**逐字指纹判据已删**（`tests/test_dsh_panel.py`）。
 > ⚠ 运行期两条实测坑（都在 npm scripts / tsconfig 里处理了）：
-> ① Node 解析 junction 走真实路径 ⇒ 包声明的 optional peer `@modelcontextprotocol/sdk`
-> 在消费者侧解析不到 ⇒ 加 `--preserve-symlinks`（TS 侧对应 `preserveSymlinks: true`）；
-> ② Node 原生剥类型**拒绝 `node_modules` 下的 `.ts`** ⇒ 跑 TS 一律经 `--import tsx`。
+> ① ⚠ **不要给 Node 加 `--preserve-symlinks`**（2026-10-01 实测纠错）：它会让模块标识**停在
+> `node_modules/…`**，而 Node 24 的原生剥类型**拒绝处理 `node_modules` 下的 `.ts`** ⇒ 资产
+> （全是 `.ts`）根本 import 不进来（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`）。
+> **不加它**时 Node 按 junction 的**真实路径**解析（框架仓，不在 `node_modules` 下）⇒ 剥类型正常、
+> 依赖也找得到 ⇒ **测试裸跑即可**（`node test/run.ts` / `node --test test/panel.test.ts`）。
+> ⚠ 这与 tsconfig 的 `preserveSymlinks: true` **不是一回事**：那一项管**类型检查期**（TS 不跟随
+> junction ⇒ 不加就找不到本仓的依赖），**必须留着**；Node 那面**必须不加**。
+> （曾经的 `--import tsx` 只是为绕开上面那条自伤 —— 旗标一去，tsx 也就不需要了，已从 devDeps 删。）
 > ⚠ 打包：`tsdown` 默认**外置 dependencies** ⇒ 必须 `deps.alwaysBundle` 把资产**打进** bundle
 > （否则产物里留 `.ts` import，走构建产物那条交付路径运行期必炸）。
 
@@ -167,8 +172,8 @@ npm run test:panel                  # 面板判据（只剩 test/panel.test.ts�
 npm run bundle                      # 产物：lib/index.mjs + lib/client.js（资产已内联）
 ```
 
-> ⚠ **跑 TS 一律经 `--import tsx`**：Node 原生剥类型**拒绝 `node_modules` 下的 `.ts`**
-> （资产包经 junction 就在这里）——`--preserve-symlinks` 又是 peer 解析的必要条件。
+> ⚠ **跑 TS 一律裸跑**（无旗标、无 loader）：给 Node 加 `--preserve-symlinks` 会把模块标识停进
+> `node_modules/…`，而原生剥类型**拒绝那底下的 `.ts`**；不加时按 junction 的真实路径解析 ⇒ 正常。
 > 两套 runner 并存是有意的：桥/config 的测试用 `test/harness.ts` 的零依赖进程内 runner
 > （其按文件 spawn 在受限环境会 EPERM）；面板判据用 `node:test`。
 > ⚠ **资产自带的共享单测不在本仓跑**（随包走了；执行面在框架的
