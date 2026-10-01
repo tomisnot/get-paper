@@ -23,6 +23,15 @@
           font-size: 10.5px; font-family: ui-monospace, Consolas, monospace; }
   .phits { flex: 0 0 42px; text-align: right; white-space: nowrap;
            color: var(--muted); font-size: 11px; }
+  /* ⚠ 徽章区**必须定宽**：徽章宽度随内容变，而轨道是 `flex:1`（吃剩余宽度）且位置在徽章**之前**
+     ⇒ 徽章一变宽，轨道就变短 ⇒ **每条长度不一、它右边的数值列还整体漂移**
+     （实测反馈："条都不一边长，其他列也对不齐"）。再拆成三个**定宽槽位**：
+     有徽章没徽章都占位 ⇒ 徽章也逐行对齐。 */
+  .ptags { flex: 0 0 186px; display: flex; gap: 6px; }
+  .pslot { display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .pslot.ph { flex: 0 0 54px; }
+  .pslot.src { flex: 0 0 70px; }
+  .pslot.unseen { flex: 0 0 50px; }
   .tag { font-size: 10px; padding: 1px 6px; border-radius: 8px; white-space: nowrap; }
   .tag.topic { background: var(--must-bg); color: var(--must); }
   .tag.signal { background: #dcfce7; color: #166534; }
@@ -81,10 +90,11 @@
     <div class="pval">{{ '%+.3f'|format(r.decayed) }}</div>
     <div class="praw">原始 {{ '%+.2f'|format(r.w) }}</div>
     <div class="phits">{{ r.hits }} 次</div>
-    {% if r.phits %}<span class="tag ph" title="库内标题/摘要含此短语的论文数">{{ r.phits }} 篇</span>{% endif %}
-    {% if r.from_topic %}<span class="tag topic" title="主题包「{{ r.topic_name }}」的一次**投放**：直接反馈、不来自论文；会随池子一起稀释，删主题＝撤投">投放</span>
-    {% else %}<span class="tag signal">信号学习</span>{% endif %}
-    {% if not r.live %}<span class="tag unseen" title="{{ r.why_unseen }}">暂未出现</span>{% endif %}
+    <div class="ptags">
+      <div class="pslot ph">{% if r.phits %}<span class="tag ph" title="库内标题/摘要含此短语的论文数">{{ r.phits }} 篇</span>{% endif %}</div>
+      <div class="pslot src">{% if r.from_topic %}<span class="tag topic" title="主题包「{{ r.topic_name }}」的一次**投放**：直接反馈、不来自论文；会随池子一起稀释，删主题＝撤投">投放</span>{% else %}<span class="tag signal">信号学习</span>{% endif %}</div>
+      <div class="pslot unseen">{% if not r.live %}<span class="tag unseen" title="{{ r.why_unseen }}">暂未出现</span>{% endif %}</div>
+    </div>
   </div>
   {% endfor %}
   {% if sec.omitted %}
