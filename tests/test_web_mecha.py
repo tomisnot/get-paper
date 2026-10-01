@@ -183,6 +183,11 @@ def test_locked_stops_both_sides(tmp_path, control_token):
     """**对偶**：锁定（急停）之后**两侧都被拒**，且域零改动。
 
     人的 `<button>锁定</button>` 必须仍然好使——放开写权不等于把急停拆了。
+
+    ⚠ 本条**兼承担**原 `test_mecha_adapter.py::test_locked_denies_write_and_no_domain_change`
+    （2026-10-01 删重复）：同一条 `_call(stack["tools"], …)` 路径、同一 `authority_locked` 归因，
+    而本条多出人侧与"域零事件" ⇒ 超集。其历史结论：LOCKED 下域写"根本没发生"= 框架在 handler 前
+    就 `gate.check` 的实测证据（n=3 发现 7）。
     """
     from .test_mecha_adapter import _call
 

@@ -297,23 +297,11 @@ def test_mcp_projection_endtoend(tmp_path):
 # ================================================================ Phase 2 · 写治理
 # 验收（交接文档 §7 Phase 2）：构造「AI 绕过门直写/直跑」被拒且可归因；
 # 开闸后写经命令面审计落 mecha History，且 result_ref 与域实体互引。
-def test_locked_denies_write_and_no_domain_change(tmp_path):
-    """洞1：LOCKED 态 AI 直写被拒，且**域写根本没发生**（不是先写后拒）。
-
-    ⚠ **这条现在验的是框架的行为**（2026-09-26 起）：框架在调 handler **之前**就
-    `gate.check(channel)`（原先检查滞后于副作用，本项目只能手写前置闸自救——n=3 发现 7）。
-    项目侧那份手写闸**已删**，本判据**仍绿** ⇒ 正是"拒绝发生在域写之前"由框架保证的实测证据。
-    """
-    container, stack = _stack(tmp_path, open_ai=False)
-    tools = stack["tools"]
-    out = _call(tools, "add_note", arxiv_id="2608.01101", content="绕门写")
-    assert out["ok"] is False
-    assert out["error"]["kind"] == "authority_locked"    # 可归因
-    # 域库无这条笔记（框架的前置检查在 handler 之前 ⇒ 域写根本没进）
-    detail = _call(tools, "read_paper", arxiv_id="2608.01101")
-    assert detail["notes"] == []
-    # mecha History 也没有审计事件（未产生副作用）
-    assert not [e for e in stack["history"].events() if e.op == "command.add_note"]
+#
+# ⚠ 2026-10-01 删 `test_locked_denies_write_and_no_domain_change`：与
+# `tests/test_web_mecha.py::test_locked_stops_both_sides` **同路径同断言**（`_call(stack["tools"],"add_note")`
+# + `authority_locked`），那条还多断言人侧被拒/域零事件/模式不变 ⇒ 超集。历史结论（LOCKED 下域写"根本没发生"
+# = 框架前置 `gate.check` 的实测证据，n=3 发现 7）已抄进那条的 docstring。
 
 
 def test_write_commands_declare_what_governance_needs(tmp_path):

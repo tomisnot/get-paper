@@ -107,22 +107,9 @@ def test_bridge_flags_bare_ok_false_as_bad_envelope():
 
 
 # ---------------------------------------------------------------- E1.3 信封纪律守卫
-def test_no_bare_ok_false_across_failure_paths(tmp_path):
-    """守卫：各失败路径的 `ok:false` **必带 `error{kind}`**（N2 一类不复发）。"""
-    _container, reg = _reg(tmp_path)
-    failures = [
-        reg.invoke("get_paper", arxiv_id="0000.00000"),
-        reg.invoke("review_status", date="2000-01-01"),
-        reg.invoke("undo", seq=9_999_999),
-        reg.invoke("set_topic_enabled", name="不存在", enabled=True),
-    ]
-    checked = 0
-    for env in failures:
-        assert env.get("ok") is False, f"预期失败但返 ok=true：{env}"
-        assert isinstance(env.get("error"), dict) and env["error"].get("kind"), \
-            f"裸 ok:false（违反信封纪律）：{env}"
-        checked += 1
-    assert checked == len(failures)          # R8：确实扫到了失败样本，非空表假绿
+# ⚠ 2026-10-01 删 `test_no_bare_ok_false_across_failure_paths`：与
+# `check/test_capability_map.py::test_envelope_discipline_all_failure_shapes` **同层同事实**
+# （都是 `registry_for(container).invoke` 的 no bare `ok:false`），而那条是更宽的超集（7 形态含 bad_params）。
 
 
 # ---------------------------------------------------------------- E1.4 (N5) read_authority
