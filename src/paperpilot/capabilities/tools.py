@@ -860,7 +860,7 @@ def build_registry(container) -> Registry:
                       quotas: str = "", seen_days: int = 7, offset: int = 0,
                       actor: str = ACTOR_DEFAULT) -> dict:
         from ..domain.feed import allocate, maybe_entropy_boost, resolve_quotas
-        from ..domain.profile import paper_features, score_paper
+        from ..domain.profile import dimension_scales, paper_features, score_paper
         from ..infra import arxiv_taxonomy as tax
         if not 1 <= int(limit) <= 200:
             return err("bad_params", f"limit={limit} 越界（1-200）",
@@ -870,6 +870,7 @@ def build_registry(container) -> Registry:
                        hint="换一屏用上次回执的 meta.next_offset（或直接改 days/mix/seen_days 重配口味）")
         view = repo.profile_view()
         weights = repo.profile_weights_map()
+        scales = dimension_scales(weights)      # 与日报线同一套口径（分母只取池子）
         if not weights:
             return err("empty_profile", "画像无任何权重（无信号且无主题可播）",
                        hint="先 fetch_papers 让库里有货并产生信号，或 record_signal 声明兴趣")
@@ -895,7 +896,7 @@ def build_registry(container) -> Registry:
                 continue
             feat = paper_features(list(p.categories or []), p.primary_category,
                                   p.title or "", p.abstract or "", list(p.authors or []))
-            sc, why = score_paper(feat, weights)
+            sc, why = score_paper(feat, weights, scales=scales)
             pr = feat["primary"]
             if pr in top_set:
                 lane = "primary"

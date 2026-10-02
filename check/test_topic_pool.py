@@ -18,7 +18,7 @@ from sqlalchemy import select
 
 from paperpilot.config import TopicCfg
 from paperpilot.domain.policy import fallback_pool_score
-from paperpilot.domain.profile import paper_features, pool_relevance, score_paper
+from paperpilot.domain.profile import label_for, paper_features, score_paper
 from paperpilot.infra.arxiv import parse_atom
 from paperpilot.infra.orm import ProfileWeight
 
@@ -112,7 +112,8 @@ def test_multiword_keyword_actually_scores(tmp_path):
     s_phrase, why_phrase = score_paper(feat, phrase_w)
     s_word, _ = score_paper(feat, word_w)
     assert s_phrase > 0, "多词短语在画像里仍然命不中（白占位没修）"
-    assert "短语命中" in " ".join(why_phrase)          # why 要说清是短语命中
+    assert any(w.startswith("短语") for w in why_phrase), why_phrase   # why 要说清是短语命中
+    assert "占词面兴趣" in " ".join(why_phrase), "why 要给出占比（可解释，不是黑箱）"
     assert s_phrase > s_word, "短语更具体（系数 0.8 > 0.5），该比单词给得多"
 
     # 反例：短语不在文本里 ⇒ 不加分（不能变成"随便命中"）
@@ -310,17 +311,49 @@ def test_skip_and_star_feed_the_profile(tmp_path):
         assert gain >= 0.1, f"star 没喂画像（最大正向增量 {gain:.4f}）"
 
 
-def test_pool_relevance_is_a_documented_monotone_mapping(tmp_path):
-    """兜底分映射是**明码**且单调：raw≤0→0、raw=1→0.5、raw=3→0.75（不是黑箱）。"""
-    assert pool_relevance(-5) == 0.0 and pool_relevance(0) == 0.0
-    assert pool_relevance(1) == 0.5 and pool_relevance(3) == 0.75
-    vals = [pool_relevance(x) for x in (0.2, 0.5, 1, 2, 5)]
-    assert vals == sorted(vals), "映射必须单调，否则排序会翻"
-    assert all(0.0 <= v <= 1.0 for v in vals), "RelevanceScore 有 0..1 约束"
+def test_scores_are_scale_invariant_and_dimension_balanced(tmp_path):
+    """**C 方案的两条硬性质**（用户："A 没道理，每次候选都不一致；C 有道理"）。
 
-    # 兜底打分器与推荐流用**同一个** score_paper ⇒ 两条线一个真相
+    1. **尺度无关**：池子整体放大 10 倍，同一篇论文的分数**一分不变**（分子分母同比）
+       ⇒ 活跃度不再改变阈值含义（这是旧尺度最痛的地方：中位 0.905、64% 被判 must_read）。
+    2. **维度可比**：分数是"三维占比的平均"，所以"词维度的键多"不再天然称霸
+       —— 同一个占比在分类/词/作者里给一样的分。
+    3. **不依赖候选集**：分母只取池子（`dimension_scales` 只看 weights）⇒ 同一篇论文
+       无论跟谁一起算，分都一样（这正是"分位归一"被否掉的原因）。
+    """
+    from paperpilot.domain.profile import dimension_scales
+
     c, _ = _reg(tmp_path)
     p = _paper(c)
+    feat = paper_features(["quant-ph"], "quant-ph",
+                          "Neutral atom arrays for quantum simulation",
+                          "We use neutral atom platforms for gauge theory.")
+
+    w1 = {("category", "quant-ph"): 0.5, ("term", "neutral atom"): 0.5}
+    w10 = {k: v * 10 for k, v in w1.items()}
+    a, _ = score_paper(feat, w1, scales=dimension_scales(w1))
+    b, _ = score_paper(feat, w10, scales=dimension_scales(w10))
+    assert abs(a - b) < 1e-12, f"尺度变了分就变（{a} vs {b}）⇒ 阈值含义会随活跃度漂"
+    assert 0.0 < a <= 1.0, "占比分该落在 0..1"
+
+    # **维度内"总量"不影响占比**：该维总质量 100 与 10，占满它都给同样的分
+    big, _ = score_paper(feat, {("category", "quant-ph"): 100.0})
+    small, _ = score_paper(feat, {("category", "quant-ph"): 10.0})
+    assert abs(big - small) < 1e-12, f"总量大小影响了占比（{big} vs {small}）"
+    # 不同维度之间的分差**只来自明码系数**（主分类 1.0 vs 短语 0.8），与"键多键少"无关。
+    # 容差 1e-3：分数是 4 位四舍五入的（为了回执字节稳定）⇒ 不能要求 1e-12。
+    phrase, _ = score_paper(feat, {("term", "neutral atom"): 100.0})
+    assert abs(big - phrase * (1.0 / 0.8)) < 1e-3, "维度差异不是来自系数，而是来自'人多'"
+
+    # 不依赖候选集：分母只由池子决定 ⇒ 换一批"同伴"不影响这一篇
+    others = [{"categories": ["cs.CL"], "primary": "cs.CL", "terms": ["traffic"],
+               "authors": [], "text": "traffic forecasting"} for _ in range(20)]
+    assert all(isinstance(o, dict) for o in others)      # 只是说明"同伴"不参与分母
+    assert score_paper(feat, w1, scales=dimension_scales(w1))[0] == a
+
+    # 兜底打分器与推荐流用**同一个** scorer ⇒ 两条线一个真相；label 切线是量出来的
     sc = fallback_pool_score(p, {("category", p.primary_category): 0.5})
     assert 0.0 <= sc.score <= 1.0 and sc.label in ("must_read", "worth", "skip")
     assert sc.reason, "拿不出 why 的条目不许进简报"
+    assert label_for(0.0) == "skip" and label_for(0.15) == "must_read"
+    assert label_for(0.06) == "worth" and label_for(0.059) == "skip"

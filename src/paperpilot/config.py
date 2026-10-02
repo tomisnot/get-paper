@@ -47,14 +47,23 @@ class TopicCfg(BaseModel):
 
 
 class ScoringCfg(BaseModel):
-    threshold: float = 0.6
-    quota_per_topic: int = 4
+    """简报选择参数。
+
+    ⚠ 2026-09-30：打分尺度换成"**三维占比平均**"（画像池方案 C）后，绝对值整体变小
+    （实测最高 0.25、中位 0.07）⇒ **任何绝对阈值都会要么全收要么全丢**。所以：
+
+    * `threshold` **已弃用**（默认 0）：选择改走**前 N 篇**（`max_papers` + `must_read_cap`
+      + `max_per_author`）。留着这个字段只为读得懂老配置。
+    * `review_floor` 同样归 0：评审包的"下限"由 `_MAX_REVIEW_CANDIDATES`（前 N）承担。
+    * `quota_per_topic`：主题池化后没有"每主题"了，内部借它当总配额。
+    """
+
+    threshold: float = 0.0          # @deprecated 选择已改走"前 N"
+    quota_per_topic: int = 4        # @deprecated 语义已改为"总配额"
     max_papers: int = 12
     max_per_author: int = 1
     must_read_cap: int = 3
-    # W4：评审 payload 的基线分下限（低于此不进候选包，降 token；库里仍在，
-    # requeue/调低本值可捞回）。只影响评审面信噪比，不影响入库与检索。
-    review_floor: float = 0.4
+    review_floor: float = 0.0       # @deprecated 由"前 N"承担
 
 
 class GraphCfg(BaseModel):

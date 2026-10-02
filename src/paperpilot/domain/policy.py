@@ -50,21 +50,24 @@ def matched_authors(paper, topic) -> list[str]:
 
 
 # ---------------------------------------------------------------- 兜底打分（Mock 与降级共用）
-def fallback_pool_score(paper, weights) -> RelevanceScore:
+def fallback_pool_score(paper, weights, *, scales=None) -> RelevanceScore:
     """**画像池兜底打分**（日报线的基线分 & AI 缺席时的降级）。
 
-    与推荐流用**同一个** `profile.score_paper` ⇒ 两条线一个真相。原始分经
-    `pool_relevance` 压到 0~1，`why` 原样带进 reason（**拿不出 why 的条目不许进简报**）。
+    与推荐流用**同一个** `profile.score_paper` ⇒ 两条线一个真相。分数是"三维占比平均"
+    （0~1、**尺度无关**：池子整体放大 10 倍分数不变），`why` 原样带进 reason
+    （**拿不出 why 的条目不许进简报**）。
+
+    `scales` 传 `profile.dimension_scales(weights)`：一次算好、整批复用——分母只取池子、
+    不取候选集 ⇒ 同一篇论文两次运行分一样（可复现、可审计）。
     """
-    from .profile import label_for, paper_features, pool_relevance, score_paper
+    from .profile import label_for, paper_features, score_paper
 
     feat = paper_features(list(getattr(paper, "categories", None) or []),
                           getattr(paper, "primary_category", "") or "",
                           getattr(paper, "title", "") or "",
                           getattr(paper, "abstract", "") or "",
                           list(getattr(paper, "authors", None) or []))
-    raw, why = score_paper(feat, weights or {})
-    rel = pool_relevance(raw)
+    rel, why = score_paper(feat, weights or {}, scales=scales)
     return RelevanceScore(
         score=rel, label=label_for(rel),
         reason=("；".join(why[:4]) if why else "画像池无命中：按探索位保留待 AI 判断"),

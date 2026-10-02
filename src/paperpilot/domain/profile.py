@@ -47,22 +47,19 @@ def paper_features(categories: list[str], primary: str, title: str,
     }
 
 
-def pool_relevance(raw: float) -> float:
-    """画像原始分 → **0~1 观感分**（``RelevanceScore`` 的 score 有 0..1 约束）。
-
-    ``raw/(1+raw)``：单调、零参数、raw=0→0、raw=1→0.5、raw=3→0.75。负分（被排除词拉低）
-    归零。**明码可调**——要更陡就把分母变小。
-    """
-    if raw <= 0:
-        return 0.0
-    return round(raw / (1.0 + raw), 4)
-
-
 def label_for(relevance: float) -> str:
-    """观感分 → 档位（与 `policy.fallback_keyword_score` 同一套切分，便于人理解）。"""
-    if relevance >= 0.78:
+    """观感分 → 档位。切分点是**照着真实库量出来的**，不是拍的。
+
+    2026-09-30 换"三维占比"尺度后实测（636 篇）：最高 0.246 · p90 0.139 · p75 0.101 ·
+    中位 0.072 · 9% 为 0。取 0.15 / 0.06 ⇒ must_read 7.2% · worth 46.4% · skip 46.4%
+    —— 必读稀少、两头有区分，这才是 label 该有的样子。
+
+    ⚠ 旧尺度（`raw/(1+raw)`）下同一批论文的中位是 **0.905、64% 被判 must_read**：饱和函数把
+    档位彻底架空（真正在保护简报的是 must_read_cap 与总量闸，不是分数）。换尺度就是为了修它。
+    """
+    if relevance >= 0.15:
         return "must_read"
-    return "worth" if relevance >= 0.5 else "skip"
+    return "worth" if relevance >= 0.06 else "skip"
 
 
 def brief_from_view(view: dict, weights: dict[tuple[str, str], float],
@@ -77,43 +74,80 @@ def brief_from_view(view: dict, weights: dict[tuple[str, str], float],
     return InterestBrief(description=desc, keywords=[*cats, *terms], weights=dict(weights))
 
 
-def score_paper(feat: dict, weights: dict[tuple[str, str], float]
-                ) -> tuple[float, list[str]]:
-    """线性加权命中打分 + 人话 why。weights 键=(kind,key)：category/term/author。
+def dimension_scales(weights: dict[tuple[str, str], float]) -> dict[str, float]:
+    """每一维的**兴趣总质量**（该维正权重之和）——C 方案的归一化分母。
 
-    系数（**具体性越高越重**，全是明码供调）：主分类 1.0、副分类 0.6、**短语 0.8**、
-    单词 0.5、作者 0.8。
+    为什么需要它（用户："词维度人多就称霸"）：词的键 117 个、分类只有 14 个，直接线性求和
+    ⇒ **"人多"的维度天然主导**，不是因为它更重要。改用**维度内占比**替掉绝对量，维度之间才可比。
 
-    ⚠ 短语为什么单独一条路（2026-09-30）：主题关键词天然是**短语**（"neutral atom"、
-    "berry phase"），而 ``title_terms`` 只抽单词 ⇒ 那些键**永远命不中**（实测 200 个画像键里
-    22 个是这样白占位，而同一批词在日报线却活得好好的）。现在含空格的键走**子串命中**，
-    与日报线的 ``matched_keywords`` **同一套语义** ⇒ 两条线共用一份词表，不再"同一个词两条命运"。
+    ⚠ 分母只取决于**你自己的池子**（不取决于本次候选集）⇒ 同一篇论文换一批候选算出来**分一样**
+    （这正是"分位归一"被用户否掉的原因：那个每跑一次都可能变，不可复现、不可审计）。
     """
-    score = 0.0
-    why: list[str] = []
+    out = {"category": 0.0, "term": 0.0, "author": 0.0}
+    for (kind, _key), w in (weights or {}).items():
+        if w > 0:
+            out[kind] = out.get(kind, 0.0) + float(w)
+    return out
+
+
+_KIND_CN = {"category": "分类", "term": "词面", "author": "作者"}
+
+
+def score_paper(feat: dict, weights: dict[tuple[str, str], float],
+                *, scales: dict[str, float] | None = None) -> tuple[float, list[str]]:
+    """**三维占比**打分（C 方案）+ 人话 why。权重键=(kind,key)：category/term/author。
+
+    每维占比 = (Σ 命中系数·w) ÷ 该维兴趣总质量；总分 = **三维占比的平均**，截到 0..1
+    （`RelevanceScore` 有 0~1 约束）。
+
+    系数（具体性越高越重，明码）：主分类 1.0、副分类 0.6、**短语 0.8**、单词 0.5、作者 0.8。
+
+    换来三条性质：
+    * **尺度无关**：池子整体放大 10 倍，分数不变（分子分母同比）⇒ 活跃度不再改变阈值含义；
+    * **维度可比**：不再因为"词的键多"就由词主导；
+    * **不依赖候选集**：分母只取你自己的池子 ⇒ 同一篇论文两次运行分一样（可复现、可审计）。
+
+    含空格的键走**子串命中**（与日报线 `matched_keywords` 同一套语义），
+    因此主题里的多词短语在两条线上都生效。
+    """
+    if scales is None:
+        scales = dimension_scales(weights)
+
+    parts: list[tuple[str, str, float]] = []      # (kind, 说明文案, 该键的命中量)
     for c in feat["categories"][:4]:
         w = weights.get(("category", c), 0.0)
         if not w:
             continue
         coef = 1.0 if c == feat["primary"] else 0.6
-        score += coef * w
-        why.append(f"分类 {c} 画像权重 {w:+.2f}")
+        parts.append(("category", f"分类 {c}", coef * w))
     for t in feat["terms"]:
         w = weights.get(("term", t), 0.0)
         if w:
-            score += 0.5 * w
-            why.append(f"词面命中 “{t}”（{w:+.2f}）")
+            parts.append(("term", f"词面 “{t}”", 0.5 * w))
     text = feat.get("text") or ""
     if text:
         for (kind, key), w in weights.items():
             if kind != "term" or not w or " " not in key:
                 continue
-            if key in text:                      # 与日报线 matched_keywords 同一套子串语义
-                score += 0.8 * w
-                why.append(f"短语命中 “{key}”（{w:+.2f}）")
+            if key in text:                       # 与日报线 matched_keywords 同一套子串语义
+                parts.append(("term", f"短语 “{key}”", 0.8 * w))
     for a in feat["authors"]:
         w = weights.get(("author", a), 0.0)
         if w:
-            score += 0.8 * w
-            why.append(f"关注作者 {a}（{w:+.2f}）")
-    return score, why
+            parts.append(("author", f"关注作者 {a}", 0.8 * w))
+
+    why: list[str] = []
+    for kind, label, v in parts:
+        den = scales.get(kind, 0.0)
+        why.append(f"{label}（占{_KIND_CN[kind]}兴趣 {(v / den if den > 0 else 0.0):+.0%}）")
+
+    total = 0.0
+    for kind in ("category", "term", "author"):
+        den = scales.get(kind, 0.0)
+        if den > 0:
+            num = sum(v for k, _l, v in parts if k == kind)
+            total += num / den
+    # **四舍五入到 4 位**：权重读数是按"此刻"算衰减的，两次调用差几微秒就会在末位抖
+    # ⇒ 回执 JSON 的字节数会跟着变（实测：同一个评审载荷两次调用差 2 字节，判据红）。
+    # 4 位远小于切分粒度（0.15/0.06），既稳又不损失判断力。
+    return round(max(0.0, min(1.0, total / 3.0)), 4), why

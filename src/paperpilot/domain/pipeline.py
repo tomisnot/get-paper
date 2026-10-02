@@ -43,7 +43,7 @@ from .policy import (
     matched_keywords,
     select_for_briefing,
 )
-from .profile import brief_from_view
+from .profile import brief_from_view, dimension_scales
 
 if TYPE_CHECKING:  # 领域层不运行时依赖 infra / config 实现
     from ..config import Settings
@@ -568,6 +568,7 @@ class DailyPipelineService:
         self.repo.sync_topic_pool(self.settings.topics, actor=actor, reason=reason)
 
         weights = self.repo.profile_weights_map()
+        scales = dimension_scales(weights)      # 一次算好、整批复用（分母只取池子）
         rows = self.repo.pipeline_candidates(lookback_days=self._eff_lookback_days())
         n_candidates = len(rows)
 
@@ -581,7 +582,9 @@ class DailyPipelineService:
                                   reason=reason or "全局规则未通过")
         kept_ids = {p.arxiv_id for p in kept}
 
-        scored = [(p, fallback_pool_score(p, weights)) for p in kept]
+        # ⚠ **选择改走"前 N"（B 方案）**：新尺度（三维占比平均）下绝对值很小（实测最高 0.25、
+        # 中位 0.07），任何"绝对阈值"都会要么全收要么全丢 ⇒ 排序取前 `_CANDIDATE_CAP` 才稳。
+        scored = [(p, fallback_pool_score(p, weights, scales=scales)) for p in kept]
         scored.sort(key=lambda ps: (-ps[1].score, ps[0].arxiv_id))   # 平分时按 id，确定性
         top = scored[: self._CANDIDATE_CAP]
         labels = self._label_topics([p for p, _s in top])
@@ -648,10 +651,22 @@ class DailyPipelineService:
             cur = best.get(paper.arxiv_id)
             if cur is None or score.score > cur[2].score:
                 best[paper.arxiv_id] = (paper, topic, score)
+        # **零命中不入选**（用户口径 B：选择走"前 N"）：新尺度下"画像完全认不出"就是 0 分，
+        # 让它们被"前 N"顺手灌进简报＝往简报里塞噪声。注意只在**这一步**过滤——零命中的论文
+        # 照样送进 AI 评审（AI 才是扩边界的那一环），探索另有 feed 的 explore 道。
+        # ⚠ 它们必须**归档**而不是留在 new：状态机要"走完一遍判定"，否则会永远停在候选池里
+        #   （实测漏过一次：`new` 残留 1 篇）。要捞回用 `requeue`。
+        zeros = [(p, t, s) for p, t, s in best.values() if s.score <= 0]
+        best = {k: v for k, v in best.items() if v[2].score > 0}
 
         scoring = self._eff_scoring()
         base_policy = SelectionPolicy(
-            threshold=scoring.threshold,
+            # ⚠ **阈值不再当门（B 方案）**：打分尺度换成"三维占比平均"后绝对值很小
+            # （实测最高 0.25、中位 0.07）⇒ 老配置里 0.5/0.6 这类**绝对**阈值会把一切挡在门外
+            # （实测：测试夹具的 threshold=0.5 让 selected 直接变 0）。选择改由
+            # **总量前 N**（`max_papers`）＋ `must_read_cap` ＋ `max_per_author` 决定；
+            # `scoring.threshold` 只保留在配置里读得懂老文件，**不再参与选择**。
+            threshold=0.0,
             # "每主题配额"已废除 ⇒ 借用它当**总配额**（与 max_papers 同值，双保险）
             quota_per_topic=scoring.max_papers,
             max_papers=scoring.max_papers,
@@ -674,7 +689,7 @@ class DailyPipelineService:
             selected = selected[: base_policy.max_papers]
         archived: list[tuple[Paper, Topic | None, RelevanceScore]] = [
             (p, t, s) for p, t, s in best.values() if p.arxiv_id not in selected_ids
-        ] + list(overflow)
+        ] + list(overflow) + zeros
 
         # 5) 精读：review 模式用 AI 已交总结；其余走 summarizer / 抽取式兜底
         items, sum_ms, sum_errors = self._summarize(selected, run_id, pre_summaries)
