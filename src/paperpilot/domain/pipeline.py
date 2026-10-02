@@ -40,26 +40,18 @@ from .policy import (
     SelectionPolicy,
     extractive_summary,
     fallback_pool_score,
-    matched_keywords,
     select_for_briefing,
 )
 from .profile import brief_from_view, dimension_scales
 
 if TYPE_CHECKING:  # 领域层不运行时依赖 infra / config 实现
     from ..config import Settings
-    from ..infra.orm import Paper, Topic
+    from ..infra.orm import Paper
     from .ports.notify import Notifier
     from .ports.render import BriefRenderer
     from .ports.repo import PaperRepository
 
 log = logging.getLogger("paperpilot.pipeline")
-
-#: 主题池化后 `topic` **只为显示**且可能缺省（论文不属于任何已声明主题包）⇒ 统一兜底名。
-_FALLBACK_TOPIC_NAME = "画像池"
-
-
-def _topic_name(topic) -> str:
-    return getattr(topic, "name", None) or _FALLBACK_TOPIC_NAME
 
 # 交给 AI 评审的候选上限（防 context 爆炸；回程体积纪律同 Energy Level I4）
 _MAX_REVIEW_CANDIDATES = 40
@@ -222,13 +214,13 @@ class DailyPipelineService:
         )
         interest = self._interest()          # 评审者需要知道"用户在追什么"——现在是**画像**
 
-        # 一篇论文可能命中多个主题：只保留基线分最高的那个主题（评审面按论文去重）
-        best: dict[str, tuple[Paper, Topic, RelevanceScore]] = {}
-        for paper, topic, score in ranked:
+        # 评审面按论文去重（同一篇只留一次；分数已是**画像池**算的，与主题无关）
+        best: dict[str, tuple[Paper, RelevanceScore]] = {}
+        for paper, score in ranked:
             cur = best.get(paper.arxiv_id)
-            if cur is None or score.score > cur[2].score:
-                best[paper.arxiv_id] = (paper, topic, score)
-        unique_ranked = sorted(best.values(), key=lambda x: -x[2].score)
+            if cur is None or score.score > cur[1].score:
+                best[paper.arxiv_id] = (paper, score)
+        unique_ranked = sorted(best.values(), key=lambda x: -x[1].score)
 
         # ⭐ W4 评审 floor：低于 review_floor 的基线不进候选包（降评审 input；库里仍在，
         # 调低 floor/requeue 可再议）。n_after_rules 仍报全量，floor 单独回执。
@@ -240,22 +232,23 @@ class DailyPipelineService:
         wanted = {x.strip() for x in arxiv_ids if x.strip()}
         skip_floor = brief or bool(wanted)
         above = (unique_ranked if skip_floor
-                 else [x for x in unique_ranked if x[2].score >= floor])
+                 else [x for x in unique_ranked if x[1].score >= floor])
         floor_applied = {"floor": floor, "applied": not skip_floor,
                          "kept": len(above), "total": len(unique_ranked)}
         # W5 两阶段：brief ⇒ 只给标题+短摘（粗筛）；full+arxiv_ids ⇒ 回执只装 shortlist
         # 的全文摘要（**review 文件仍存全量**，submit 按全量校验、finalize 行为不变）。
         cut = _BRIEF_ABSTRACT_CHARS if brief else _REVIEW_ABSTRACT_CHARS
+        # ⚠ 每条候选**只带画像池给的东西**（score/label/reason），不带任何"主题归属"字段：
+        # 主题标签曾在这里漏给 AI（无人消费、纯泄漏），会被带回"按主题想"。见 PRINCIPLES v1.7。
         candidates = [
             {
                 "arxiv_id": paper.arxiv_id,
                 "title": paper.title,
                 "primary_category": paper.primary_category,
-                "topic": _topic_name(topic),
                 "abstract": (paper.abstract or "")[:cut],
                 "baseline": score.model_dump(),
             }
-            for paper, topic, score in above[:_MAX_REVIEW_CANDIDATES]
+            for paper, score in above[:_MAX_REVIEW_CANDIDATES]
         ]
         if wanted:
             view = [c for c in candidates if c["arxiv_id"] in wanted]
@@ -473,29 +466,25 @@ class DailyPipelineService:
 
         # 用存档的候选重建 ranked（AI 评审优先，缺失回落到基线分）
         papers = {p.arxiv_id: p for p in self.repo.recent_papers(limit=10_000)}
-        topics = {t.id: t for t in self.repo.enabled_topics()}
         ranked = []
         ai_summaries: dict[str, PaperSummary] = {}
         for cand in stored["candidates"]:
             paper = papers.get(cand["arxiv_id"])
-            # ⚠ 池化后 `topic_id` 可能为 null（论文不属于任何主题包）⇒ **不能**因此丢掉候选，
-            # 否则"评审过的论文"会在提交阶段被静默吞掉。
-            topic = topics.get(cand.get("topic_id")) if cand.get("topic_id") else None
             if paper is None:
                 continue
             raw = cand.get("ai") or cand["baseline"]
             score = RelevanceScore(**raw)
-            # 评审跑的打分也进历史（详情页「打分历史」可见 AI 判了什么）
+            # 评审跑的打分也进历史（详情页「打分历史」可见 AI 判了什么）。
+            # `topic_id=None`：打分从此**只对画像池**，不再挂任何主题（老行保留历史值）。
             self.repo.save_scores(
-                run_id=run_id, paper=paper,
-                topic_id=(topic.id if topic is not None else None),
+                run_id=run_id, paper=paper, topic_id=None,
                 score=score, model="dsh-review" if cand.get("ai") else "heuristic",
             )
-            ranked.append((paper, topic, score))
+            ranked.append((paper, score))
             if cand.get("ai_summary"):
                 ai_summaries[paper.arxiv_id] = PaperSummary(**cand["ai_summary"])
 
-        kept_ids = {p.arxiv_id for p, _, _ in ranked}
+        kept_ids = {p.arxiv_id for p, _ in ranked}
         result = self._assemble(
             date_str, run_id, ranked, stored.get("n_candidates", len(ranked)), kept_ids,
             degraded=[], ai_ms=0, pre_summaries=ai_summaries, review_mode=True,
@@ -535,28 +524,6 @@ class DailyPipelineService:
         """当前**兴趣上下文**（画像池 → 给打分器/精读器）。日报线与推荐流共用这一个真相。"""
         return brief_from_view(self.repo.profile_view(), self.repo.profile_weights_map())
 
-    def _label_topics(self, papers) -> dict:
-        """给论文挑一个"归属主题"——**只用于显示**（简报里那句"来自哪个主题"）。
-
-        主题池化后它**不参与任何决策**：配额/阈值已废除，相关性由画像权重决定。
-        挑法：命中关键词数 + 主分类落在该主题分类里加 2 分，取最高者；没有则不给标签。
-        """
-        topics = self.repo.enabled_topics()
-        if not topics:
-            return {}
-        out: dict = {}
-        for p in papers:
-            best, best_hits = None, 0
-            for t in topics:
-                hits = len(matched_keywords(p, t))
-                if (p.primary_category or "") in (t.categories or []):
-                    hits += 2
-                if hits > best_hits:
-                    best, best_hits = t, hits
-            if best is not None:
-                out[p.arxiv_id] = best
-        return out
-
     def _prepare_stages(self, run_id: str, *, actor: str = "system", reason: str = ""):
         """候选 → 全局硬门 → **画像基线分**。返回 (ranked, n_candidates, kept_ids)。
 
@@ -587,10 +554,10 @@ class DailyPipelineService:
         scored = [(p, fallback_pool_score(p, weights, scales=scales)) for p in kept]
         scored.sort(key=lambda ps: (-ps[1].score, ps[0].arxiv_id))   # 平分时按 id，确定性
         top = scored[: self._CANDIDATE_CAP]
-        labels = self._label_topics([p for p, _s in top])
-        ranked: list[tuple[Paper, Topic | None, RelevanceScore]] = [
-            (p, labels.get(p.arxiv_id), s) for p, s in top
-        ]
+        # ⚠ 三元组里的 `topic` 槽位已**退场**（2026-09-30 A 方案）：它当年只为给评审者一个
+        # "归属主题"标签，而那个标签无人消费、还会把 AI 带回"按主题想"。现在打分/排序/上下文
+        # 全由画像池决定，候选就是 `(论文, 画像分)` —— 数据形状与机制一致。
+        ranked: list[tuple[Paper, RelevanceScore]] = list(top)
         return ranked, n_candidates, kept_ids
 
     def _prepare_and_rank(self, run_id: str, *, actor: str = "system", reason: str = ""):
@@ -601,20 +568,20 @@ class DailyPipelineService:
         degraded: list[str] = []
         ai_ms = 0
         if self.ranker is not None and ranked:
-            papers = [p for p, _t, _s in ranked]
+            papers = [p for p, _s in ranked]
             interest = self._interest()
             scores, elapsed, err = self._rank(papers, interest, run_id)
             ai_ms += elapsed
             if err:
                 degraded.append(err)
-            upgraded: list[tuple[Paper, Topic | None, RelevanceScore]] = []
-            for (paper, topic, _base), score in zip(ranked, scores, strict=False):
+            upgraded: list[tuple[Paper, RelevanceScore]] = []
+            for (paper, _base), score in zip(ranked, scores, strict=False):
                 self.repo.save_scores(
                     run_id=run_id, paper=paper,
-                    topic_id=(topic.id if topic is not None else None),
+                    topic_id=None,          # 打分只对画像池，不再挂主题（老行保留历史值）
                     score=score, model=self._model_name(),
                 )
-                upgraded.append((paper, topic, score))
+                upgraded.append((paper, score))
             ranked = upgraded
         return ranked, n_candidates, kept_ids, degraded, ai_ms
 
@@ -629,7 +596,7 @@ class DailyPipelineService:
         self,
         date_str: str,
         run_id: str,
-        ranked: list[tuple[Paper, Topic, RelevanceScore]],
+        ranked: list[tuple[Paper, RelevanceScore]],
         n_candidates: int,
         kept_ids: set[str],
         *,
@@ -646,18 +613,17 @@ class DailyPipelineService:
         # 4) 全局去重（同一篇取最高分）＋ **一次全局选择**
         # 主题池化前：按 topic_id 分组，各套 `for_topic()` 的 threshold/quota。
         # 池化后：**没有"每主题"这个概念了**——兴趣是一个池子，选择是一次全局排序。
-        best: dict[str, tuple[Paper, Topic | None, RelevanceScore]] = {}
-        for paper, topic, score in ranked:
+        best: dict[str, tuple[Paper, RelevanceScore]] = {}
+        for paper, score in ranked:
             cur = best.get(paper.arxiv_id)
-            if cur is None or score.score > cur[2].score:
-                best[paper.arxiv_id] = (paper, topic, score)
+            if cur is None or score.score > cur[1].score:
+                best[paper.arxiv_id] = (paper, score)
         # **零命中不入选**（用户口径 B：选择走"前 N"）：新尺度下"画像完全认不出"就是 0 分，
-        # 让它们被"前 N"顺手灌进简报＝往简报里塞噪声。注意只在**这一步**过滤——零命中的论文
-        # 照样送进 AI 评审（AI 才是扩边界的那一环），探索另有 feed 的 explore 道。
+        # 让它们被"前 N"顺手灌进简报＝往简报里塞噪声。
         # ⚠ 它们必须**归档**而不是留在 new：状态机要"走完一遍判定"，否则会永远停在候选池里
         #   （实测漏过一次：`new` 残留 1 篇）。要捞回用 `requeue`。
-        zeros = [(p, t, s) for p, t, s in best.values() if s.score <= 0]
-        best = {k: v for k, v in best.items() if v[2].score > 0}
+        zeros = [(p, s) for p, s in best.values() if s.score <= 0]
+        best = {k: v for k, v in best.items() if v[1].score > 0}
 
         scoring = self._eff_scoring()
         base_policy = SelectionPolicy(
@@ -673,22 +639,20 @@ class DailyPipelineService:
             max_per_author=scoring.max_per_author,
             must_read_cap=scoring.must_read_cap,
         )
-        picked, _dropped = select_for_briefing(
-            [(p, s) for p, _t, s in best.values()], base_policy
-        )
+        picked, _dropped = select_for_briefing(list(best.values()), base_policy)
         selected_ids = {p.arxiv_id for p, _s in picked}
-        selected: list[tuple[Paper, Topic | None, RelevanceScore]] = [
-            (p, t, s) for p, t, s in best.values() if p.arxiv_id in selected_ids
+        selected: list[tuple[Paper, RelevanceScore]] = [
+            (p, s) for p, s in best.values() if p.arxiv_id in selected_ids
         ]
-        selected.sort(key=lambda x: -x[2].score)
+        selected.sort(key=lambda x: -x[1].score)
         # **硬总量上限**：`select_for_briefing` 里 must_read **不占配额**（那是有意的：必读不该
         # 被配额挤掉），所以光靠 quota 管不住总量 ⇒ 这里再按 max_papers 截断，超出者降为存档。
         # ⚠ 这一步旧实现就有，重写成全局选择时**弄丢过一次**（判据当场抓到：max_papers=2 却选了 3）。
         overflow = selected[base_policy.max_papers:]
         if overflow:
             selected = selected[: base_policy.max_papers]
-        archived: list[tuple[Paper, Topic | None, RelevanceScore]] = [
-            (p, t, s) for p, t, s in best.values() if p.arxiv_id not in selected_ids
+        archived: list[tuple[Paper, RelevanceScore]] = [
+            (p, s) for p, s in best.values() if p.arxiv_id not in selected_ids
         ] + list(overflow) + zeros
 
         # 5) 精读：review 模式用 AI 已交总结；其余走 summarizer / 抽取式兜底
@@ -733,9 +697,9 @@ class DailyPipelineService:
         )
 
         # 7) 更新论文状态
-        for paper, _topic, _score in selected:
+        for paper, _score in selected:
             self.repo.mark_status(paper, "in_briefing", actor=actor, reason=reason or "入选简报")
-        for paper, _topic, _score in archived:
+        for paper, _score in archived:
             if paper.status == "new":
                 self.repo.mark_status(paper, "archived", actor=actor, reason=reason or "过规则未入选")
 
@@ -822,7 +786,7 @@ class DailyPipelineService:
         interest = self._interest()          # 精读同样基于**画像**（不再是某个主题）
 
         def work(item):
-            paper, topic, score = item
+            paper, score = item
 
             def entry(summary: PaperSummary, model: str, latency: int = 0) -> PaperSummary:
                 """**摘要进入世界的唯一入口**：先落库，再交出去。
@@ -839,7 +803,7 @@ class DailyPipelineService:
             if paper.arxiv_id in pre_summaries:
                 summary = entry(pre_summaries[paper.arxiv_id], "dsh-review")
                 return paper.arxiv_id, {
-                    "paper": paper, "topic": topic, "score": score,
+                    "paper": paper, "score": score,
                     "summary": summary, "ai_summary": True,
                     "latency_ms": 0, "tokens": 0,
                 }, 0, None
@@ -857,7 +821,7 @@ class DailyPipelineService:
                         latency_ms=latency, ok=True,
                     )
                     return paper.arxiv_id, {
-                        "paper": paper, "topic": topic, "score": score,
+                        "paper": paper, "score": score,
                         "summary": summary, "ai_summary": True,
                         "latency_ms": latency, "tokens": 0,
                     }, latency, None
@@ -870,13 +834,13 @@ class DailyPipelineService:
                     )
                     summary = entry(extractive_summary(paper), "extractive-fallback", latency)
                     return paper.arxiv_id, {
-                        "paper": paper, "topic": topic, "score": score,
+                        "paper": paper, "score": score,
                         "summary": summary, "ai_summary": False,
                         "latency_ms": latency, "tokens": 0,
                     }, latency, f"summarizer 对 {paper.arxiv_id} 失败，已降级抽取式摘要"
             summary = entry(extractive_summary(paper), "extractive-fallback")
             return paper.arxiv_id, {
-                "paper": paper, "topic": topic, "score": score,
+                "paper": paper, "score": score,
                 "summary": summary, "ai_summary": False,
                 "latency_ms": 0, "tokens": 0,
             }, 0, None
@@ -927,7 +891,7 @@ class DailyPipelineService:
                 label=score.label,
                 reason=score.reason,
             )
-            for paper, _topic, score in sorted(archived, key=lambda x: -x[2].score)
+            for paper, score in sorted(archived, key=lambda x: -x[1].score)
         ]
 
         stats = BriefingStats(
@@ -954,17 +918,17 @@ class DailyPipelineService:
             "date": date_str,
             "run_id": run_id,
             "status": "pending",
-            "n_candidates": len({p.arxiv_id for p, _, _ in ranked}),
+            "n_candidates": len({p.arxiv_id for p, _ in ranked}),
+            # ⚠ 候选**不再带 topic/topic_id**（A 方案 2026-09-30）：给 AI 看的与存下来的
+            # 都只有画像池给的东西。老文件里那两个键留着也无害——`submit_review` 已不读它们。
             "candidates": [
                 {
                     "arxiv_id": paper.arxiv_id,
-                    "topic_id": (topic.id if topic is not None else None),
-                    "topic": _topic_name(topic),
                     "baseline": score.model_dump(),
                     "ai": None,
                     "ai_summary": None,
                 }
-                for paper, topic, score in ranked
+                for paper, score in ranked
             ],
         }
         self._review_path(date_str).write_text(
