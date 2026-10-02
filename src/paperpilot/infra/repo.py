@@ -1450,6 +1450,121 @@ class PaperRepository:
                 .order_by(PaperSummaryRow.id.desc())
             )
 
+    def latest_summaries(self, arxiv_ids: Sequence[str]) -> dict[str, object]:
+        """批量取"每篇的最新总结行"——给**快照渲染时现 join** 用（一次查询，不做 N+1）。
+
+        见 `pipeline.run` 里 `skeleton()` 的说明：简报快照只钉骨架，卡片在这里现 join。
+        """
+        from .orm import PaperSummaryRow as _Row
+        ids = [a for a in arxiv_ids if a]
+        if not ids:
+            return {}
+        with self.sf() as s:
+            rows = s.execute(
+                select(Paper.arxiv_id, _Row)
+                .join(_Row, _Row.paper_id == Paper.id)
+                .where(Paper.arxiv_id.in_(ids))
+                .order_by(_Row.id.desc())
+            ).all()
+        out: dict[str, object] = {}
+        for arxiv_id, row in rows:
+            out.setdefault(arxiv_id, row)      # id 倒序 ⇒ 首见即最新
+        return out
+
+    def strip_inline_summaries_from_briefings(self, *, actor: str = "human",
+                                              reason: str = "") -> dict:
+        """一次性清洗：把**老简报快照里内联的摘要副本**删掉（骨架化）。
+
+        为什么做：回填之后卡片已在事实源里，快照里那份副本**只剩害处**——它是一份可漂移的旧
+        数据，谁绕过渲染直接读 `stats["items"][].summary` 就会读到陈的。清掉之后
+        "简报快照只有骨架"这条不变量**在全库成立**，不再是"新数据守规矩、老数据是例外"。
+
+        不丢信息：卡片已在 `paper_summaries`；`markdown`（导出产物）原样保留；事件里的
+        `before` 快照（删简报的 undo 用）也原样保留——本条只动"活着的快照"。
+        """
+        with self.sf() as s:
+            touched = 0
+            for b in s.scalars(select(Briefing)).all():
+                stats = dict(b.stats or {})
+                changed = False
+                for key in ("items", "archived"):
+                    group = []
+                    for item in (stats.get(key) or []):
+                        if "summary" in item:
+                            item = {k: v for k, v in item.items() if k != "summary"}
+                            changed = True
+                        group.append(item)
+                    stats[key] = group
+                if changed:
+                    b.stats = stats
+                    touched += 1
+            if touched:
+                self._event(s, op="strip_inline_summaries", actor=actor,
+                            reason=reason or "清洗老简报快照里的内联摘要副本（骨架化）",
+                            target="briefings", after={"briefings_touched": touched},
+                            undoable=0)
+            s.commit()
+        return {"briefings_touched": touched}
+
+    def backfill_cards_from_briefings(self, *, actor: str = "human",
+                                      reason: str = "") -> dict:
+        """一次性回填：把**老简报快照里内联的卡片**写回 `paper_summaries`。
+
+        为什么需要：那个 bug 期间（评审路线不落库）卡片**只存在于简报 JSON 里**，
+        删简报就永久丢。现在快照不再内联摘要 ⇒ 老数据必须回填，否则页面改成现 join 之后
+        反而彻底看不见（文字只在那份 JSON 里）。
+
+        * **幂等**：只补"这篇一篇总结都没有"的；已有卡片的不覆盖。
+        * **可撤销**：整批一个 run_id，走 `op="write_summary"`（`_restore` 已有删该 run 的分支）
+          ⇒ 一次 `undo` 撤掉整批回填。
+        """
+        import uuid
+
+        from .orm import Briefing
+        from .orm import PaperSummaryRow as _Row
+
+        run_id = "card-backfill-" + uuid.uuid4().hex[:8]
+        with self.sf() as s:
+            # 已有卡片的论文：绝不覆盖
+            have = {r[0] for r in s.execute(
+                select(Paper.arxiv_id).join(_Row, _Row.paper_id == Paper.id)).all()}
+            # 简报按"新→旧"扫，同一篇**首见即最新**那份卡片
+            wanted: dict[str, dict] = {}
+            for b in s.scalars(select(Briefing).order_by(Briefing.date.desc(),
+                                                         Briefing.id.desc())).all():
+                for item in ((b.stats or {}).get("items") or []):
+                    aid = item.get("arxiv_id")
+                    summ = item.get("summary") or {}
+                    if not aid or aid in have or aid in wanted:
+                        continue
+                    if any(summ.get(k) for k in ("tldr", "problem", "method",
+                                                 "results", "novelty")):
+                        wanted[aid] = summ
+            papers = {p.arxiv_id: p for p in s.scalars(
+                select(Paper).where(Paper.arxiv_id.in_(list(wanted)))).all()}
+            written = 0
+            for aid, summ in wanted.items():
+                paper = papers.get(aid)
+                if paper is None:
+                    continue
+                s.add(_Row(
+                    run_id=run_id, paper_id=paper.id,
+                    tldr=summ.get("tldr", ""), problem=summ.get("problem", ""),
+                    method=summ.get("method", ""), results=summ.get("results", ""),
+                    novelty=summ.get("novelty", ""),
+                    keywords=list(summ.get("keywords") or []),
+                    model=summ.get("model", "dsh-review-backfill")))
+                written += 1
+            if written:
+                self._event(s, op="write_summary", actor=actor,
+                            reason=reason or f"回填 {written} 篇简报快照里内联的卡片",
+                            target="papers",
+                            after={"run_id": run_id, "written": written,
+                                   "source": "briefings.stats 内联副本"},
+                            undoable=1)
+            s.commit()
+        return {"run_id": run_id, "written": written, "skipped_have_card": len(have)}
+
     # ---------------------------------------------------------------- briefings / runs
     def save_briefing(
         self,

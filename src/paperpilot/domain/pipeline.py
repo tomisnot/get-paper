@@ -702,10 +702,24 @@ class DailyPipelineService:
             review_mode=review_mode,
         )
         markdown = self.renderer.render(content) if self.renderer else _fallback_markdown(content)
+
+        def skeleton(item) -> dict:
+            """快照**只钉骨架**：卡片（summary）**不进快照**，渲染时现 join。
+
+            与 `FeedIssue` 同一口径（那边注释写着"快照只钉哪些篇/什么序/为什么，中文摘要等
+            富化字段渲染时现 join"）。**为什么这条是结构性的**：摘要一旦被快照抄一份，
+            写入端漏写事实源就**看不出来**——实测正是如此（评审路线没落库 ⇒ 简报有卡、
+            详情页 `/feed` `read_paper` 全空，42 篇中招）。抄副本这条路拿掉之后，
+            "简报有卡而表里没有"**在结构上不可能出现**：四处读同一张表，要空一起空。
+            """
+            data = item.model_dump(mode="json")
+            data.pop("summary", None)
+            return data
+
         stats_payload = {
             "stats": content.stats.model_dump(),
-            "items": [i.model_dump(mode="json") for i in content.selected],
-            "archived": [a.model_dump(mode="json") for a in content.archived],
+            "items": [skeleton(i) for i in content.selected],
+            "archived": [skeleton(a) for a in content.archived],
         }
         briefing = self.repo.save_briefing(
             date=date_str,
@@ -809,10 +823,24 @@ class DailyPipelineService:
 
         def work(item):
             paper, topic, score = item
+
+            def entry(summary: PaperSummary, model: str, latency: int = 0) -> PaperSummary:
+                """**摘要进入世界的唯一入口**：先落库，再交出去。
+
+                为什么做成入口、而不是"在每个分支记得调 save_summary"：评审路线（`submit_review`
+                → 这里）曾经**在内存里拿着摘要就 return**，于是卡片只写进了简报快照、**没进
+                `paper_summaries` 事实源** ⇒ 详情页 / `/feed` / `read_paper` 全读不到（实测 42 篇
+                论文中招）。让"手里有摘要但没落库"这种状态**不可表示**，比多写判据管用。
+                """
+                self.repo.save_summary(run_id=run_id, paper=paper, summary=summary,
+                                       model=model, latency_ms=latency)
+                return summary
+
             if paper.arxiv_id in pre_summaries:
+                summary = entry(pre_summaries[paper.arxiv_id], "dsh-review")
                 return paper.arxiv_id, {
                     "paper": paper, "topic": topic, "score": score,
-                    "summary": pre_summaries[paper.arxiv_id], "ai_summary": True,
+                    "summary": summary, "ai_summary": True,
                     "latency_ms": 0, "tokens": 0,
                 }, 0, None
             if self.summarizer is not None:
@@ -822,11 +850,7 @@ class DailyPipelineService:
                         paper=paper, interest=interest, run_id=run_id
                     )
                     latency = int((time.perf_counter() - t0) * 1000)
-                    self.repo.save_summary(
-                        run_id=run_id, paper=paper, summary=summary,
-                        model=getattr(self.summarizer, "name", "summarizer"),
-                        latency_ms=latency,
-                    )
+                    entry(summary, getattr(self.summarizer, "name", "summarizer"), latency)
                     self.repo.log_ai_call(
                         port="summarizer", purpose="summarize",
                         model=getattr(self.summarizer, "name", "summarizer"),
@@ -844,17 +868,13 @@ class DailyPipelineService:
                         model=getattr(self.summarizer, "name", "summarizer"),
                         latency_ms=latency, ok=False, error=str(exc),
                     )
-                    summary = extractive_summary(paper)
-                    self.repo.save_summary(
-                        run_id=run_id, paper=paper, summary=summary,
-                        model="extractive-fallback",
-                    )
+                    summary = entry(extractive_summary(paper), "extractive-fallback", latency)
                     return paper.arxiv_id, {
                         "paper": paper, "topic": topic, "score": score,
                         "summary": summary, "ai_summary": False,
                         "latency_ms": latency, "tokens": 0,
                     }, latency, f"summarizer 对 {paper.arxiv_id} 失败，已降级抽取式摘要"
-            summary = extractive_summary(paper)
+            summary = entry(extractive_summary(paper), "extractive-fallback")
             return paper.arxiv_id, {
                 "paper": paper, "topic": topic, "score": score,
                 "summary": summary, "ai_summary": False,

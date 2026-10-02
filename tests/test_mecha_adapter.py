@@ -140,7 +140,13 @@ def test_prepare_submit_finalize_flow(tmp_path):
     digest = _call(tools, "read_digest", date=date, full=True)
     assert digest["exists"] and "markdown" in digest
     assert digest["stats"]["ai_provider"] == "dsh-review"
-    assert digest["items"][0]["summary"]["tldr"] == "TLDR"
+    # ⚠ 2026-09-30 结构修改：快照**只钉骨架**，摘要不再内联（内联副本会与事实源漂移——
+    # 实测事故：评审路线没落库 ⇒ 简报有卡，详情页/feed/read_paper 全空）。
+    # 所以这里改成断言"卡片能从**事实源**读到"，快照里**不该**再有 summary。
+    first = digest["items"][0]
+    assert "summary" not in first, "简报快照又内联摘要了（副本会漂）"
+    card = _c.repo.latest_summary(_c.repo.get_paper(first["arxiv_id"]))
+    assert card is not None and card.tldr == "TLDR", "评审路线交的卡片没落进 paper_summaries"
 
     again = _call(tools, "finalize_briefing", date=date)
     assert again["reused"] is True

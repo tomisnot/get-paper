@@ -85,6 +85,30 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         return ""
 
     # ---------------------------------------------------------------- 简报
+    def _digest_view(briefing):
+        """简报页的渲染视图：快照只有**骨架**，卡片在渲染时**现 join**（与 `/feed` 同口径）。
+
+        ⚠ 为什么必须现 join（结构性理由，不是省事）：摘要一旦被快照**内联抄一份**，写入端漏写
+        事实源就**看不出来**——实测事故正是如此（评审路线没落库 ⇒ 简报照样有卡，而详情页 /
+        `/feed` / `read_paper` 全空，42 篇中招）。快照只钉骨架之后，**四处读同一张表**，
+        "简报有卡而表里没有"在结构上不可能出现：要空一起空、一眼可见。
+
+        实现：一次批量取"每篇最新总结行"（`repo.latest_summaries`，不做 N+1），
+        再填进快照条目里 —— 模板照旧读 `item.summary`，**模板零改动**。
+        """
+        if briefing is None:
+            return None
+        payload = dict(briefing.stats or {})
+        items = list(payload.get("items") or [])
+        archived = list(payload.get("archived") or [])
+        cards = container.repo.latest_summaries(
+            [it.get("arxiv_id", "") for it in [*items, *archived]])
+        for group in (items, archived):
+            for it in group:
+                it["summary"] = cards.get(it.get("arxiv_id", ""))
+        payload["items"], payload["archived"] = items, archived
+        return {"title": briefing.title, "stats": payload}
+
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
         date_str = _today()
@@ -93,7 +117,7 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         return render(
             request,
             "digest.html",
-            briefing=briefing,
+            briefing=_digest_view(briefing),
             date=date_str,
             recent_dates=dates,
             is_today=True,
@@ -106,7 +130,7 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         return render(
             request,
             "digest.html",
-            briefing=briefing,
+            briefing=_digest_view(briefing),
             date=date,
             recent_dates=dates,
             is_today=(date == _today()),
