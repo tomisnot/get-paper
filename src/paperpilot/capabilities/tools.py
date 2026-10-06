@@ -1014,9 +1014,17 @@ def build_registry(container) -> Registry:
         if max_items and not 1 <= int(max_items) <= 200:
             return err("bad_params", f"max_items={max_items} 越界（1-200；0=按配置）")
         if max_items:
-            # N12 同族：显式篇数 > 配置（gate/yaml），只活在本次调用的线程局部覆盖里
-            with pipeline_config_override(scoring=settings.scoring.model_copy(
-                    update={"max_papers": int(max_items)})):
+            # N12 同族：显式篇数 > 配置（gate/yaml），只活在本次调用的线程局部覆盖里。
+            # ⚠ **必须从"当前生效配置"派生、只叠 `max_papers` 一个键**（BUG-2026-10-06）：
+            # 从前这里写的是 `settings.scoring.model_copy(...)`——那是 YAML/进程级配置，
+            # 不是"当前生效值"；它会把命令面刚注入的 Gate 快照（`set_config` 的
+            # max_per_author / must_read_cap / …）**整体打回默认值**，还顺手清掉了
+            # lookback（内层不传 ⇒ 旧版上下文管理器"None = 清空"）。
+            # 结果：set_config 静默失效、`read_config` 却显示正常——只在选择结果里显形。
+            base = pipeline.effective_scoring()
+            with pipeline_config_override(
+                    scoring=base.model_copy(update={"max_papers": int(max_items)}),
+                    lookback_days=pipeline.effective_lookback_days()):
                 result = pipeline.finalize_review(
                     _parse_date(date), force=force, actor=actor, reason=reason or "定稿简报")
         else:

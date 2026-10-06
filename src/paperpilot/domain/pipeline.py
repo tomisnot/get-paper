@@ -1,4 +1,4 @@
-"""每日流水线编排：候选 → 硬规则 → 打分 → 配额筛选 → 精读 → 简报。
+﻿"""每日流水线编排：候选 → 硬规则 → 打分 → 配额筛选 → 精读 → 简报。
 
 特性（DESIGN.md §6 / §17）：
 - 幂等：同一天已有简报且未指定 force 时直接复用，不重复生成
@@ -70,16 +70,24 @@ _CONFIG_OVERRIDE = threading.local()
 
 @contextmanager
 def pipeline_config_override(*, scoring=None, lookback_days: int | None = None):
-    """在当前线程临时覆盖评分/回溯配置（None = 不覆盖）；退出即还原。
+    """在当前线程临时覆盖评分/回溯配置；**只覆盖真传了值的字段**（None = 不动它），退出即还原。
 
-    线程局部 ⇒ 并发运行互不干扰（无锁、无共享可变状态）。覆盖对象应是
-    ``ScoringCfg`` 的副本（如 ``settings.scoring.model_copy(update=…)``），
-    调用方不要传共享实例再去改它。
+    ⚠ 语义是**合并**，不是替换——这是 BUG-2026-10-06 的后果之一：从前写成"无条件赋值"，
+    于是内层调用传了 `scoring` 却没传 `lookback_days` ⇒ 把外层的 lookback **清空**了
+    （docstring 写着"None = 不覆盖"，实现却是"None = 清空"，**只在不嵌套时二者才等价**）。
+    实测场景：命令面注入 Gate 快照做外层覆盖 → 能力层再叠一层（`finalize_briefing(max_items=…)`）
+    ⇒ 互相踩、且全程无日志（读取侧对 None 一律回落 settings，静默生效）。
+
+    线程局部 ⇒ 并发运行互不干扰（无锁、无共享可变状态）。传进来的应是 ``ScoringCfg`` 的
+    **副本**；若要在"当前生效值"之上叠一个键，用 `effective_scoring().model_copy(update=…)`，
+    **不要**从 `settings.scoring` 重建（那会把外层注入的其余键整体打回默认）。
     """
     prev_scoring = getattr(_CONFIG_OVERRIDE, "scoring", None)
     prev_lookback = getattr(_CONFIG_OVERRIDE, "lookback_days", None)
-    _CONFIG_OVERRIDE.scoring = scoring
-    _CONFIG_OVERRIDE.lookback_days = lookback_days
+    if scoring is not None:
+        _CONFIG_OVERRIDE.scoring = scoring
+    if lookback_days is not None:
+        _CONFIG_OVERRIDE.lookback_days = lookback_days
     try:
         yield
     finally:
@@ -132,13 +140,17 @@ class DailyPipelineService:
         self.ai_provider = ai_provider
 
     # ---- 生效配置（线程局部覆盖优先，否则回落共享 settings）----
-    def _eff_scoring(self):
-        """本次运行生效的评分配置：线程局部覆盖优先，无覆盖则用 settings.scoring。"""
+    # ⚠ 这两个是**公开访问器**（原 `_eff_scoring`/`_eff_lookback_days`）：能力层要在
+    # "当前生效值"之上叠**单个**键时（如 `max_items` 只改 `max_papers`），必须从这里派生——
+    # 从前 `finalize_briefing` 从 `settings.scoring` 重建，把外层 Gate 注入的其余键
+    # 整体打回默认值（BUG-2026-10-06：set_config 的 max_per_author 静默失效）。
+    def effective_scoring(self):
+        """本次运行**生效**的评分配置：线程局部覆盖优先，无覆盖则用 settings.scoring。"""
         override = getattr(_CONFIG_OVERRIDE, "scoring", None)
         return self.settings.scoring if override is None else override
 
-    def _eff_lookback_days(self) -> int:
-        """本次运行生效的回溯天数：线程局部覆盖优先，无覆盖则用 settings。"""
+    def effective_lookback_days(self) -> int:
+        """本次运行**生效**的回溯天数：线程局部覆盖优先，无覆盖则用 settings。"""
         override = getattr(_CONFIG_OVERRIDE, "lookback_days", None)
         return self.settings.lookback_days if override is None else override
 
@@ -204,7 +216,7 @@ class DailyPipelineService:
         if requeue:
             flipped_res = self.repo.reopen_by_status(
                 from_statuses=("archived", "in_briefing"), to_status="new",
-                within_days=self._eff_lookback_days(), actor=actor,
+                within_days=self.effective_lookback_days(), actor=actor,
                 reason=reason or "再审回炉（prepare_review requeue=True）",
             )
             requeue_flipped = int(flipped_res.get("flipped") or 0)
@@ -224,7 +236,7 @@ class DailyPipelineService:
 
         # ⭐ W4 评审 floor：低于 review_floor 的基线不进候选包（降评审 input；库里仍在，
         # 调低 floor/requeue 可再议）。n_after_rules 仍报全量，floor 单独回执。
-        floor = float(getattr(self._eff_scoring(), "review_floor", 0.0) or 0.0)
+        floor = float(getattr(self.effective_scoring(), "review_floor", 0.0) or 0.0)
         # ⭐ 显式意图 > 启发式预筛（N12/N14）：arxiv_ids 点名 ⇒ 不套 floor（点名要的
         # 被挡回就是静默丢）；brief 粗筛段也不套——载荷本就小，低分救援权留给评审者。
         # floor 只在「stage=full 直接全量评」时生效（那才是它的省 token 场景）。
@@ -319,7 +331,7 @@ class DailyPipelineService:
         n_new = int(counts.get("new", 0))
         n_arch = int(counts.get("archived", 0))
         n_brief = int(counts.get("in_briefing", 0))
-        lookback = int(self._eff_lookback_days())
+        lookback = int(self.effective_lookback_days())
         tally = f"new={n_new}, archived={n_arch}, in_briefing={n_brief}"
         diag: dict[str, object] = {
             "kind": "empty_pool",
@@ -536,7 +548,7 @@ class DailyPipelineService:
 
         weights = self.repo.profile_weights_map()
         scales = dimension_scales(weights)      # 一次算好、整批复用（分母只取池子）
-        rows = self.repo.pipeline_candidates(lookback_days=self._eff_lookback_days())
+        rows = self.repo.pipeline_candidates(lookback_days=self.effective_lookback_days())
         n_candidates = len(rows)
 
         # 全局硬门只留"客观不可入"。**绝不能拿 `settings.arxiv_categories` 当门**：那是
@@ -625,7 +637,7 @@ class DailyPipelineService:
         zeros = [(p, s) for p, s in best.values() if s.score <= 0]
         best = {k: v for k, v in best.items() if v[1].score > 0}
 
-        scoring = self._eff_scoring()
+        scoring = self.effective_scoring()
         base_policy = SelectionPolicy(
             # ⚠ **阈值不再当门（B 方案）**：打分尺度换成"三维占比平均"后绝对值很小
             # （实测最高 0.25、中位 0.07）⇒ 老配置里 0.5/0.6 这类**绝对**阈值会把一切挡在门外
