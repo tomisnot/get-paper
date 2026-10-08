@@ -13,7 +13,8 @@
 | `env["PAPERPILOT_DATA_DIR"]` | ⚠ 状态根本身的显式值（`config.py:223` 只在 YAML 没写 `data_dir` 时生效 ⇒ 是**弱**覆盖，仍需钉，见下方"唯一不变量"） |
 | `data_root = 仓根` | GP 的运行期状态全在仓内（`data/` + 三个端口文件）⇒ 取仓根（与两家同形；比 `data/` 更强：两个实例共享仓根即互斥） |
 | `patches = 交付层 + 项目层` | §7.2.2 裁决：`cordis.patch.yml`（→`lib/index.mjs`）+ `cordis.isolate.patch.yml`（GP 的项目层）；**不用** `cordis.source.patch.yml`（dev 产物，与 `plugin_artifacts` 不同源） |
-| `manual=None` | "接手动"是步骤 3，本轮不做 |
+| `has_gui=True` | GP 的"人手那条腿"是 **Web 界面**（`serve` + `templates/`）⇒ 算有 |
+| `initial_mode=Mode.AI` | 从 mecha 启动 = 永远 AI 组（与它 `BOOT_MODE_DEFAULT="open"` 的出厂策略不冲突，见下方注释） |
 
 ## ⚠ 唯一不变量（两处必须同时改）
 
@@ -39,6 +40,7 @@ import os
 import sys
 from pathlib import Path
 
+from mecha.authority import Mode
 from mecha.site import DSHSpec, ReadySpec, Service, Site
 
 #: 本仓根（声明文件就在仓根）。
@@ -106,7 +108,24 @@ SITE = Site(
                 timeout_s=90.0,
             ),
             data_root=_SITE_ROOT,
-            manual=None,                  # 步骤 3 才接手动
+            #: ⭐ 三层架构（2026-10-08 换代）：**"切手动"不是另一条要 spawn 的腿**，
+            #: 而是**写权切换**（``Mode``）—— 于是旧的 ``manual: ChildSpec`` 字段已从
+            #: 框架删除（传它会当场 ``TypeError``，判据 ⑬ 钉住）。
+            #:
+            #: ``has_gui`` = "**本项目有没有人操作的那个面**" ⇒ ⭐ **GP 是 Web 界面**
+            #: （``paperpilot serve`` + ``templates/``），没有桌面窗口。
+            #: ⚠ 按公理 A2（"两条腿都是客户端"），**Web 面就是人手那条腿** ⇒ 算 True。
+            #: ⚠ 但 GP 与别家**结构不同**：它的 Web 与 MCP **挂在同一个 stack 上**
+            #: （``cli.py`` 的 ``build_stack`` + ``make_host``）⇒ 它本来就"同门"，
+            #: 不需要像别家那样把窗口搬进软件进程。
+            has_gui=True,
+            #: ⭐ 启动者（人）声明的初始写权。⚠ GP 的既有用户裁决是
+            #: ``BOOT_MODE_DEFAULT = "open"``（**"不卡写权"**：两侧都能写，代价是后写覆盖）。
+            #: ⚠ 这与新架构的"**从 mecha 启动 = 永远是 AI 组**"**不冲突** ——
+            #: 前者定的是"**软件出厂策略**"，后者定的是"**从 mecha 起时给什么写权**"。
+            #: ⇒ 从 mecha 起 ⇒ 声明 **AI**（框架只在 spawn 时把它送进去，应用与否由软件决定）；
+            #:   而人若想"不卡写权"，那是在**面板上切**（`Mode.OPEN`）的事。
+            initial_mode=Mode.AI,
             env=_STATE_ENV,
         ),
     ),

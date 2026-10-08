@@ -33,7 +33,15 @@ def test_declaration_is_loadable_and_valid():
     site, svc = _service()
     assert svc.cwd == REPO
     assert svc.argv[-1] == "mcp", f"服务那条腿必须起 headless 的 mcp 子命令：{svc.argv}"
-    assert svc.manual is None, "接手动是步骤 3 —— 本轮声明里不该已经有 manual"
+    #: ⚠ 三层架构换代（2026-10-08）：`manual` 字段已被框架**删除**
+    #: （"人那条腿"不再是"要 spawn 的进程"，而是**软件进程内的窗口**；写权切换不动进程）。
+    #: ⇒ 旧断言 `svc.manual is None` 测的对象**已不存在**（R13：删机制时处理它的承诺）。
+    #:   换成：`manual` **不许回来** + 新表达的字段**在**。
+    assert not hasattr(svc, "manual"), "`manual` 已被三层架构删除，不许回来"
+    assert svc.has_gui is True, "GP 的人手那条腿是 Web 界面（serve + templates/）⇒ has_gui 为 True"
+    #: ⚠ 比 `.value`：`Mode` 是 `str` 枚举，`str(Mode.AI)` 给的是 `'Mode.AI'` 而不是 `'ai'`。
+    assert getattr(svc.initial_mode, "value", None) == "ai", (
+        f"从 mecha 启动 = 永远 AI 组 ⇒ initial_mode 应为 ai：{svc.initial_mode!r}")
     for p in site.dsh.patches:
         assert p.is_file(), f"dsh 补丁不存在：{p}"
     for p in site.dsh.plugin_artifacts:
