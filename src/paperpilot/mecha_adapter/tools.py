@@ -27,6 +27,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from mecha.authority import register_authority_read
 from mecha.errors import MechaError
 from mecha.gate import Channel
 from mecha.tools import CURRENT_CALL_ID, ToolRegistry, define_tool
@@ -350,7 +351,7 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
       （``command.<name>`` 落 History）由命令面治理（Phase 2）。
 
     另有三块**不从声明来**的面（各自手写注册）：``set_config`` / ``read_config``（配置标量，
-    Scheme E）、``read_authority``（写权自省）、``submit_job`` / ``read_job`` / ``cancel_job``
+    Scheme E）、``read_write_authority``（写权自省，**框架的唯一实现**）、``submit_job`` / ``read_job`` / ``cancel_job``
     （长活 job 化）。
 
     ``channel`` 缺省 = ``sw.channels['ai']``（AI 侧，actor 钉死 'ai'）。
@@ -430,7 +431,13 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
             banned_words=_BANNED_WORDS,
         ))
     _register_config_tools(reg, sw, channel)
-    _register_authority_tool(reg, sw.authority)
+    # 写权自省：⭐ **框架的唯一实现**（2026-10-08 用户裁决上提；GP 自写的那份已删——
+    # 留着它就是**第二份判定规则**，正是"上升进架构"要消灭的东西）。
+    # `how_to_open` 是**项目知识**（人从哪个入口切写权），框架刻意不写死 ⇒ 由 GP 给。
+    register_authority_read(
+        reg, sw.authority,
+        how_to_open=("在 Get Paper 的 Web 页 `/settings` 的「写权模式」卡上切"
+                     "（需控制口令；AI 侧不能自解锁）"))
     _register_job_tools(reg, sw, channel, container)
     return reg
 
@@ -571,38 +578,6 @@ def _read_config(gate):
                      for k, v in CONFIG_SCHEMA.items()}}
 
 
-def _authority_view(authority) -> dict:
-    """写权自省（N5）：当前模式 + AI/人谁能写 + 怎么开。用 gate(side) 纯查询探侧（无副作用）。"""
-    def _can(side: str) -> bool:
-        try:
-            authority.gate(side)          # 只判 mode与side 是否匹配，不改任何东西
-            return True
-        except Exception:  # noqa: BLE001 - GateDenied 即“不能写”
-            return False
-    mode = str(getattr(authority.mode, "value", authority.mode))
-    return {"ok": True, "mode": mode,
-            "ai_can_write": _can("ai"), "human_holds": _can("human"),
-            "how_to_open": ("写权默认已是 open（两侧都能写，2026-09-26 起）。"
-                            "若被切成了 ai 独占/human 独占/locked：在 Web 的 /settings 「写权模式」"
-                            "卡点「放开（open）」（需控制口令）；也可用 "
-                            "`paperpilot serve/ai --mode open` 起步。AI 侧不能自解锁。")}
-
-
-def _register_authority_tool(reg: ToolRegistry, authority) -> None:
-    """只读工具 read_authority：写工具被拒的 hint 会引用它（先查后写，不盲撞）。"""
-    reg.register(define_tool(
-        name="read_authority",
-        description=(
-            "读当前写权模式：AI 此刻能不能写、人在不在写、以及怎么开闸。"
-            "发起写入前先查它，避免在锁定态下写了才被拒。单写权：同一时刻只一侧能写。"
-        ),
-        parameters={},
-        output_schema={"type": "object", "required": ["ok", "mode", "ai_can_write"]},
-        execute=lambda: _authority_view(authority),
-        banned_words=_BANNED_WORDS,
-    ))
-
-
 def _register_job_tools(reg: ToolRegistry, sw, channel, container,
                        max_concurrent: int = 2) -> None:
     """长活 job 化（E2.1 / 缺口1）：submit/read/cancel，先接最慢的 run_pipeline。
@@ -629,7 +604,7 @@ def _register_job_tools(reg: ToolRegistry, sw, channel, container,
         try:
             authority.gate(channel.side)
         except MechaError as e:
-            return _err(e.kind, e.message, f"{e.hint} 先 read_authority 查写权。")
+            return _err(e.kind, e.message, f"{e.hint} 先 read_write_authority 查写权。")
         if not sem.acquire(blocking=False):               # 项目兜并发上限（框架不给队列）
             return _err("job_limit", f"并发后台任务已满（上限 {max_concurrent}）",
                         "用 read_job 看进度、等某个跑完再提交；不要反复重试。")

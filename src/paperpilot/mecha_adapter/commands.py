@@ -25,6 +25,7 @@ docstring：本模块这个面是**写治理面**，"**每一条都是写命令*
 
 from __future__ import annotations
 
+from mecha.authority import READ_AUTHORITY_TOOL
 from mecha.commands import CommandResult, CommandSpec, define_command
 from mecha.surface import ExecutionContext
 
@@ -38,13 +39,16 @@ _WRITE_DENIED_KINDS = ("authority_locked", "authority_mode_mismatch")
 
 
 def _point_denial_to_read_authority(res: dict) -> dict:
-    """写权被拒时，把 hint/suggest 指到**本项目**的只读工具 ``read_authority``。
+    """写权被拒时，把 hint/suggest 指到那个**只读自省工具**（现在是框架的 `read_write_authority`）。
 
     为什么这**不是**"手写闸"：**判定完全是框架的**（``invoke`` 在调 handler 之前
-    ``gate.check(channel)``），本项目只补一件框架不知道的事——**我们自己的工具叫什么**
+    ``gate.check(channel)``），本项目只补一件框架不知道的事——**人从哪个入口开闸**
     （N5 的"先查后写"：被拒时告诉 AI 去哪儿看当前写权模式与 how_to_open）。
     这段文字原先写在 **13 个 handler** 的 ``try/except`` 里，跟着手写前置闸一起收进
     **唯一入口**（13 份变 1 份；框架的原始 ``suggest`` 也折进 hint，不丢信息）。
+
+    ⚠ 名字来自框架的 ``READ_AUTHORITY_TOOL``（**不手抄**）：那个工具的实现已上提进框架，
+    项目侧再写一遍字符串就是"同一个名字两处真值"。
     """
     if not res.get("is_error"):
         return res
@@ -52,12 +56,12 @@ def _point_denial_to_read_authority(res: dict) -> dict:
     if info.get("kind") not in _WRITE_DENIED_KINDS:
         return res
     hint = str(info.get("hint") or "")
-    if "read_authority" in hint:          # 幂等：叠两遍没有意义
+    if READ_AUTHORITY_TOOL in hint:       # 幂等：框架自己也会叠同一句（用它自己的名字判）
         return res
     framework_suggest = str(info.get("suggest") or "")
-    info["hint"] = (f"{hint} 先在 AI 侧用只读工具 read_authority 查当前写权模式"
+    info["hint"] = (f"{hint} 先在 AI 侧用只读工具 {READ_AUTHORITY_TOOL} 查当前写权模式"
                     f"（它的 how_to_open 说怎么开；人类侧：{framework_suggest}）。").strip()
-    info["suggest"] = "read_authority"
+    info["suggest"] = READ_AUTHORITY_TOOL
     return res
 
 

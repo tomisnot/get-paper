@@ -60,7 +60,7 @@ description: >-
 | 1 对话驱动 | 能力不以按钮暴露，以工具暴露。用户说意图，你负责理解→编排→执行→**复述结果**。 |
 | 2 AI 管判断，工具管重活 | 步骤固定/量大/需精确可复现/高频重复的活，**交给工具，别用自然语言重拼**。判断、综合、写文字才是你的本职。 |
 | 3 token 与内存是预算 | **头号浪费＝你把海量原始数据拉进上下文**。用漏斗：规则粗筛 → 点名少量 → 精读。工具回程已浓缩，别再全量索要。 |
-| 4 写入可追溯可回滚 | 每个写操作都要 `reason`；动手前想一句"用户会不会想撤"。不确定写权就先 `read_authority` 看开闸，别盲撞。 |
+| 4 写入可追溯可回滚 | 每个写操作都要 `reason`；动手前想一句"用户会不会想撤"。不确定写权就先 `read_write_authority` 看开闸，别盲撞。 |
 | 5 AI 是奢侈品不是必需品 | 你不在时系统靠 heuristic 也能走完流程。⇒ **你的价值是判断质量，不是"让流程能跑"**。 |
 | 6 不常驻，用完即走 | 数据在库里、进程无状态。别设计依赖常驻的活。 |
 | 7 画像活的，防茧房 | 探索配额是硬地板；`reset_profile` 是 **AI 面唯一禁忌**（清画像＝人类按钮，你只读不删）。 |
@@ -318,7 +318,7 @@ gate 值（`set_config`）直通全段但被显式参数再覆盖。**用户点�
 **读·认知**：`read_paper` 详情+总结+打分史+笔记 | `search_papers` 库内检索(FTS5,offset 分页) |
 `read_digest` 简报全文/纯统计 | `query_briefings` 历史简报清单(管理面) | `query_topics` 看已投放的主题包
 （词/作者/分类）| `read_config` / `review_status` 评审进度 | `read_activity` 事件+运行+AI 成本 |
-`query_profile` 画像 top 权重+分类熵 | `read_authority` 写权现状。
+`query_profile` 画像 top 权重+分类熵 | `read_write_authority` 写权现状。
 
 **精读（HTML 正文 + 批注）**：`fetch_paper_html` 归档正文（全量离线，**同时入块级全文索引**）|
 `read_paper_outline` 章节树+锚点地图 | `read_paper_text` 分块读正文 | `search_paper_text` 篇内检索 |
@@ -361,10 +361,10 @@ gate 值（`set_config`）直通全段但被显式参数再覆盖。**用户点�
 **配额/阈值已废弃**（传了也没用）；**删主题、改主题名：AI 无门，归人。**
 想知道"池子现在长什么样、哪些键在空转"：让用户看 **`/profile`**（或你自己 `query_profile`）。
 
-**配置与治理**：`set_config`（gate 值，重启回 YAML）| `read_config` | `read_authority` |
+**配置与治理**：`set_config`（gate 值，重启回 YAML）| `read_config` | `read_write_authority` |
 `undo_change`（seq=0 撤最近可逆）| `submit_job` / `read_job` / `cancel_job`（长活用）。
 注意：**开写权没有 AI 工具**（模式切换只活在人类侧口令里，这是设计不是缺位）——
-被 authority_locked 拒了就 `read_authority` 看现状、请人类开闸，别找后门。
+被 authority_locked 拒了就 `read_write_authority` 看现状、请人类开闸，别找后门。
 
 ## 5. 常见误区（都是踩过的，别重复）
 
@@ -381,7 +381,7 @@ gate 值（`set_config`）直通全段但被显式参数再覆盖。**用户点�
 ## 6. 排障速查
 
 池子空⇒hint 三选一（lookback/fetch/requeue）· rejected⇒点名缺什么补齐增量重提 ·
-authority_locked⇒`read_authority` 看开闸 · 不确定用法⇒`paperpilot tools` 或 specs() 自描述 ·
+authority_locked⇒`read_write_authority` 看开闸 · 不确定用法⇒`paperpilot tools` 或 specs() 自描述 ·
 arXiv 429⇒客户端自带退避，分批抓（`materialize_view` 的 `limit` 调小、多跑几轮）。
 
 ## 7. Web 配套面（你的活在哪被看见）

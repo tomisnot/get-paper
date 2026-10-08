@@ -17,7 +17,7 @@ from paperpilot.mecha_adapter.tools import TOOL_DECLS
 SKILL = Path(__file__).resolve().parents[1] / ".agents" / "skills" / "paperpilot" / "SKILL.md"
 
 # tests/test_mecha_adapter.py 的同名常量在这里独立取，避免测试间耦合
-NONCAP = {"set_config", "read_config", "read_authority",
+NONCAP = {"set_config", "read_config", "read_write_authority",
           "submit_job", "read_job", "cancel_job"}
 
 

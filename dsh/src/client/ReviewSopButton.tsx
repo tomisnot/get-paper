@@ -18,7 +18,7 @@ export const REVIEW_SOP_PROMPT = [
   '2) 两阶段：先 stage=brief 粗筛（标题+短摘），选 ≤15 篇；再 stage=full + arxiv_ids 拉全文精评。',
   '3) submit_review(reviews=[{arxiv_id,score,label,reason,入选者带 summary}])——不传 date；坏项会单独进 rejected，别慌整批。',
   '4) finalize_briefing(force=true) → read_digest() 验收；顺手报一句本次 token 量级与入选清单。',
-  '写前如被 authority_locked 拒：read_authority 看怎么写权开闸（需人类侧口令，别绕门）。',
+  '写前如被 authority_locked 拒：read_write_authority 看怎么写权开闸（需人类侧口令，别绕门）。',
 ].join('\n')
 
 export function ReviewSopButton(_props: Props) {

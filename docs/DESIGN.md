@@ -631,7 +631,7 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 
 硅基用户实测（`AI-EXPERIENCE` 记录，**未随仓发布**）提出 N1~N10；按 `AI-EXPERIENCE-PLAN`（未随仓发布）分四批修。**差的不是功能，是“出错能诊断 + 边界能自省”**：
 
-- **EXP-1 止血（P0）**：N1 `submit_review` 改 **per-item fail**（坏 item 进 `rejected`、捕 `KeyError`，不再一根手滑整批蒸发）；N2 `review_status` 走**标准信封** + 桥接 `bad_envelope` 兜底透传（读写两路一致）；N5 新增只读工具 **`read_authority`**（写前自省写权，被拒 hint 指回它）；N6 三段 `date` 对称（`submit_review` 默认今天）；N9 label 归一化+enum（尾空格仍直连、非法值进 rejected）；N3 `prepare_review` 评审输入**豁免体积闸**（40 篇全达、不再静默砍半）。判据：`tests/test_ai_experience.py`。
+- **EXP-1 止血（P0）**：N1 `submit_review` 改 **per-item fail**（坏 item 进 `rejected`、捕 `KeyError`，不再一根手滑整批蒸发）；N2 `review_status` 走**标准信封** + 桥接 `bad_envelope` 兜底透传（读写两路一致）；N5 新增只读工具 **`read_write_authority`**（写前自省写权，被拒 hint 指回它；⚠ 2026-10-08 起该实现**已上提进框架** `mecha.authority`，本仓不再自持一份判定规则）；N6 三段 `date` 对称（`submit_review` 默认今天）；N9 label 归一化+enum（尾空格仍直连、非法值进 rejected）；N3 `prepare_review` 评审输入**豁免体积闸**（40 篇全达、不再静默砍半）。判据：`tests/test_ai_experience.py`。
 - **EXP-2 长活不阻塞**：`run_pipeline` **job 化**（`submit_job`/`read_job`/`cancel_job`）——走 run_pipeline 命令面（同写权门+审计+engine 取消点），项目侧 `BoundedSemaphore` 兜并发上限（框架 local JobRegistry 不排队）；命令 `estimate_sec` 改**非零/callable**（AI 能据此判断要不要 job 化）。判据含“取消后副作用不继续”（引擎级确定性）与并发上限。
 - **EXP-3 视野/自描述**：N4 `search_papers` 加 `offset`/`next_offset`（retrieval/repo 透传，翻页零交集）；N8 参数描述**下沉为单一事实源**（住 `ToolSpec.params[..]["description"]`，mecha 层透传，不再两份手抄；`attach_param_descriptions` 漂移即响亮报错）。
 - **EXP-4 AI 面守卫**（钉住“改对后的面”）：`test_ai_surface.py`（命名 snake_case 动词_宾语、禁 get_/list_、描述无实现词）、`test_capability_map.py`（声明==投影：22 能力 + 6 非能力面 = 28 工具，两侧都数）。工具面从 24 → **28**。

@@ -2,7 +2,7 @@
 
 对应 AI-EXPERIENCE-PLAN 的 N1–N6、N9（该计划未随仓发布）：
 E1.1 单字段不击穿整批 · E1.2 review_status 标准信封 + 桥接 bad_envelope 兜底 ·
-E1.3 信封纪律守卫（无裸 ok:false） · E1.4 read_authority 自省 · E1.5 三段 date 对称 ·
+E1.3 信封纪律守卫（无裸 ok:false） · E1.4 写权自省（**框架实现**，2026-10-08 上提） · E1.5 三段 date 对称 ·
 E1.6 label 归一化+enum · E1.7 评审输入豁免体积截断。
 """
 
@@ -19,7 +19,7 @@ from paperpilot.capabilities import registry_for
 from paperpilot.capabilities.base import gate as volume_gate
 from paperpilot.infra.arxiv import parse_atom
 from paperpilot.mecha_adapter.tools import envelope_to_error
-from tests.test_mecha_adapter import EXPECTED_TOOLS, _call, _stack
+from tests.test_mecha_adapter import _call, _stack
 
 from .conftest import SAMPLE_XML, make_settings
 
@@ -112,21 +112,62 @@ def test_bridge_flags_bare_ok_false_as_bad_envelope():
 # （都是 `registry_for(container).invoke` 的 no bare `ok:false`），而那条是更宽的超集（7 形态含 bad_params）。
 
 
-# ---------------------------------------------------------------- E1.4 (N5) read_authority
-def test_read_authority_self_reflection_and_hint_pointer(tmp_path):
-    """写权自省：LOCKED 下 ai_can_write=false + how_to_open；写被拒 hint 引用 read_authority。"""
+# ---------------------------------------------------------------- E1.4 (N5) 写权自省
+def test_write_authority_read_is_framework_owned_and_honest(tmp_path):
+    """写权自省：**框架的唯一实现**（`read_write_authority`）+ 四档逐档对 + 纯查询。
+
+    2026-10-08 用户裁决："GP 那份就是要删，上提到架构" ⇒ 本仓自写的 `read_authority`
+    （含 `_authority_view` 那份判定规则）已删；本判据改成钉**框架那份在本仓接线下的行为**。
+
+    ⚠ 为什么必须**逐档**断言（不是"返回了 dict"）：只断言"有 `ai_can_write` 这个键"，
+    把 `ai_can_write` 恒写成 `True` 也能绿 —— 那是 R11（观测量必须能变）。
+    """
     _container, stack = _stack(tmp_path, open_ai=False)         # 出厂 LOCKED
     tools = stack["tools"]
-    assert "read_authority" in EXPECTED_TOOLS
-    ra = _call(tools, "read_authority")
-    assert ra["ok"] and ra["mode"] == "locked"
-    assert ra["ai_can_write"] is False and ra["how_to_open"]
-    # 写被拒 → hint 指向 read_authority（先查后写）
+    authority = stack["authority"]
+
+    # ① 名字：框架的本名在工具面上，旧名**不在**（改了名却不删旧的 ⇒ 模型会两处都看到）
+    names = {s["name"] for s in tools.schemas()}
+    assert "read_write_authority" in names
+    assert "read_authority" not in names, "旧名还在工具面上（那是第二份实现，已裁决删掉）"
+
+    # ② 五档字段齐（`ok` 是照本仓原来那份补的 —— 消费方普遍先判 ok）
+    ra = _call(tools, "read_write_authority")
+    for key in ("ok", "mode", "ai_can_write", "human_holds", "how_to_open"):
+        assert key in ra, f"缺字段 {key}：{ra}"
+    assert ra["ok"] is True and ra["mode"] == "locked"
+    assert ra["how_to_open"], "how_to_open 不许为空（那是项目知识：人从哪儿开闸）"
+
+    # ③ ⭐ 四档逐档对（`Mode` 是 str-Enum ⇒ 一律 `.value`）
+    cases = {
+        Mode.LOCKED: (False, False),
+        Mode.AI: (True, False),
+        Mode.HUMAN: (False, True),
+        Mode.OPEN: (True, True),
+    }
+    seen: list[str] = []
+    for mode, (ai_ok, human_ok) in cases.items():
+        authority.switch_mode(mode, side="human")           # 只有人类侧能切
+        view = _call(tools, "read_write_authority")
+        assert view["mode"] == mode.value, f"{mode} ⇒ mode={view['mode']!r}"
+        assert view["ai_can_write"] is ai_ok, f"{mode}: ai_can_write 应为 {ai_ok}：{view}"
+        assert view["human_holds"] is human_ok, f"{mode}: human_holds 应为 {human_ok}：{view}"
+        seen.append(mode.value)
+    assert len(set(seen)) == 4                              # R8：四档真的都走过（不是空转）
+
+    # ④ 纯查询：调它不改 mode、不落账
+    authority.switch_mode(Mode.LOCKED, side="human")
+    before = len(stack["history"].events())
+    _call(tools, "read_write_authority")
+    assert authority.mode is Mode.LOCKED
+    assert len(stack["history"].events()) == before, "自省工具落了账（它必须是纯查询）"
+
+    # ⑤ 写被拒 ⇒ hint 指向新名（先查后写），且**不重复叠**（框架自己也会叠同一句）
     denied = _call(tools, "add_note", arxiv_id="2608.01101", content="x")
-    assert denied["ok"] is False and "read_authority" in denied["error"]["hint"]
-    # 开闸后 AI 可写
-    stack["authority"].switch_mode(Mode.AI, side="human")
-    assert _call(tools, "read_authority")["ai_can_write"] is True
+    assert denied["ok"] is False and denied["error"]["kind"] == "authority_locked"
+    hint = denied["error"]["hint"]
+    assert "read_write_authority" in hint, f"hint 没指向自省工具：{hint}"
+    assert hint.count("read_write_authority") == 1, f"同一句叠了两遍：{hint}"
 
 
 # ---------------------------------------------------------------- E1.7 (N3) 评审输入豁免截断
