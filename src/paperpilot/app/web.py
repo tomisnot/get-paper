@@ -838,26 +838,34 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
     #    `set_write_authority`/`open_manual_surface` 只在**控制端点**（`.control-port`），
     #    而那个地址只写进文件给框架/面板读、**不给 AI**（§7.1.1 的"地址传递"保证）。
     #    ⚠ 判据 `check/test_control_channel.py` 钉着"AI 面上没有那两个操作"。
+    # ⭐ 2026-10-09：这一路**改走框架那套**（`mecha_adapter.control.switch_write_authority`）
+    #    —— 与 `.control-port` 同一段实现 ⇒ 同一本账（原先直调 `switch_mode`，**不落账**）。
     @app.post("/monitor/mode")
     def switch_write_mode(target: str = Form("locked")):
-        """人类侧切写权模式：**服务端钉 `side="human"`**（本机可信、无口令）。
+        """人类侧切写权（**服务端钉 `side="human"`**；本机可信、无口令）。
 
-        ⚠ **归因不靠猜**：这一路恒为人类侧（`side="human"`）⇒ 记进账的是 human，
-        AI 拿不到这个入口（见上面的模块注释与 `check/test_control_channel.py`）。
-        
+        ## ⭐ 2026-10-09：**改走框架那套**（原先这里直调 `authority.switch_mode`）
+
+        | | 原先 | 现在 |
+        |---|---|---|
+        | 走什么 | ⛔ `stack["authority"].switch_mode(Mode(...), side="human")` **自己拼一遍** | ⭐ `switch_write_authority(stack, target)` ⇒ **框架控制面那个操作** |
+        | 记账 | ⛔ **不落账** | ✅ `gate.record("control.write_authority")` |
+        | 未接栈 / 非法值 | 各自一句文案 | 一处（框架的 `bad_mode` 也**响亮**了） |
+
+        ⇒ 理由不是"少写几行"，是 §4.3 那条纪律：**切写权也要在同一本账里查得到**
+        （否则"谁在什么时候把写权切走了"用这条路就查不到）。
+        ⚠ 归因不靠猜：这一路恒为人类侧（`side="human"`），AI 拿不到这个入口
+        （判据 `check/test_control_channel.py::test_ai_face_has_no_write_authority_setters`）。
+
         成功/未接栈都重定向到 **`/settings`**（本卡的新落点；`/monitor` 已不存在）。
         """
         if stack is None:
             return RedirectResponse("/settings?msg=未接监控面", status_code=303)
         from urllib.parse import quote
 
-        from mecha.authority import Mode
-        try:
-            # ⚠ 一律枚举 + `side="human"`（这一路恒人侧；归因不靠猜）。
-            stack["authority"].switch_mode(Mode(str(target).strip().lower()), side="human")
-            msg = f"写权已切到 {target}"
-        except Exception as exc:  # noqa: BLE001 - 展示可教学拒绝（含非法 target）
-            msg = f"切换失败：{exc}"
+        from ..mecha_adapter.control import switch_write_authority
+
+        msg = switch_write_authority(stack, target)
         return RedirectResponse(f"/settings?msg={quote(msg)}", status_code=303)
 
     # ---------------------------------------------------------------- 健康检查

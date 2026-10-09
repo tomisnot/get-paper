@@ -171,21 +171,76 @@ def test_set_write_authority_does_not_self_lock(tmp_path):
         "账里应有 control.write_authority 且 actor=human"
 
 
-def test_open_manual_surface_fails_loudly(tmp_path):
-    """⭐ ⑥ GP **没有窗口** ⇒ `open_manual_surface` **响亮失败**（不是静默成功）。
+def test_open_manual_surface_is_idempotent_success(tmp_path):
+    """⭐ ⑥ GP 的人面**常开**（Web 工作台随服务在）⇒ `open_manual_surface` **幂等成功**。
 
-    ⚠ 实测的"响亮"形状：工具层回**归一化失败信封** `{ok:false, error:{kind:"no_manual_surface",…}}`
-    （经工具面/控制端点给出的 payload 也是它；**不是** MCP 协议级 `isError` —— 那是框架的归一化口径，
-    不在这里断言成另一种形状）。
-    红证（实测）：把那句 `raise MechaError(...)` 换成 `return {"ok": True}`
-    ⇒ 本判据红（它断言的是 `ok is False` + `kind` + 消息说清人面在哪）。
+    ⚠ **本判据改过**（2026-10-09）：原先它断言的是 `no_manual_surface` **响亮失败**
+    —— 那是把"**常开**"报成"**失败**"：面板点「切到手动」会弹红字
+    "写权已交给人工，但**窗口没开成**"，而人面**早就在那儿**（假故障）。
+    ⇒ 设计 §7.1.1 已补"`open_manual_surface` 的三种结局"：**失败契约只属于真的没有人面者**。
+
+    三条都断言（⚙ "回 ok" 不够 —— 那对"每次都假装开了一个新面"也成立）：
+    ① `ok is True` 且 `status == "already-open"`；② **幂等**（再调一次同样）；③ **落账**。
+
+    红证（实测）：把 `_open_manual_surface` 改回
+    `raise MechaError("……", kind="no_manual_surface")` ⇒ ① 当场红。
     """
-    _stack_, reg = _control_reg(tmp_path)
+    stack, reg = _control_reg(tmp_path)
+    before = len(stack["history"].events())
     out = _call(reg, "open_manual_surface")
-    assert out["ok"] is False, f"没窗口却回了成功：{out}"
-    assert out["error"]["kind"] == "no_manual_surface", out["error"]
-    msg = str(out["error"].get("message") or "") + str(out["error"].get("hint") or "")
-    assert "Web" in msg and "settings" in msg, f"失败消息没说清人面在哪：{msg}"
+    assert out["ok"] is True, f"人面常开却被报成失败：{out}"
+    assert out["status"] == "already-open", out
+    assert _call(reg, "open_manual_surface")["status"] == "already-open", "不幂等"
+    ops = [e.op for e in stack["history"].events()[before:]]
+    assert "control.open_manual_surface" in ops, f"这个控制操作没落账：{ops}"
+
+
+def test_web_route_switch_is_recorded(tmp_path):
+    """⭐⭐ **Web 卡那条路也走框架那套、也落账**（§4.3：切写权必须可查）。
+
+    ⚠ 原先 Web 页面 `POST /monitor/mode` **直调** `authority.switch_mode(...)`：
+    同一个"人侧切写权"动作有**两条路**，而 Web 这条路**不落账**
+    ⇒ "谁在什么时候把写权切走了"在账里查不到 —— 正是 §4.3 要消灭的形态
+    （那也是 **GP 的 `how_to_open` 指向的那张卡**）。
+
+    三条：
+    ① 走**真 Web 路由**（`TestClient` 打 `POST /monitor/mode`，不直调内部函数）；
+    ② 写权**真的变了**（同一对象、同一进程）；
+    ③ ⭐ **账里有** `control.write_authority` 且 `actor == "human"`。
+
+    红证（实测）：把 `switch_write_mode` 改回直调 `stack["authority"].switch_mode(...)`
+    ⇒ ③ 当场红（写权照样变 ⇒ 只有"落账"这一条能抓住它）。
+    """
+    from fastapi.testclient import TestClient
+
+    from paperpilot.app.web import create_app
+
+    container, stack = _stack(tmp_path, open_ai=True)      # 起来是 AI 持有
+    authority = stack["authority"]
+    assert authority.mode is Mode.AI
+    before = len(stack["history"].events())
+    client = TestClient(create_app(container, stack), follow_redirects=False)
+    res = client.post("/monitor/mode", data={"target": "human"})
+    assert res.status_code == 303, res.status_code
+    assert authority.mode is Mode.HUMAN, "Web 那条路没切到 human"
+    events = stack["history"].events()[before:]
+    assert any(e.op == "control.write_authority" and e.actor == "human" for e in events), (
+        "Web 那条路切写权**没落账**（同一个人侧动作两条路，其中一条在账里查不到）："
+        + str([(e.op, e.actor) for e in events]))
+
+
+def test_web_route_rejects_unknown_mode_loudly(tmp_path):
+    """Web 那条路对**未知 mode** 也响亮（不是静默当默认值）—— 与框架同一份判定。"""
+    from fastapi.testclient import TestClient
+
+    from paperpilot.app.web import create_app
+
+    container, stack = _stack(tmp_path, open_ai=True)
+    before = stack["authority"].mode
+    client = TestClient(create_app(container, stack), follow_redirects=True)
+    res = client.post("/monitor/mode", data={"target": "Mode.AI"})   # ⚠ 那个经典坑的形状
+    assert stack["authority"].mode is before, "未知 mode 竟改了写权"
+    assert "切换失败" in res.text and "bad_mode" in res.text, res.text[:300]
 
 
 def test_unknown_mode_is_loud(tmp_path):

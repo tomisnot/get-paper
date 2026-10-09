@@ -63,12 +63,16 @@ def test_control_endpoint_starts_and_three_ops_work(tmp_path):
         # ④ 切：经 wire 切到 human ⇒ 立刻生效（同一对象、同一进程，不需要重连）
         assert json.loads(got["set_write_authority"]["text"])["ok"] is True
         assert stack["authority"].mode is Mode.HUMAN
-        # ⑤ 开窗：GP 没有窗口 ⇒ **响亮失败**在 payload 里（⚠ 实测：框架把 `ok:false` 的
-        #    失败信封**当正文回**，不设 MCP 协议级 `isError` ⇒ 断言 payload，别断言 isError）
+        # ⑤ 开手动面：GP 的人面（Web 工作台）**一直开着** ⇒ **幂等成功**在 payload 里。
+        #    ⚠ **本断言改过**（2026-10-09）：原先它断言 `no_manual_surface` 响亮失败 ——
+        #    那是把"**常开**"报成"**失败**"（面板会红一次"窗口没开成"，而人面早就在）。
+        #    ⇒ 设计 §7.1.1 已补"三种结局"：**失败契约只属于真的没有人面者**。
+        #    ⚠ 形状照旧断言 **payload**（框架把 `ok:false` 的失败信封当正文回、不设协议级 isError）。
         open_out = json.loads(got["open_manual_surface"]["text"])
-        assert open_out["ok"] is False, f"没窗口却回了成功：{open_out}"
-        # ⚠ 实测形状：失败信封把领域失败放在 `error.info` 里（不是 `error.kind`）——
-        #    `{"is_error": True, "error": {"message":…, "info": {"kind":…, "hint":…}}}`
-        assert open_out["error"]["info"]["kind"] == "no_manual_surface", open_out["error"]
+        assert open_out["ok"] is True, f"人面常开却被报成失败：{open_out}"
+        assert open_out["status"] == "already-open", open_out
+        # ⑥ 且**落账**（§4.3：控制操作也要在同一本账里查得到）
+        ops = [e.op for e in stack["history"].events()]
+        assert "control.open_manual_surface" in ops, ops
     finally:
         endpoint.stop()
