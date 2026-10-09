@@ -123,7 +123,10 @@ SITE = Site(
             #: ``BOOT_MODE_DEFAULT = "open"``（**"不卡写权"**：两侧都能写，代价是后写覆盖）。
             #: ⚠ 这与新架构的"**从 mecha 启动 = 永远是 AI 组**"**不冲突** ——
             #: 前者定的是"**软件出厂策略**"，后者定的是"**从 mecha 起时给什么写权**"。
-            #: ⇒ 从 mecha 起 ⇒ 声明 **AI**（框架只在 spawn 时把它送进去，应用与否由软件决定）；
+            #: ⇒ 从 mecha 起 ⇒ 声明 **AI**（框架 spawn 时经 `MECHA_INITIAL_MODE` 送进去）；
+            #:   ⭐ **软件侧已接通**（2026-10-08）：`hub.boot_mode` 读它并装配闸门，
+            #:   优先级 **argv 显式 `--mode` > `MECHA_INITIAL_MODE` > 本仓默认 `open`**
+            #:   （判据 `check/test_boot_mode_priority.py`）。
             #:   而人若想"不卡写权"，那是在**面板上切**（`Mode.OPEN`）的事。
             initial_mode=Mode.AI,
             #: ⭐ 一句话讲**人从哪个入口切写权**（框架不写死它：这是项目知识）。
