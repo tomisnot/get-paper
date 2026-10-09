@@ -229,25 +229,35 @@ def test_web_port_published_only_when_listening(tmp_path):
     assert not port_file.exists(), "没人听却发布了端口文件 = 面板拿到死地址（假绿）"
 
 
-def test_web_port_file_name_matches_declaration():
-    """**跨语言单一来源**：Python 写的端口文件名 == **站点声明**里那份 `port_file`。
+def test_monitor_port_file_name_matches_declaration():
+    """**跨语言单一来源**：cockpit 写的端口文件名 == **站点声明**里那份 `port_file`。
 
     两边各写一份的后果就是本轮要修的那个病：**地址漂移 ⇒ 面板空白且零报错**。
 
-    ⚠ **2026-10-09 改口径**（监控面上提进框架）：原先本守卫读的是 dsh 侧的
-    `src/gp-params.ts`（`GP_PANEL`）—— 那个常量**已删**（地址路由与参数都归框架）。
-    ⇒ 现在对拍的是**声明**（`mecha_site.py` 的 `MonitorSpec`）：它才是"面板参数"的**唯一家**
-      （框架按它生成参数、按 `port_file` 现取端口）。
+    ⚠ **2026-10-09 改口径两处**：
+    ① 原先读的是 dsh 侧的 `src/gp-params.ts`（`GP_PANEL`）—— 那个常量**已删**
+       （地址路由与参数都归框架）⇒ 现在对拍的是**声明**（`mecha_site.py` 的 `MonitorSpec`）；
+    ② ⭐ **原来是拿 `cli.WEB_PORT_FILE` 比的，那是错的**（实测抓到的真 bug）：
+       `paperpilot mcp` **不起 Web 服务** ⇒ `.web-port` 永远不写 ⇒ 面板那条路由恒 **503**。
+       「监控面」是 **cockpit**（只读 `/status /activity /history /config`，正是资产面板要读的
+       那个形状）⇒ 对拍对象改成 cockpit 的端口文件名。
     ⚠ 读的是**磁盘上的文件内容**（不经 git）—— 本工程有"gitignore 的文件逃出验收"的教训。
     """
     decl_path = cli.DSH_DIR.parent / "mecha_site.py"
     assert decl_path.is_file(), f"找不到站点声明：{decl_path}"
     decl = decl_path.read_text(encoding="utf-8")
 
+    #: cockpit 的端口文件名（`paperpilot mcp` 里写死的那个字面量；与 `cli.py:298` 同源）。
+    cockpit_port_file = ".cockpit-port"
+
     port_file = re.search(r"port_file=\"([^\"]*)\"", decl)
     assert port_file, "声明里找不到 port_file（形状变了 ⇒ 本守卫要跟着改）"
-    assert port_file.group(1) == cli.WEB_PORT_FILE, (
-        f"端口文件名漂移：声明 {port_file.group(1)!r} != Python 侧 {cli.WEB_PORT_FILE!r}")
+    assert port_file.group(1) == cockpit_port_file, (
+        f"监控端口文件名漂移：声明 {port_file.group(1)!r} != cockpit 侧 {cockpit_port_file!r}"
+        "（⚠ 写成 `.web-port` 会让面板恒 503：`mcp` 形态不起 Web 服务）")
+    #: ⚠ 对偶（不许空洞）：`.web-port` **仍在**本仓用着，但它是**另一件事**
+    #: （人用的 Web 工作台，由 `serve` 写）⇒ 两者不是同一个文件，别互相顶替。
+    assert cli.WEB_PORT_FILE == ".web-port"
 
     route = re.search(r"route_path=\"([^\"]*)\"", decl)
     assert route, "声明里找不到 route_path（形状变了 ⇒ 本守卫要跟着改）"

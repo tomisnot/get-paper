@@ -134,15 +134,22 @@ SITE = Site(
             how_to_open=("在 Get Paper 的 Web 页 `/settings` 的「写权模式」卡上切"
                          "（本机可信、无口令；AI 侧不能自解锁——它拿不到控制端点的地址）"),
             #: ⭐ **监控面声明**（三层架构 §7.3.6）：路由 / 端口文件名 / 标题只在这里写一次。
-            #: ⚠ GP 的监控端点是它**自己的 Web 端口**（`.web-port`），不是 `.mcp-port`。
+            #: ⚠ **2026-10-09 改准：`.web-port` → `.cockpit-port`**（实测抓到的真 bug）。
+            #:   · `paperpilot mcp`（框架起的那条形态）**不起 Web 服务** ⇒ `.web-port` **永远不写**
+            #:     ⇒ 框架那条地址路由回 **503「读不到监控端口」**、面板那页永远打不开；
+            #:   · 而它**确实**起的是 **cockpit**（`[mecha-cockpit] http://…`，只读
+            #:     `/status /activity /history /config /summary`）—— ⭐ 那正是**资产面板**
+            #:     要读的那个形状（资产文档原话："监控端点的端口是动态分配的
+            #:     （`mecha.cockpit` 用 `port=0` 起端点）"）。
+            #:   ⇒ 「监控面」= **cockpit**；`.web-port` 是另一件事（人用的 Web 工作台，
+            #:     由 `paperpilot serve` 写）。
             #: ⚠ 框架把它生成成参数、经**框架自己的 patch** 带上的插件交给浏览器
-            #: ⇒ 本项目 dsh 侧只留"一行 bootstrap + 自定义 UI"（`dsh/src/client/index.ts` 的
-            #: 「☀ 评审今日」按钮**保留**：那是自定义 UI，不是监控面板那一份）。
-            #: ⭐ 2026-10-09：**监控地址路由也由框架注册**（框架的 host 插件按 `port_file` 的
+            #: ⇒ 本项目 dsh 侧只留**那一行 bootstrap**（自定义 UI 已按用户裁决删除）。
+            #: ⭐ **监控地址路由也由框架注册**（框架的 host 插件按 `port_file` 的
             #: **绝对路径**现取端口）⇒ 这是那三个值的**唯一家**（项目侧的 `GP_PANEL` 已删）。
             monitor=MonitorSpec(
                 route_path="/paperpilot/monitor-url",
-                port_file=".web-port",
+                port_file=".cockpit-port",
                 title="操作审计",
             ),
             env=_STATE_ENV,

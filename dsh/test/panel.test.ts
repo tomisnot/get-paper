@@ -17,7 +17,8 @@
  * ## 本文件现在钉三件（都是"本仓自己的"）
  *
  *  1. ⭐ **那一行 bootstrap**：client 半必须接上**框架的** client 插件
- *     （少了它 = 右栏一个 tab 都没有，而那不会报错）；本仓的**自定义 UI**（☀ 评审今日）照旧；
+ *     （少了它 = 右栏一个 tab 都没有，而那不会报错）；⚠ **本仓的自定义 UI 已删**
+ *     （用户裁决：「☀ 评审今日」不起作用、还挤在框架那个唯一的「◈ 监控」按钮旁边）；
  *  2. ⭐ **不许再自己注册面板/地址路由**（`GP_PANEL` / `panelConfig` / 手写 tab 注册 **不许回来**）：
  *     ⚠ 同一条 `routePath` 注册两次是接线错误（谁生效取决于注册顺序）；
  *  3. **反面语料**：本仓历史的静态默认地址 `http://127.0.0.1:8080` 不许出现在 dsh 源码里
@@ -65,9 +66,11 @@ function codeHits(needle: string): string[] {
 
 // ---------------------------------------------------------------- 2 不许再自己注册
 test('⭐ 监控面归框架 ⇒ 本仓不许再有 GP_PANEL / panelConfig / 自己的 tab 注册', () => {
+  // ⚠ **2026-10-09 改**：本仓 client 半退成**一行 bootstrap**（自定义 UI 已按用户裁决删除）
+  //   ⇒ 判据从"必须调 `applyMechaPanels(ctx)`"改成"必须是那一行再导出"（与 EL 同形）。
   assert.match(read('client/index.ts'),
-    /applyMechaPanels\(ctx/,
-    'client 半必须调框架那份插件（applyMechaPanels）——少了它 = 右栏一个 tab 都没有')
+    /export \{ apply, name, inject \} from '@mecha\/dsh-panel\/panel\/auto\.ts'/,
+    'client 半必须是那一行 bootstrap（少了它 = 右栏一个 tab 都没有，且不报错）')
   for (const needle of ['GP_PANEL', 'panelConfig', 'makeMonitorUrlHandler', 'configurePanel']) {
     const hits = codeHits(needle)
     assert.deepEqual(hits, [], `${needle} 又回来了（路由/参数的第二处真值）：${hits.join('、')}`)
@@ -150,10 +153,16 @@ test('⭐ 本项目 client 入口的 import 闭包里没有 node:（浏览器安
   // R8 自证：闭包必须**真的走过若干文件**，否则"没命中"只是因为什么都没读到
   // ⚠ 走下界**跟着事实走**：`seen` 只记**本仓自己的**文件（走到 `@mecha/dsh-panel`
   //   就停在包边界、不再深入，见上面的 `assetHits`）。
-  assert.ok(seen.size >= 2, `闭包只走了 ${seen.size} 个文件 ⇒ 检查可能没生效：${[...seen]}`)
-  // 对偶（不许误报）：闭包**必须包含** GP 自己那个**自定义 UI**（监控面板那半归框架了）
-  assert.ok(seen.has('client/ReviewSopButton.tsx'),
-    `闭包里应当有 GP 的自定义 UI：${[...seen]}`)
+  // ⚠ **2026-10-09 改**：本仓 client 半现在**只剩那一行 bootstrap**（自定义 UI 已删，
+  //   见下一条）⇒ `seen` 就只有入口自己；下界随之从 2 降到 1（不是放宽，是事实变了）。
+  assert.ok(seen.size >= 1, `闭包一个文件都没走过 ⇒ 检查没生效：${[...seen]}`)
+  assert.ok(seen.has('client/index.ts'), `闭包该从本仓入口开始：${[...seen]}`)
+  // ⭐ **反向断言**：GP 自己那个「☀ 评审今日」按钮**已删**（用户裁决：它不起作用 + 挤在
+  //   框架那个唯一的「◈ 监控」按钮旁边）⇒ 源码里不许再有它（R13：删了要留"不许回来"）。
+  for (const needle of ['ReviewSopButton', 'pp-review-sop', '评审今日']) {
+    const hits = codeHits(needle)
+    assert.deepEqual(hits, [], `${needle} 又回来了（那个按钮已按用户裁决删除）：${hits.join('、')}`)
+  }
   //   ⭐ 走到了**资产包**这件事由 `assetHits` 记录（`seen` 按设计**不含**包内文件），
   //   所以"必须接上框架那份插件"那条要查 `assetHits`，不能查 `seen`。
   assert.ok(assetHits.some((h) => h.includes('panel/auto.ts')),
