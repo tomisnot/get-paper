@@ -149,7 +149,7 @@ SITE = Site(
         ),
     ),
     dsh=DSHSpec(
-        command=("dsh",),
+        command=("dsh", "web"),
         cwd=_SITE_ROOT,
         #: 入库的**交付层 + 项目层**（§7.2.2 裁决）。第三层（指向聚合端点的 overlay）
         #: 是**生成物**，由框架按聚合端点地址生成。
