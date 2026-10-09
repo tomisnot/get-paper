@@ -3,13 +3,22 @@
  *
  * ⚠ **2026-09-26 第 5 批（用户裁决）**：「📄 简报」iframe 那条链**整体退役**——
  * 阅读面就是 PaperPilot 自己的 Web，不必在 dsh 里再套一层；dsh 侧栏只保留
- * **「◈ 监控」原生页签**（AI 干了什么、走的哪道门）。没有第二个面板了，
- * 原先"两面板共用右栏必须互斥"的约束随之退役（不是缺陷被修，是需要性消失）。
+ * **「◈ 监控」原生页签**（AI 干了什么、走的哪道门）。
  *
- * 贡献：① 会话头部「◈ 监控」按钮（`conversation.session.header.actions`）；
- * ② 右栏页签类型 + body——数据/呈现全部来自**依赖包** `@mecha/dsh-panel`
- * （`panel-data.ts` / `panel-view.ts` / `MonitorTabBody.tsx`），本项目只**注入参数**
- * （`configurePanel({...GP_PANEL})`，值在 `gp-params.ts`）。注册与副作用经 `ctx.effect` 可逆。
+ * ⭐ **2026-10 阶段①**：**「◈ 监控」按钮与右栏页签注册都归框架**了
+ * （`mountClientPanel`：按钮全生态**唯一一个**、语义 = **开右栏**；页签按 §7.3.3 命名）。
+ * 本仓原来的两段手写注册（`conversation.session.header.actions` 的监控按钮、
+ * `sidebarRightTabs` + `sidebar.right.pane.tab`）随之删除 —— 三家里各写一遍时，
+ * `title: () => panelConfig().title` 是**渲染时求值**的 thunk ⇒ 三家装进同一个 dsh 时
+ * 三个页签的标题与取数路由**全落到"最后注册那一份"**（且不报错）。
+ *
+ * ⭐ **本仓仍贡献自己的东西**（"自定义 UI"那条路**保留**）：
+ * 「☀ 评审今日」按钮（`ReviewSopButton`，一键复制固定评审 SOP）**留在本文件**——
+ * 框架管的是**监控面板那一份**，不是"项目不许有别的按钮"。
+ *
+ * 数据/呈现全部来自**依赖包** `@mecha/dsh-panel`（`panel-data.ts` / `panel-view.ts` /
+ * `MonitorTabBody.tsx`），本项目只**交出参数**（`GP_PANEL`，值在 `gp-params.ts`）。
+ * 注册与副作用经 `ctx.effect` 可逆。
  *
  * 地址唯一来源仍是：host 同源只读路由（注入的 `routePath`；读项目根注入的 `portFile` 的裸端口，
  * **绝不回落默认端口**）——由包里的 `monitor-client.ts` 自己消费，本入口不再碰。
@@ -18,10 +27,9 @@
  * `npm run bundle` 并重启 dsh 才生效。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { configurePanel, panelConfig } from '@mecha/dsh-panel/panel/panel-config.ts'
+import { mountClientPanel } from '@mecha/dsh-panel/panel/mount-client-plugin.ts'
 import { MonitorTabBody } from '@mecha/dsh-panel/panel/MonitorTabBody.tsx'
 import { GP_PANEL } from '../gp-params.ts'
-import { MonitorButton, type MonitorInjected } from './MonitorButton.tsx'
 import { ReviewSopButton } from './ReviewSopButton.tsx'
 
 /** Cordis 插件名（与 host 半一致）。 */
@@ -32,28 +40,25 @@ export const name = 'paperpilot'
  *  Cordis ctx 是代理：未在 inject 声明的服务一访问就抛，故用到的必须在此声明。 */
 export const inject = ['slots', 'layout', 'sidebarRight', 'sidebarRightTabs']
 
-/** 监控面板的右栏页签 id；`kind` 与 `sidebar.right.pane.tab` 的 key **必须一致**。 */
-const MONITOR_TAB_ID = 'pp-monitor'
+/** ⭐ §7.3.3 定案：逐服务一个 `kind` / 一个 `id`（契约拒绝重复 id 与同 tier 同 kind 二次注册）。 */
+const TAB_KIND = 'mecha:GP'
+const TAB_ID = 'mecha-panel:GP'
 
 export async function apply(ctx: Context): Promise<void> {
-  // ⚠ client 半是**另一份 bundle/另一个进程** ⇒ 面板参数要在这里**再注入一次**
-  // （资产不存项目值；未注入 ⇒ `panelConfig()` 抛，面板宁可炸也不假装空）。
-  const releasePanel = configurePanel({ ...GP_PANEL })
   await ctx.effect(() => {
-    // 「◈ 监控」按钮：开右栏 → 打开我们的页签（按钮不自己开合，宿主侧动作，与 EL 同形）。
-    const disposeMonitorBtn = ctx.slots.inject('conversation.session.header.actions', () =>
-      ctx.slots.register(
-        { name: 'conversation.session.header.actions', id: MONITOR_TAB_ID, order: 201,
-          label: '◈ 监控',
-          inject: (): MonitorInjected => ({
-            openCockpit: () => {
-              ctx.layout?.openRightbar?.(true, false)
-              try { ctx.sidebarRight?.openTab?.(MONITOR_TAB_ID) } catch { /* 降级：右栏开了但没切页签 */ }
-            },
-          }) } as never,
-        MonitorButton,
-      ))
+    // ⭐ 一次调用管全部：参数**跟着这次注册走**（标题闭包捕获自己那份、正文以显式 prop
+    // 收到自己那份）；头部「◈ 监控」按钮由框架注册**唯一一个**。
+    // ⚠ 参数在这里**交出**（不再顶层 `configurePanel`）—— helper 内部会用
+    //   `openPanelConfig` 校验并绑定（字段留空 ⇒ 当场抛，响亮失败）。
+    const disposePanel = mountClientPanel(ctx as never, {
+      panelConfig: GP_PANEL,
+      kind: TAB_KIND,
+      id: TAB_ID,
+      body: MonitorTabBody,
+      titlePrefix: '◈ 监控 · ',
+    })
 
+    // ⭐ **本仓自己的**按钮（自定义 UI 那条路，**不是**监控面板那一份）：
     // 「☀ 评审今日」（D1）：把固定评审 SOP 一键复制进剪贴板（零宿主 API 假设）。
     const disposeSopBtn = ctx.slots.inject('conversation.session.header.actions', () =>
       ctx.slots.register(
@@ -61,22 +66,9 @@ export async function apply(ctx: Context): Promise<void> {
         ReviewSopButton,
       ))
 
-    // 页签类型 + body：零 react 判据在资产自测里；.tsx 壳只过 typecheck。
-    const releaseTabType = ctx.sidebarRightTabs?.register?.({
-      id: MONITOR_TAB_ID, kind: MONITOR_TAB_ID, title: () => panelConfig().title,
-    }) ?? null
-    const disposeTabBody = ctx.slots.inject('sidebar.right.pane.tab', () =>
-      ctx.slots.register(
-        { name: 'sidebar.right.pane.tab', key: MONITOR_TAB_ID } as never,
-        MonitorTabBody as never,
-      ))
-
     return () => {
       try { disposeSopBtn?.() } catch { /* ignore */ }
-      if (disposeTabBody) { try { disposeTabBody() } catch { /* ignore */ } }
-      if (typeof releaseTabType === 'function') { try { releaseTabType() } catch { /* ignore */ } }
-      try { disposeMonitorBtn?.() } catch { /* ignore */ }
-      releasePanel()       // 注入态清回"未注入"（可逆）
+      disposePanel()
     }
   }, 'paperpilot: monitor tab')
 }

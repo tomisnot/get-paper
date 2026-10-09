@@ -241,12 +241,26 @@ test('⭐ 本项目 client 入口的 import 闭包里没有 node:（浏览器安
     `client 闭包 import 了非白名单裸包：${bareHits.join('、')}`
     + ' ⇒ 只许宿主注入的 react + 资产包 @mecha/dsh-panel + 相对路径')
   // R8 自证：闭包必须**真的走过若干文件**，否则"没命中"只是因为什么都没读到
-  // （依赖化后 GP 侧只剩这几个文件；包内文件由资产自己的守卫走）
-  assert.ok(seen.size >= 4, `闭包只走了 ${seen.size} 个文件 ⇒ 检查可能没生效：${[...seen]}`)
+  // ⚠ 走下界**跟着事实走**：`seen` 只记**本仓自己的**文件（走到 `@mecha/dsh-panel`
+  //   就停在包边界、不再深入，见上面的 `assetHits`）⇒ 阶段①删掉 `client/MonitorButton.tsx`
+  //   之后本仓 client 闭包正好是 3 个：`client/index.ts` / `gp-params.ts` /
+  //   `client/ReviewSopButton.tsx`。
+  //   ⭐ 这里**不是**放宽：下面的"对偶"逐条点名要求那 3 个**都在**，所以把下界写成 3
+  //   等于**正好等于事实**（写 4 反而会让这条自证失败而与安全无关）。
+  assert.ok(seen.size >= 3, `闭包只走了 ${seen.size} 个文件 ⇒ 检查可能没生效：${[...seen]}`)
   // 对偶（不许误报）：闭包**必须包含** GP 自己那几个 client 侧文件
-  for (const must of ['client/MonitorButton.tsx', 'client/ReviewSopButton.tsx', 'gp-params.ts']) {
+  // ⚠ 2026-10 阶段①：`client/MonitorButton.tsx` **已删**（那个「◈ 监控」按钮归框架了：
+  //   框架的 `mountClientPanel` 注册全生态唯一一个）⇒ 它不再进闭包，也就不该再被要求。
+  //   ⭐ 删掉这一项**不等于放宽**：同时补一条**更强**的要求——闭包必须走到**框架 helper**
+  //   （否则"参数交给框架"这件事根本没发生，面板会读不到参数）。
+  for (const must of ['client/ReviewSopButton.tsx', 'gp-params.ts']) {
     assert.ok(seen.has(must), `闭包里应当有 ${must}：${[...seen]}`)
   }
+  //   ⭐ 走到了**资产包**这件事由 `assetHits` 记录（`seen` 按设计**不含**包内文件），
+  //   所以"必须经框架 helper 挂载"那条要查 `assetHits`，不能查 `seen`。
+  const helperHit = assetHits.some((h) => h.includes('mount-client-plugin'))
+  assert.ok(helperHit,
+    `client 半应当经框架的 mount-client-plugin 挂监控页签与按钮：${assetHits.join('、')}`)
   // ⭐ 反向对偶：面板**必须**来自包 —— 不是某个残留的相对副本路径（依赖化改造的验收）
   assert.ok(assetHits.length >= 2,
     `client 半没有从 ${ASSET_PKG} 取面板（是不是还在 import 旧副本？）：${[...seen]}`)
