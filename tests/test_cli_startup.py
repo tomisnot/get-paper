@@ -29,11 +29,13 @@ from paperpilot.app.cli import _ensure_port_free
 
 
 # ---------------------------------------------------------------- 起步写权模式（本批行为变更）
-def test_boot_mode_default_is_open_and_maps_four_values():
+def test_boot_mode_default_is_open_and_maps_four_values(monkeypatch):
     """⭐ GP 以 **OPEN** 起步（"不卡写权"）；四个值都能映射，未知值**响亮拒绝**。
 
     ⚠ 这是**行为变更**：从前启动默认是 LOCKED（AI 要等人类开闸），现在默认"两侧都能写"；
     `locked` 仍在（维护/急停），`ai`/`human` 也仍在（= 从前的独占形态，能力没丢）。
+    ⚠ 2026-10-08：`boot_mode("")` 现在先看框架声明（`MECHA_INITIAL_MODE`）⇒ 本判据清掉它，
+    验的还是**本仓默认**；三档优先级的完整判据在 `check/test_boot_mode_priority.py`。
     """
     from mecha.authority import Mode
 
@@ -44,7 +46,10 @@ def test_boot_mode_default_is_open_and_maps_four_values():
     assert hub.boot_mode("locked") is Mode.LOCKED
     assert hub.boot_mode("human") is Mode.HUMAN
     assert hub.boot_mode("ai") is Mode.AI
-    assert hub.boot_mode("") is Mode.OPEN                 # 空 ⇒ 默认（不猜别的）
+    # ⚠ 2026-10-08：`""` = **未给 argv** ⇒ 走"框架声明 > 本仓默认"那两级。
+    # 这里先清掉声明，验的就是**本仓默认**（三级优先级的完整判据在 check/test_boot_mode_priority.py）。
+    monkeypatch.delenv("MECHA_INITIAL_MODE", raising=False)
+    assert hub.boot_mode("") is Mode.OPEN                 # 无声明 ⇒ 默认（不猜别的）
     with pytest.raises(ValueError):
         hub.boot_mode("root")                             # 未知值不静默放过
 
@@ -60,8 +65,11 @@ def test_cli_exposes_mode_flag_and_dropped_open_gate():
         params = inspect.signature(fn).parameters
         assert "mode" in params, f"{fn.__name__} 应当有 --mode（起步写权模式）"
         default = params["mode"].default
-        assert getattr(default, "default", default) == "open", (
-            f"{fn.__name__} 的 --mode 默认应为 open，实际 {default!r}")
+        # ⚠ 2026-10-08：typer 的默认是 `""` = **未指定** ⇒ 让 `boot_mode` 走三档优先级
+        #（argv > MECHA_INITIAL_MODE > 本仓默认 open）。"有效默认仍是 open"由
+        # `check/test_boot_mode_priority.py::test_without_env_still_uses_repo_default` 钉。
+        assert getattr(default, "default", default) == "", (
+            f"{fn.__name__} 的 --mode 默认应为 ''（未指定 ⇒ 交给优先级链），实际 {default!r}")
         assert "open_gate" not in params, (
             f"{fn.__name__} 不该再有 --open-gate（默认已是 open；那个 flag 的行为是'收成只有 AI 能写'，名字会撒谎）")
 
@@ -75,7 +83,8 @@ def test_hub_arg_parser_has_mode_not_open_gate():
     assert "--mode" in opts, f"应有 --mode：{sorted(opts)}"
     assert "--open-gate" not in opts, f"--open-gate 应已删除：{sorted(opts)}"
     ns = parser.parse_args([])
-    assert ns.mode == hub.BOOT_MODE_DEFAULT
+    # ⚠ 2026-10-08：argparse 的默认也是 `""`（未指定 ⇒ 交给 `boot_mode` 的三档优先级）。
+    assert ns.mode == "" and ns.mode != hub.BOOT_MODE_DEFAULT
     assert parser.parse_args(["--mode", "locked"]).mode == "locked"
 
 

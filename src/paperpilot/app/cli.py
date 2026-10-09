@@ -29,7 +29,7 @@ import typer
 from ..infra.arxiv import parse_atom
 
 try:
-    from ..mecha_adapter.hub import BOOT_MODE_DEFAULT
+    from ..mecha_adapter.hub import boot_mode
 except ImportError as _exc:                      # 只拦"缺 mecha"这一种（别的原样抛）
     # ⭐ **可教学错误**（本仓给陌生人用：一条看不懂的 traceback 就是门槛）。
     # ⚠ 只对"缺 mecha（框架）"给教学信息；**别的 ImportError 原样抛**（别掩盖真错误）。
@@ -47,8 +47,11 @@ except ImportError as _exc:                      # 只拦"缺 mecha"这一种（
     ) from _exc
 
 #: `--mode` 的帮助文案（四个值逐一说清；尤其 `ai` = **只有 AI 能写**，别让名字猜）。
-_MODE_HELP = ("起步写权模式：open=两侧都能写（默认，不卡写权）、locked=谁都不能写（维护/急停）、"
-              "human=只有 Web 人侧能写、ai=只有 AI 能写")
+#: ⚠ **不传** ⇒ 交给 `hub.boot_mode` 解析三档优先级：
+#: **argv 显式 > `MECHA_INITIAL_MODE`（框架声明，从 mecha 启动时是它）> 本仓默认 open**。
+_MODE_HELP = ("起步写权模式：open=两侧都能写（本仓默认，不卡写权）、locked=谁都不能写（维护/急停）、"
+              "human=只有 Web 人侧能写、ai=只有 AI 能写。"
+              "不传时：优先用框架声明的 MECHA_INITIAL_MODE（从 mecha 启动就是它），没有才用本仓默认 open")
 
 app = typer.Typer(
     help="PaperPilot — arXiv 每日文献情报系统",
@@ -263,14 +266,16 @@ def _boot_stack(settings, *, mode: str, with_cockpit: bool, log):
     ⚠ **控制端点不门控**（契约 §7.1.1）：写权与"有没有窗口"正交 ⇒ 每个进程都起
     （`has_gui` 只决定面板显不显示"切到手动"）。它**不导出给 AI**：地址只进 `.control-port`。
 
-    ⚠ **起步模式由 ``mode`` 决定**（默认 `BOOT_MODE_DEFAULT="open"`，见 `hub.boot_mode`）。
-    ⚠ **未决**：框架经 `MECHA_INITIAL_MODE` 送来的"启动者声明的初始写权"GP **还没读**
-    （`mecha_site.py` 里的 `initial_mode` 已声明；读与应用是下一轮）。
+    ⚠ **起步模式三档优先级**（`hub.boot_mode`）：**argv 显式 `--mode` > `MECHA_INITIAL_MODE`
+    （框架/启动者声明，从 mecha 启动时是它）> 本仓默认 `BOOT_MODE_DEFAULT="open"`**。
+    ⇒ 框架声明了就以框架为准；没有声明（或缺省/空串 = 显式取消）才用本仓"不卡写权"的出厂策略。
+    ⚠ 两者**不冲突**：前者是"**这一次启动**给什么写权"，后者是"**软件出厂策略**"。
     """
+    # ⚠ `boot_mode` 走**模块级**那个（它的 import 由上面的 try/except 包着 ⇒ 缺 mecha 时给可教学错误）。
     from mecha.software_control import CONTROL_PORT_FILE
 
     from ..mecha_adapter.control import start_control
-    from ..mecha_adapter.hub import boot_mode, build_stack, make_host
+    from ..mecha_adapter.hub import build_stack, make_host
     from ..mecha_adapter.monitor import start_cockpit
     from .container import build_container
 
@@ -292,7 +297,7 @@ def _boot_stack(settings, *, mode: str, with_cockpit: bool, log):
     return container, stack, mcp_host, control, cockpit
 
 
-def _serve_impl(config, host=None, port=None, mode=BOOT_MODE_DEFAULT, no_cockpit=False,
+def _serve_impl(config, host=None, port=None, mode="", no_cockpit=False,
                 no_open=False) -> None:
     """统一启动实体（被 no-arg 默认与 ``serve`` 命令共用；普通默认值，非 Option）。"""
     import uvicorn
@@ -337,7 +342,7 @@ def serve(
     config: Path = typer.Option(None, "--config", "-c", help="配置文件路径"),
     host: str = typer.Option(None, "--host", help="Web 绑定地址（默认取 settings.web.host）"),
     port: int = typer.Option(None, "--port", "-p", help="Web 端口（默认取 settings.web.port）"),
-    mode: str = typer.Option(BOOT_MODE_DEFAULT, "--mode", help=_MODE_HELP),
+    mode: str = typer.Option("", "--mode", help=_MODE_HELP),
     no_cockpit: bool = typer.Option(False, "--no-cockpit", help="不起 cockpit 监控端点"),
     no_open: bool = typer.Option(False, "--no-open", help="不自动开浏览器（人面前台）"),
 ) -> None:
@@ -480,14 +485,17 @@ def web(
 def mcp(
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(0, "--port", "-p", help="0=自动选空闲端口（写 .mcp-port 供发现）"),
-    mode: str = typer.Option(BOOT_MODE_DEFAULT, "--mode", help=_MODE_HELP),
+    mode: str = typer.Option("", "--mode", help=_MODE_HELP),
     no_cockpit: bool = typer.Option(False, "--no-cockpit", help="不起 cockpit 监控端点"),
     config: Path = typer.Option(None, "--config", "-c"),
 ) -> None:
     """只起 mecha MCP 语义通道（headless，无 Web）；DSH 等 harness 经 .mcp-port attach。"""
     from ..mecha_adapter import hub as mecha_hub
 
-    argv = ["--host", host, "--port", str(port), "--mode", mode]
+    # ⚠ 只在**显式给了**时才把它当 argv 传给 hub（argparse 的 `choices` 会拒空串）。
+    argv = ["--host", host, "--port", str(port)]
+    if mode:
+        argv += ["--mode", mode]
     if not no_cockpit:
         argv.append("--cockpit")
     if config:
@@ -505,7 +513,7 @@ def ai(
         "--debug-home",
         help="调试：用项目内 .dsh-debug 作 DSH_HOME（会话/设置/凭据与共享 ~/.dsh 完全隔离）",
     ),
-    mode: str = typer.Option(BOOT_MODE_DEFAULT, "--mode", help=_MODE_HELP),
+    mode: str = typer.Option("", "--mode", help=_MODE_HELP),
 ) -> None:
     """AI 模式：后台起 Web(:8080) + MCP 语义通道(写 .mcp-port)，**前台跑 dsh**。
 

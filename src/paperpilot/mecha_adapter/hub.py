@@ -17,6 +17,7 @@ uvicorn 后台线程与端口回读、instructions 体积守卫、端口文件�
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import threading
 from pathlib import Path
@@ -26,6 +27,7 @@ from mecha.authority import Mode
 from mecha.data_layout import resolve_data_dir
 from mecha.providers.mcp import McpEndpoint as _McpEndpoint
 from mecha.providers.mcp import build_mcp_server as _framework_build_mcp_server
+from mecha.site import initial_mode_from_env
 
 from .commands import build_commands, invoke_command
 from .engine import CONFIG_SCHEMA, PaperPilotEngine, make_validator
@@ -206,19 +208,53 @@ BOOT_MODE_DEFAULT = "open"
 _BOOT_MODES = {"open": Mode.OPEN, "locked": Mode.LOCKED, "human": Mode.HUMAN, "ai": Mode.AI}
 
 
-def boot_mode(value: str) -> Mode:
-    """起步模式解析：``""``（=默认 open）/ ``open`` / ``locked`` / ``human`` / ``ai``。
+def _ensure_printable_stdout() -> None:
+    """让框架那行"回落 + 出声"**打得出来**。
 
-    为什么要单独一层纯函数：`--mode` 是**给用户的 CLI 契约**，而 `Mode` 是框架枚举——
-    隔一层，判据就能**不起服务**地验"默认是 open、四个值都映射、未知值响亮拒绝"。
-    ⚠ 未知值**抛错、不回落默认**：把 `--mode loced` 静默当成 `open`，会让"我以为锁上了"
-    变成没设防——那正是本会话反复治的那类病（名字/行为和实际不一致）。
+    ⚠ **实测**：`initial_mode_from_env` 的提示里带 `⚠`，而 Windows 默认控制台是 cp936
+    ⇒ 非法值那条路会**抛 `UnicodeEncodeError`**（本该"回落 + 出声"，实际崩掉）。
+    两个 CLI 入口本来就做同款处置（stdout 统一 UTF-8）；本函数让**库路径**（判据/嵌入调用）也一样稳。
+
+    ⚠ 这**不是第二份判定**：回落规则与那句话仍由框架给；这里只保证那个 print 有地方落。
     """
-    key = (value or BOOT_MODE_DEFAULT).strip().lower()
-    mapped = _BOOT_MODES.get(key)
-    if mapped is None:
-        raise ValueError(f"未知起步模式 {value!r}；可选：{'、'.join(_BOOT_MODES)}")
-    return mapped
+    stream = sys.stdout
+    if str(getattr(stream, "encoding", "")).lower().replace("-", "") == "utf8":
+        return
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is None:                  # pytest 的 capture 流没有它 ⇒ 它的编码本来就安全
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="replace")
+    except (ValueError, OSError):            # 已关闭/已被替换的流：尽力而为，不拦启动
+        pass
+
+
+def boot_mode(value: str = "") -> Mode:
+    """起步写权模式。⭐ **优先级：argv 显式 > `MECHA_INITIAL_MODE`（框架声明）> 本仓默认**。
+
+    三级各自的性质不同（**别混 —— 它们不冲突**）：
+
+    | 级 | 谁给的 | 语义 | 非法值怎么办 |
+    |---|---|---|---|
+    | ① `--mode`（argv） | **人**当场敲的 | 本次启动的命令行选择 | **响亮抛**（敲错了要当场知道；静默回落 = 我以为锁上了其实没设防） |
+    | ② `MECHA_INITIAL_MODE` | **框架 / 启动者** | "**这次启动**给什么写权"（从 mecha 启动 ⇒ 声明 AI） | **回落并出声**（框架 `initial_mode_from_env` 负责那行 print） |
+    | ③ `BOOT_MODE_DEFAULT="open"` | **本项目** | "**软件出厂策略**"（用户裁决"不卡写权"） | —— |
+
+    ⚠ **②与③不打架**：②说的是"**这一次**"，③说的是"**没有任何声明时**"。
+    缺省 / 空串的 `MECHA_INITIAL_MODE` 都算"没声明"（空串 = **显式取消**）⇒ 落到 ③。
+
+    为什么单独一层纯函数：`--mode` 是**给用户的 CLI 契约**，`MECHA_INITIAL_MODE` 是**框架契约**，
+    而 `Mode` 是框架枚举 —— 隔一层，判据就能**不起服务**地验三档优先级。
+    """
+    key = (value or "").strip().lower()
+    if key:                                  # ① 显式：非法**抛**（不回落）
+        mapped = _BOOT_MODES.get(key)
+        if mapped is None:
+            raise ValueError(f"未知起步模式 {value!r}；可选：{'、'.join(_BOOT_MODES)}")
+        return mapped
+    # ②③：交给框架的读取口（缺省/空串 ⇒ 落回 ③；非法 ⇒ 回落 ③ **并出声**）。
+    _ensure_printable_stdout()               # ⚠ 否则那行带 `⚠` 的提示在 GBK 控制台上会炸（实测）
+    return initial_mode_from_env(_BOOT_MODES[BOOT_MODE_DEFAULT])
 
 
 def _arg_parser() -> argparse.ArgumentParser:
@@ -235,9 +271,10 @@ def _arg_parser() -> argparse.ArgumentParser:
     # ⚠ **取代旧的 `--open-gate`**（那个 flag 的行为是"收成只有 AI 能写"，而默认已是 open
     # ⇒ 名字会撒谎）。四个值都保留能力：open=两侧都能写（默认）/ locked=都不写（维护态）/
     # human=只有人能写 / ai=只有 AI 能写。
-    ap.add_argument("--mode", default=BOOT_MODE_DEFAULT, choices=sorted(_BOOT_MODES),
+    ap.add_argument("--mode", default="", choices=sorted(_BOOT_MODES),
                     help="起步写权模式：open=两侧都能写（默认）、locked=都不写（维护态）、"
-                         "human=只有人能写、ai=只有 AI 能写")
+                         "human=只有人能写、ai=只有 AI 能写。"
+                         "⚠ 不传 ⇒ 让 boot_mode 解析（框架的 MECHA_INITIAL_MODE 优先于本仓默认）")
     ap.add_argument("--cockpit", action="store_true",
                     help="同时起 cockpit 只读监控端点（供 dsh 侧边栏/面板轮询）")
     ap.add_argument("--cockpit-port", type=int, default=0,
@@ -258,7 +295,11 @@ def main(argv=None) -> int:
     container = build_container(load_settings(args.config))
     data_root = args.data_root or str(container.settings.data_dir)
     stack = build_stack(container, data_root, args.data_dir, mode=boot_mode(args.mode))
-    print(f"[hub] 起步写权模式：{stack['authority'].mode.value}（--mode {args.mode}）")
+    # ⚠ 出处要说清（argv 显式 / 框架声明 / 本仓默认）—— 否则"为什么是 ai"没人知道。
+    source = f"--mode {args.mode}" if args.mode else (
+        "MECHA_INITIAL_MODE" if os.environ.get("MECHA_INITIAL_MODE", "").strip()
+        else f"本仓默认 {BOOT_MODE_DEFAULT}")
+    print(f"[hub] 起步写权模式：{stack['authority'].mode.value}（来自 {source}）")
 
     port_file = args.port_file or str(Path(data_root).parent / ".mcp-port")
     host = make_host(stack, host=args.host, port=args.port, port_file=port_file, log=print)
