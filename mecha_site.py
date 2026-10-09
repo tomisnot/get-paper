@@ -41,7 +41,7 @@ import sys
 from pathlib import Path
 
 from mecha.authority import Mode
-from mecha.site import DSHSpec, ReadySpec, Service, Site
+from mecha.site import DSHSpec, MonitorSpec, ReadySpec, Service, Site
 
 #: 本仓根（声明文件就在仓根）。
 _SITE_ROOT = Path(__file__).resolve().parent
@@ -133,6 +133,18 @@ SITE = Site(
             #: ⚠ 不许写端口/凭据（这段会给 AI 看，经 `read_write_authority().how_to_open`）。
             how_to_open=("在 Get Paper 的 Web 页 `/settings` 的「写权模式」卡上切"
                          "（本机可信、无口令；AI 侧不能自解锁——它拿不到控制端点的地址）"),
+            #: ⭐ **监控面声明**（三层架构 §7.3.6）：路由 / 端口文件名 / 标题只在这里写一次。
+            #: ⚠ GP 的监控端点是它**自己的 Web 端口**（`.web-port`），不是 `.mcp-port`。
+            #: ⚠ 框架把它生成成参数、经**框架自己的 patch** 带上的插件交给浏览器
+            #: ⇒ 本项目 dsh 侧只留"一行 bootstrap + 自定义 UI"（`dsh/src/client/index.ts` 的
+            #: 「☀ 评审今日」按钮**保留**：那是自定义 UI，不是监控面板那一份）。
+            #: ⚠ 与 `dsh/src/gp-params.ts` 的 `GP_PANEL` **必须同值**；由
+            #: `dsh/test/panel.test.ts` 的声明对拍钉住。
+            monitor=MonitorSpec(
+                route_path="/paperpilot/monitor-url",
+                port_file=".web-port",
+                title="操作审计",
+            ),
             env=_STATE_ENV,
         ),
     ),
