@@ -11,22 +11,12 @@ import pytest
 from fastapi.testclient import TestClient
 from mecha.authority import Mode
 
-from paperpilot.app import control_token as ct
 from paperpilot.app.container import build_container
 from paperpilot.app.web import create_app
 from paperpilot.infra.arxiv import parse_atom
 from paperpilot.mecha_adapter.hub import build_stack
 
 from .conftest import SAMPLE_XML, make_settings
-
-
-@pytest.fixture
-def control_token(tmp_path, monkeypatch):
-    """把控制口令指到 tmp 并发布一个（判据**不碰**真实家目录）；返回口令字符串。"""
-    target = tmp_path / ct.CONTROL_TOKEN_FILE
-    token = ct.publish_control_token(target)
-    monkeypatch.setattr(ct, "control_token_path", lambda: target)
-    return token
 
 
 def _gated(tmp_path):
@@ -104,11 +94,14 @@ def test_web_add_note_gated(tmp_path):
 
 
 def test_settings_shows_write_mode_card(tmp_path):
-    """写权模式卡在 `/settings` 上（原 `/monitor` 页退役后搬到这里）：显示当前模式 + 口令框。
+    """写权模式卡在 `/settings` 上（原 `/monitor` 页退役后搬到这里）：显示当前模式 + **无口令**。
 
     ⚠ 原 `test_monitor_page_renders_operator_audit` 测的是"服务端渲染的审计视图"——
     该视图**已退役**（AI 监控改走 dsh 共享资产的原生 tab）⇒ 那条判据随之删除；
     命令审计仍在（mecha History / cockpit 端点 / dsh 面板），只是**不再由 Web 渲染**。
+
+    ⭐ 2026-10-08 用户裁决：**口令整套去掉**（本机可信）⇒ 本判据改成钉"卡上**没有**口令输入框，
+    且**防线写在明面上**（切写权的操作不在 AI 的能力面上）"。
     """
     client, _container, stack = _gated(tmp_path)
     client.post("/papers/2608.01101/star", follow_redirects=False)   # Web 写（模式不变：仍 OPEN）
@@ -117,7 +110,10 @@ def test_settings_shows_write_mode_card(tmp_path):
     assert "写权模式" in page.text
     assert "open" in page.text                   # 卡片显示**当前模式**（本批：起步 OPEN）
     assert "/monitor/mode" in page.text          # 控制端点路径未动（只换 UI 落点）
-    assert "控制口令" in page.text
+    assert "口令" not in page.text, "鉴权已按 2026-10-08 裁决去掉，卡上不该再有它"
+    assert 'type="password"' not in page.text, "口令输入框还在"
+    assert "本机可信" in page.text               # 防线换成了什么，写在明面上
+    assert "read_write_authority" in page.text   # ⭐ "AI 面上只有只读、没有 set/open"
 
 
 def test_settings_without_stack_is_honest(tmp_path):
@@ -131,7 +127,7 @@ def test_settings_without_stack_is_honest(tmp_path):
     assert "/monitor/mode" not in page.text        # 没有可点的控件（不发无意义的请求）
 
 
-def test_ai_mode_denies_human_write_then_open_allows_both(tmp_path, control_token):
+def test_ai_mode_denies_human_write_then_open_allows_both(tmp_path):
     """⭐ **行为变更的正身**（旧判据 `…_human_write_preempts` 按新事实重写）：
 
     旧事实：Web 写会自动把模式从 AI 抢回 HUMAN（"人优先"）。
@@ -145,7 +141,7 @@ def test_ai_mode_denies_human_write_then_open_allows_both(tmp_path, control_toke
     """
     client, _container, stack = _gated(tmp_path)
     resp = client.post("/monitor/mode",
-                       data={"target": "ai", "token": control_token}, follow_redirects=False)
+                       data={"target": "ai"}, follow_redirects=False)   # ⚠ 无口令（裁决去掉）
     assert resp.status_code == 303
     assert stack["authority"].mode is Mode.AI
     # AI 独占：人类写**被拒**，且模式**不被改写**（不抢占）
@@ -153,7 +149,7 @@ def test_ai_mode_denies_human_write_then_open_allows_both(tmp_path, control_toke
     assert "被拒" in denied.text or "拒" in denied.text, denied.text[:400]
     assert stack["authority"].mode is Mode.AI, "人写不该再把模式抢回去（抢占已删）"
     # 人类侧在同一页就能切回放开（拒绝 ≠ 卡死）
-    assert client.post("/monitor/mode", data={"target": "open", "token": control_token},
+    assert client.post("/monitor/mode", data={"target": "open"},
                        follow_redirects=False).status_code == 303
     assert stack["authority"].mode is Mode.OPEN
     assert client.post("/papers/2608.01101/star",
@@ -179,7 +175,7 @@ def test_open_mode_both_sides_can_write(tmp_path):
     assert ai_again["ok"] is True, "人被允许写之后，AI 不该被挤掉"    # AI 还能写
 
 
-def test_locked_stops_both_sides(tmp_path, control_token):
+def test_locked_stops_both_sides(tmp_path):
     """**对偶**：锁定（急停）之后**两侧都被拒**，且域零改动。
 
     人的 `<button>锁定</button>` 必须仍然好使——放开写权不等于把急停拆了。
@@ -192,7 +188,7 @@ def test_locked_stops_both_sides(tmp_path, control_token):
     from .test_mecha_adapter import _call
 
     client, container, stack = _gated(tmp_path)
-    assert client.post("/monitor/mode", data={"target": "locked", "token": control_token},
+    assert client.post("/monitor/mode", data={"target": "locked"},
                        follow_redirects=False).status_code == 303
     assert stack["authority"].mode is Mode.LOCKED
     ai_out = _call(stack["tools"], "add_note", arxiv_id="2608.01101", content="锁定后的 AI 写")
@@ -225,73 +221,21 @@ def test_open_mode_keeps_attribution(tmp_path):
     assert ("command.add_note", "ai") in audits
 
 
-def test_mode_switch_rejects_bad_target(tmp_path, control_token):
+def test_mode_switch_rejects_bad_target(tmp_path):
     """非法 target 不崩、如实回消息（可教学）。"""
     client, _container, stack = _gated(tmp_path)
     before = stack["authority"].mode
-    resp = client.post("/monitor/mode",
-                       data={"target": "root", "token": control_token}, follow_redirects=False)
+    resp = client.post("/monitor/mode", data={"target": "root"}, follow_redirects=False)
     assert resp.status_code == 303
     assert stack["authority"].mode is before      # 未被非法值改动
 
 
-# ---------------------------------------------------------------- 控制端点鉴权（fail-closed）
-
-def test_mode_switch_denied_without_token(tmp_path, control_token):
-    """⭐ 无口令 ⇒ **403**，且**写权一点没动**（拒绝必须是"什么都没发生"）。"""
-    client, _container, stack = _gated(tmp_path)
-    before = stack["authority"].mode
-    resp = client.post("/monitor/mode", data={"target": "ai"}, follow_redirects=False)
-    assert resp.status_code == 403
-    assert "写权切换被拒" in resp.text
-    assert stack["authority"].mode is before
-
-
-def test_mode_switch_denied_with_wrong_token(tmp_path, control_token):
-    """⭐ 口令不对 ⇒ 403，且**不透露**真口令/不提示"接近了"。"""
-    client, _container, stack = _gated(tmp_path)
-    before = stack["authority"].mode
-    resp = client.post("/monitor/mode",
-                       data={"target": "ai", "token": control_token + "x"},
-                       follow_redirects=False)
-    assert resp.status_code == 403
-    assert control_token not in resp.text
-    assert stack["authority"].mode is before
-
-
-def test_mode_switch_fails_closed_when_no_token_published(tmp_path, monkeypatch):
-    """⭐ **未配置口令 ⇒ 一律拒绝**：控制端点没有"默认放开"这一档。"""
-    missing = tmp_path / "no-such-token"
-    monkeypatch.setattr(ct, "control_token_path", lambda: missing)
-    client, _container, stack = _gated(tmp_path)
-    before = stack["authority"].mode
-    for given in ("", "anything", "  "):
-        resp = client.post("/monitor/mode",
-                           data={"target": "ai", "token": given}, follow_redirects=False)
-        assert resp.status_code == 403, f"未发布口令时 token={given!r} 竟放行"
-    assert stack["authority"].mode is before
-    # 空口令时的文案要**说清是"没配置"**（不是"口令不对"）——否则人会去猜口令
-    resp_empty = client.post("/monitor/mode", data={"target": "ai"}, follow_redirects=False)
-    assert "未发布控制口令" in resp_empty.text
-    # 给了错口令时则说"口令不对"（两种失败**可区分**，与两档错误态同一纪律）
-    resp_wrong = client.post("/monitor/mode",
-                             data={"target": "ai", "token": "guess"}, follow_redirects=False)
-    assert "口令不对" in resp_wrong.text
-
-
-def test_settings_reports_control_token_state(tmp_path, control_token):
-    """有口令时：`/settings` 那张卡**要**口令，并把边界（挡进程不挡 AI）写在明面上。"""
-    client, _container, _stack = _gated(tmp_path)
-    page = client.get("/settings").text
-    assert "控制口令" in page
-    assert "挡不住能读你文件的 AI" in page
-
-
-def test_settings_reports_missing_token(tmp_path, monkeypatch):
-    """无口令时：如实说"会被一律拒绝"（fail-closed 让人看得见）。"""
-    monkeypatch.setattr(ct, "control_token_path", lambda: tmp_path / "no-such-token")
-    client, _container, _stack = _gated(tmp_path)
-    assert "未发布控制口令" in client.get("/settings").text
+# ---------------------------------------------------------------- 鉴权撤销后的防线（R13 改写）
+# ⚠ 2026-10-08 用户裁决：鉴权整套去掉。原「无凭证拒绝切换 / 错凭证 / 未发布凭证 fail-closed /
+# 报凭证状态 / 缺凭证」五条**随机制一起删**（机制不存在了，留着就是测一个不存在的闸）。
+# 它们守的承诺没有消失，只是**换了个能失败的形式**：**"AI 不能把自己解锁"** ——
+# ⭐ 现在的形式是"**切写权的操作不在 AI 的能力面上**"（地址只给框架/面板）⇒
+# 判据在 `check/test_control_channel.py`（AI 面上没有 set/open + 控制端点不导出给 AI）。
 
 
 def test_old_monitor_view_is_gone(tmp_path):

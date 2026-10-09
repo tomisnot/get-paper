@@ -129,7 +129,7 @@ SITE = Site(
             #: ⭐ 一句话讲**人从哪个入口切写权**（框架不写死它：这是项目知识）。
             #: ⚠ 不许写端口/凭据（这段会给 AI 看，经 `read_write_authority().how_to_open`）。
             how_to_open=("在 Get Paper 的 Web 页 `/settings` 的「写权模式」卡上切"
-                         "（需控制口令；AI 侧不能自解锁）"),
+                         "（本机可信、无口令；AI 侧不能自解锁——它拿不到控制端点的地址）"),
             env=_STATE_ENV,
         ),
     ),

@@ -437,7 +437,7 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
     register_authority_read(
         reg, sw.authority,
         how_to_open=("在 Get Paper 的 Web 页 `/settings` 的「写权模式」卡上切"
-                     "（需控制口令；AI 侧不能自解锁）"))
+                     "（本机可信、无口令；AI 侧不能自解锁——它拿不到控制端点的地址）"))
     _register_job_tools(reg, sw, channel, container)
     return reg
 

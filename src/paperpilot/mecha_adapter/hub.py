@@ -127,12 +127,17 @@ def build_mcp_server(tools, *, required_source=None, toolhost=None, **kwargs):
 
 
 class McpHost:
-    """在权威进程后台线程跑 MCP 服务（薄壳：委托框架 ``McpEndpoint``）。"""
+    """在权威进程后台线程跑 MCP 服务（薄壳：委托框架 ``McpEndpoint``）。
 
-    def __init__(self, tools, *, required_source=None, toolhost=None,
+    默认那组 ``server_name`` / ``instructions`` 就是**AI 能力面**；⚠ **控制端点复用同一个壳**、
+    只是换这两个值 + 换端口文件（见 ``control.py``）—— 不为第二条端点再写一层壳。
+    """
+
+    def __init__(self, tools, *, server_name: str = MCP_SERVER_NAME,
+                 instructions: str = INSTRUCTIONS, required_source=None, toolhost=None,
                  host: str = "127.0.0.1", port: int = 0, port_file=None, log=None) -> None:
         self._endpoint = _McpEndpoint(
-            tools, server_name=MCP_SERVER_NAME, instructions=INSTRUCTIONS,
+            tools, server_name=server_name, instructions=instructions,
             toolhost=toolhost, required_source=required_source,
             host=host, port=port, port_file=port_file, log=log)
 
@@ -268,6 +273,17 @@ def main(argv=None) -> int:
                                 port_file=cp_file, log=print)
         print(f"[hub] cockpit {cp_file} ← {cockpit.port}（只读：/status /activity "
               f"/history /config /summary）")
+
+    # ⭐ 控制端点（人侧专用，契约 §7.1.1）：**不门控**（写权与"有没有窗口"正交 ⇒
+    # 每个 mcp 进程都起）。⚠ **不挂 log**：框架的端点日志可能含回读到的端口，
+    # 而契约不许端口进任何日志；起不来会抛（响亮），不必靠日志。
+    from .control import CONTROL_PORT_FILE, build_control_registry, start_control_endpoint
+
+    control_file = str(Path(data_root).parent / CONTROL_PORT_FILE)
+    control = start_control_endpoint(
+        build_control_registry(stack["authority"], gate=stack["gate"]),
+        host=args.host, port_file=control_file, log=None)
+    print(f"[hub] 控制端点已起（端口只写 {control_file}，不外泄给 AI）")
     try:
         threading.Event().wait()                 # 阻塞到 Ctrl+C / terminate
     except KeyboardInterrupt:
@@ -275,6 +291,7 @@ def main(argv=None) -> int:
     finally:
         if cockpit is not None:
             cockpit.stop()
+        control.stop()
         host.stop()
         stack["software"].close()
     return 0

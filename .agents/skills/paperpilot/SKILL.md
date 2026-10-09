@@ -363,7 +363,7 @@ gate 值（`set_config`）直通全段但被显式参数再覆盖。**用户点�
 
 **配置与治理**：`set_config`（gate 值，重启回 YAML）| `read_config` | `read_write_authority` |
 `undo_change`（seq=0 撤最近可逆）| `submit_job` / `read_job` / `cancel_job`（长活用）。
-注意：**开写权没有 AI 工具**（模式切换只活在人类侧口令里，这是设计不是缺位）——
+注意：**开写权没有 AI 工具**（模式切换只在**人侧**：统一启动器的常驻面板 / Web 的 `/settings` 写权模式卡；那条控制端点**不导出给 AI**，这是设计不是缺位）——
 被 authority_locked 拒了就 `read_write_authority` 看现状、请人类开闸，别找后门。
 
 ## 5. 常见误区（都是踩过的，别重复）

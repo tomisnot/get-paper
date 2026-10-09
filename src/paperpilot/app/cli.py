@@ -238,26 +238,6 @@ def _pick_dsh_port(preferred: int = 3081, tries: int = 10) -> int:
     return preferred
 
 
-def _publish_and_announce_control_token() -> None:
-    """生成并打印**人工控制口令**（`POST /monitor/mode` 切写权用）。
-
-    ⚠ **刻意存在仓外**（`~/.paperpilot/control-token`）：它挡的是**本机其他进程**，
-    **挡不住有权读你文件的 AI**。放仓外是为了让"AI 不能自授权"这条边界**尽量真的成立**
-    （AI 的文件访问通常被限在工作区）；放项目根则会让"服务端钉 `actor=human`"退化成
-    "AI 的写被记成人的写"——比没有鉴权更坏。写失败不抛：控制端点 fail-closed 兜住。
-    """
-    from .control_token import control_token_path, publish_control_token
-
-    try:
-        token = publish_control_token()
-    except OSError as exc:  # noqa: BLE001 - 家目录不可写只影响控制端点，别拦启动
-        typer.echo(f"⚠ 控制口令写入失败（{exc}）⇒ 写权切换会 fail-closed 一律拒绝。", err=True)
-        return
-    typer.echo(f"🔑 人工控制口令（切写权用）: {token}")
-    typer.echo(f"   —— 存于仓外 {control_token_path()}")
-    typer.echo("   —— ⚠ 它挡的是**本机其他进程**，挡不住能读你文件的 AI（这条边界是明说的）")
-
-
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -274,15 +254,20 @@ def main(
 
 
 def _boot_stack(settings, *, mode: str, with_cockpit: bool, log):
-    """建 container + **共享 mecha 栈**，起 MCP（AI 面）+ cockpit（监控面）后台线程。
+    """建 container + **共享 mecha 栈**，起 MCP（AI 面）+ **控制端点**（人侧）+ cockpit（监控面）。
 
-    三面（Web 人类面 / MCP AI 面 / cockpit 监控面）**共享一个栈**（同一 authority/
-    gate/history）——一个 data_dir 一个写租约，故必须同进程共栈。返回
-    ``(container, stack, mcp_host, cockpit)``；调用方负责收尾（stop/close）。
+    四个面（Web 人类面 / MCP AI 面 / **控制端点** / cockpit 监控面）**共享一个栈**
+    （同一 authority/gate/history）——一个 data_dir 一个写租约，故必须同进程共栈。返回
+    ``(container, stack, mcp_host, control, cockpit)``；调用方负责收尾（stop/close）。
 
-    ⚠ **起步模式由 ``mode`` 决定**（默认 `open`，见 `hub.BOOT_MODE_DEFAULT`）：
-    这是"GP 不卡写权"的落点；`locked` 仍是急停（人随时可切回去）。
+    ⚠ **控制端点不门控**（契约 §7.1.1）：写权与"有没有窗口"正交 ⇒ 每个进程都起
+    （`has_gui` 只决定面板显不显示"切到手动"）。它**不导出给 AI**：地址只进 `.control-port`。
+
+    ⚠ **起步模式由 ``mode`` 决定**（默认 `BOOT_MODE_DEFAULT="open"`，见 `hub.boot_mode`）。
+    ⚠ **未决**：框架经 `MECHA_INITIAL_MODE` 送来的"启动者声明的初始写权"GP **还没读**
+    （`mecha_site.py` 里的 `initial_mode` 已声明；读与应用是下一轮）。
     """
+    from ..mecha_adapter.control import build_control_registry, start_control_endpoint
     from ..mecha_adapter.hub import boot_mode, build_stack, make_host
     from ..mecha_adapter.monitor import start_cockpit
     from .container import build_container
@@ -293,11 +278,15 @@ def _boot_stack(settings, *, mode: str, with_cockpit: bool, log):
     mcp_host = make_host(stack, host=settings.mcp.host, port=0,
                          port_file=str(root / ".mcp-port"), log=log)
     mcp_host.start()
+    # ⚠ `log=None`：控制端点的日志可能含端口，而契约不许端口进任何日志（起不来会抛）。
+    control = start_control_endpoint(
+        build_control_registry(stack["authority"], gate=stack["gate"]),
+        host=settings.mcp.host, port_file=str(root / ".control-port"), log=None)
     cockpit = None
     if with_cockpit:
         cockpit = start_cockpit(stack, host=settings.web.host, port=0,
                                 port_file=str(root / ".cockpit-port"), log=log)
-    return container, stack, mcp_host, cockpit
+    return container, stack, mcp_host, control, cockpit
 
 
 def _serve_impl(config, host=None, port=None, mode=BOOT_MODE_DEFAULT, no_cockpit=False,
@@ -314,16 +303,16 @@ def _serve_impl(config, host=None, port=None, mode=BOOT_MODE_DEFAULT, no_cockpit
     web_port_file = _web_port_path(settings)
     _ensure_port_free(web_host, web_port, "Web ")   # 预检：端口被占则不半启动
     _publish_web_port_when_ready(web_host, web_port, web_port_file)
-    container, stack, mcp_host, cockpit = _boot_stack(
+    container, stack, mcp_host, control, cockpit = _boot_stack(
         settings, mode=mode, with_cockpit=not no_cockpit, log=typer.echo)
     typer.echo(f"🌐 Web（人类面）: http://{web_host}:{web_port}  (AI: {container.ai_provider})")
     typer.echo(f"🔌 MCP（AI 面）: {mcp_host.url}  ← .mcp-port")
     if cockpit is not None:
         typer.echo(f"📊 cockpit（监控面）: {cockpit.url}  ← .cockpit-port")
     typer.echo(f"🧭 dsh 面板发现: {web_port_file.name} ← {web_port}（同源路由读它，不回落默认端口）")
-    _publish_and_announce_control_token()
-    typer.echo(f"🔐 写权模式: {stack['authority'].mode.value}"
-               "（默认 open=两侧都能写；要独占/急停去 /settings 的写权卡切）")
+    # ⚠ **不回声控制端点的端口号**（契约 §7.1.1：地址只给框架/面板，不给 AI、不进日志）。
+    typer.echo(f"🔐 控制端点已起（人侧专用；端口只写 .control-port）· 写权模式 {stack['authority'].mode.value}"
+               "（要独占/急停去 /settings 的写权卡切，本机可信、无口令）")
     if not no_open:
         _open_browser_when_ready(web_host, web_port)   # 自动开浏览器 = 人面前台可见
         typer.echo("🖥  已尝试打开浏览器（人面工作台）；未弹出就手动访问上面的 Web 地址。")
@@ -334,6 +323,7 @@ def _serve_impl(config, host=None, port=None, mode=BOOT_MODE_DEFAULT, no_cockpit
     finally:
         if cockpit is not None:
             cockpit.stop()
+        control.stop()
         mcp_host.stop()
         stack["software"].close()
         _unpublish_web_port(web_port_file, web_port)
@@ -539,15 +529,16 @@ def ai(
     web_port_file = _web_port_path(settings)
     _publish_web_port_when_ready(settings.web.host, settings.web.port, web_port_file)
 
-    # 1) 后台：MCP（AI 面）+ cockpit（监控面），共享一个 mecha 栈；AI 模式默认开闸到 AI
-    container, stack, mcp_host, cockpit = _boot_stack(
+    # 1) 后台：MCP（AI 面）+ 控制端点（人侧）+ cockpit（监控面），共享一个 mecha 栈；AI 模式默认开闸到 AI
+    container, stack, mcp_host, control, cockpit = _boot_stack(
         settings, mode=mode, with_cockpit=True, log=typer.echo)
     typer.echo(f"  MCP（AI 面）: {mcp_host.url}（.mcp-port 已写；dsh 插件据此发现）")
     if cockpit is not None:
         typer.echo(f"  cockpit（监控面）: {cockpit.url}（.cockpit-port 已写）")
     typer.echo(f"  dsh 面板发现: {web_port_file.name} ← {settings.web.port}"
                "（插件经同源只读路由读它，不回落默认端口）")
-    _publish_and_announce_control_token()
+    # ⚠ 不回声控制端口（契约 §7.1.1）。
+    typer.echo("  控制端点: 已起（人侧专用；端口只写 .control-port）")
 
     # 2) 后台：Web 面板（dsh 右栏「📄简报」iframe 它；写权模式卡在 /settings）
     web_app = create_app(container, stack)
@@ -564,6 +555,7 @@ def ai(
         try:
             if cockpit is not None:
                 cockpit.stop()
+            control.stop()
             mcp_host.stop()
             stack["software"].close()
         except Exception:  # noqa: BLE001 - 收尾尽力

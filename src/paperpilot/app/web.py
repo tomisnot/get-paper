@@ -562,15 +562,14 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
     # ---------------------------------------------------------------- 设置
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request):
-        """人类控制面：运行状态 / **写权模式（含控制口令）** / 全局参数 / 主题。
+        """人类控制面：运行状态 / **写权模式（本机可信、无口令）** / 全局参数 / 主题。
 
         ⚠ 写权切换这张卡原在 `/monitor` 页上；**面板视图退役后搬到这里**
-        （AI 监控改走 dsh 原生 tab）。**控制端点 `POST /monitor/mode` 的路径与鉴权未动**——
-        只换了它的 UI 落点与重定向目标（不这样搬，"删掉面板页"就会顺手把人类切写权的
-        唯一入口也删掉：口令输入框只在那个页面上）。
+        （AI 监控改走 dsh 原生 tab）。**控制端点 `POST /monitor/mode` 的路径未动**——
+        只换了它的 UI 落点与重定向目标。
+        ⭐ 2026-10-08 用户裁决：**口令整套去掉**（本机可信，架构文 §3 裁决 2）。
+        防线随之从"口令"改成**"切写权的操作不在 AI 的能力面上"**（见 settings.html 那段）。
         """
-        from .control_token import read_control_token
-
         s = container.settings
         views = container.repo.list_graph_views()
         return render(
@@ -586,7 +585,6 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
                           "named": len((v["spec"] or {}).get("layers") or {}),
                           "ts": v["ts"], "actor": v["actor"]} for v in views],
             mode=_authority_mode(),
-            control_ready=read_control_token() is not None,
         )
 
     @app.post("/settings/topics")
@@ -829,55 +827,34 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
         return RedirectResponse(f"/activity?msg={quote(msg or f'已撤销 seq={int(seq)}')}",
                                 status_code=303)
 
-    # ------------------------------------------------- 写权控制端点（人类侧，口令 + side=human）
+    # ------------------------------------------------- 写权控制端点（人类侧，**无口令** + side=human）
     # ⚠ `GET /monitor` 那个**服务端渲染的审计视图已退役**（2026-09-26）：
     # AI 监控改走 **dsh 共享资产的原生 tab**（`dsh-panel/`），Web 侧不再需要第二套视图
     # ⇒ 删页 + 删模板，**但控制端点 `POST /monitor/mode` 原样保留**（它不是面板，是
     # 人类控制端点；路径不动，UI 落点搬到 `/settings`）。
+    # ⭐ 2026-10-08：**鉴权（口令）整套去掉**（用户裁决；架构文 §3 裁决 2「本机可信」）。
+    # ⚠ **"AI 不能自解锁"没变弱**，只是换了实现：防线 = **切写权的操作不在 AI 的能力面上**
+    #    —— AI 那条端点（`.mcp-port`）只有 `read_write_authority`（只读），
+    #    `set_write_authority`/`open_manual_surface` 只在**控制端点**（`.control-port`），
+    #    而那个地址只写进文件给框架/面板读、**不给 AI**（§7.1.1 的"地址传递"保证）。
+    #    ⚠ 判据 `check/test_control_channel.py` 钉着"AI 面上没有那两个操作"。
     @app.post("/monitor/mode")
-    def switch_write_mode(target: str = Form("locked"), token: str = Form("")):
-        """人类侧切写权模式：**口令 + 服务端钉 actor=human**（两道都要）。
+    def switch_write_mode(target: str = Form("locked")):
+        """人类侧切写权模式：**服务端钉 `side="human"`**（本机可信、无口令）。
 
-        ⚠ **边界（如实写，不假装在防）**：这个口令挡的是**本机其他进程**，
-        **挡不住有权读你文件的 AI**（它能读到 `~/.paperpilot/control-token`）。
-        它存在的意义是让"控制端点不是谁都能按"成立，**不是**"AI 不能自授权"——
-        后者靠口令放在**仓外**（AI 的文件访问通常被限在工作区）来尽量成立。
-
-        **fail-closed**：口令文件不存在 / 口令空 / 不匹配 ⇒ **403 + 可读错误**，
-        **绝不静默放行**（控制端点没有"默认放开"这一档）。
-
+        ⚠ **归因不靠猜**：这一路恒为人类侧（`side="human"`）⇒ 记进账的是 human，
+        AI 拿不到这个入口（见上面的模块注释与 `check/test_control_channel.py`）。
+        
         成功/未接栈都重定向到 **`/settings`**（本卡的新落点；`/monitor` 已不存在）。
         """
         if stack is None:
             return RedirectResponse("/settings?msg=未接监控面", status_code=303)
         from urllib.parse import quote
 
-        from .control_token import verify_control_token
-
-        if not verify_control_token(token):
-            detail = ("本实例未发布控制口令（`paperpilot serve` / `ai` 启动时会打印一个，"
-                      "存在用户家目录 `~/.paperpilot/control-token`）"
-                      if not token else "口令不对")
-            return HTMLResponse(
-                status_code=403,
-                content=(
-                    "<!doctype html><meta charset='utf-8'>"
-                    "<title>403 写权切换被拒</title>"
-                    "<div style='font:14px/1.7 system-ui;max-width:44em;margin:3em auto'>"
-                    "<h1 style='font-size:18px'>403：写权切换被拒</h1>"
-                    f"<p>{detail}。</p>"
-                    "<p>控制端点采取 <b>fail-closed</b>：没有口令就一律拒绝，不会默认放开。"
-                    "口令在启动 `paperpilot serve` / `paperpilot ai` 的那个控制台里，"
-                    "也可以直接看 <code>~/.paperpilot/control-token</code>"
-                    "（<b>刻意放在仓外</b>：本机制挡的是本机其他进程，"
-                    "挡不住能读你文件的 AI——这条边界是明说的，不是默认的）。</p>"
-                    "<p><a href='/settings'>← 回到设置页（写权模式卡在那儿）</a></p>"
-                    "</div>"),
-            )
-
         from mecha.authority import Mode
         try:
-            stack["authority"].switch_mode(Mode(target), side="human")
+            # ⚠ 一律枚举 + `side="human"`（这一路恒人侧；归因不靠猜）。
+            stack["authority"].switch_mode(Mode(str(target).strip().lower()), side="human")
             msg = f"写权已切到 {target}"
         except Exception as exc:  # noqa: BLE001 - 展示可教学拒绝（含非法 target）
             msg = f"切换失败：{exc}"
