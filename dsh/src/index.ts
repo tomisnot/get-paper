@@ -86,7 +86,9 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     },
     // 面板参数：host 半注入一次（client 半在 `src/client/index.ts` 另注入一次，各带 disposer）。
     panelConfig: { ...GP_PANEL },
-    // ⚠ **不传 `registerCommand`**：GP 没有看门人（没有进程轮询 `.mode-request`），
-    //   交权按钮与 command 都不该存在（无消费者 = 不留"按了没反应"的死缝）。与既有结论一致。
+    // ⚠ **不传 `registerCommand`**：交权按钮与 command 都不该存在。
+    //   ⭐ 理由已从"GP 没有看门人"变成**结构性的**：三层架构（2026-10-08）删掉了整条
+    //   "写 .mode-request 请看门人做进程交接"的链——切写权走**控制端点**、**不动进程**
+    //   ⇒ 没有"交权 command"这个形状了（无消费者 = 不留"按了没反应"的死缝）。
   })
 }
