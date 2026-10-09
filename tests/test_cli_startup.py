@@ -229,29 +229,32 @@ def test_web_port_published_only_when_listening(tmp_path):
     assert not port_file.exists(), "没人听却发布了端口文件 = 面板拿到死地址（假绿）"
 
 
-def test_web_port_file_name_matches_dsh_panel_config():
-    """**跨语言单一来源**：Python 写的端口文件名 == dsh 插件**注入给面板的** `portFile`。
+def test_web_port_file_name_matches_declaration():
+    """**跨语言单一来源**：Python 写的端口文件名 == **站点声明**里那份 `port_file`。
 
     两边各写一份的后果就是本轮要修的那个病：**地址漂移 ⇒ 面板空白且零报错**。
-    这里**按内容读**那个 `.ts`（**不经 git**——本工程有"gitignore 的文件逃出验收"的教训）。
 
-    ⚠ 2026-10-01（依赖化）：面板改从包 `@mecha/dsh-panel` 取，项目值收进 `src/gp-params.ts`
-    （`GP_PANEL`，经 `configurePanel` 注入）⇒ 本守卫跟着改读那份**唯一的项目参数家**。
+    ⚠ **2026-10-09 改口径**（监控面上提进框架）：原先本守卫读的是 dsh 侧的
+    `src/gp-params.ts`（`GP_PANEL`）—— 那个常量**已删**（地址路由与参数都归框架）。
+    ⇒ 现在对拍的是**声明**（`mecha_site.py` 的 `MonitorSpec`）：它才是"面板参数"的**唯一家**
+      （框架按它生成参数、按 `port_file` 现取端口）。
+    ⚠ 读的是**磁盘上的文件内容**（不经 git）—— 本工程有"gitignore 的文件逃出验收"的教训。
     """
-    ts_path = cli.DSH_DIR / "src" / "gp-params.ts"
-    assert ts_path.is_file(), f"找不到 dsh 插件参数家：{ts_path}"
-    ts = ts_path.read_text(encoding="utf-8")
+    decl_path = cli.DSH_DIR.parent / "mecha_site.py"
+    assert decl_path.is_file(), f"找不到站点声明：{decl_path}"
+    decl = decl_path.read_text(encoding="utf-8")
 
-    port_file = re.search(r"portFile:\s*'([^']*)'", ts)
-    assert port_file, "gp-params.ts 里找不到 portFile 的字符串值（形状变了 ⇒ 本守卫要跟着改）"
+    port_file = re.search(r"port_file=\"([^\"]*)\"", decl)
+    assert port_file, "声明里找不到 port_file（形状变了 ⇒ 本守卫要跟着改）"
     assert port_file.group(1) == cli.WEB_PORT_FILE, (
-        f"端口文件名漂移：dsh 侧 {port_file.group(1)!r} != Python 侧 {cli.WEB_PORT_FILE!r}")
+        f"端口文件名漂移：声明 {port_file.group(1)!r} != Python 侧 {cli.WEB_PORT_FILE!r}")
 
-    route = re.search(r"routePath:\s*'([^']*)'", ts)
-    assert route, "gp-params.ts 里找不到 routePath 的字符串值"
+    route = re.search(r"route_path=\"([^\"]*)\"", decl)
+    assert route, "声明里找不到 route_path（形状变了 ⇒ 本守卫要跟着改）"
     assert route.group(1).startswith("/") and len(route.group(1)) > 1, (
-        f"routePath 必须是非空绝对路径：{route.group(1)!r}")
+        f"route_path 必须是非空绝对路径：{route.group(1)!r}")
 
+    assert "monitor=MonitorSpec(" in decl, "声明里没有 monitor=MonitorSpec(...)"
 
 # ---------------------------------------------------------------- 本批两件 CLI 欠账
 def _tmp_config(tmp_path):

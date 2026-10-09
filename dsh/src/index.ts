@@ -18,7 +18,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { buildRequestInit } from '@mecha/dsh-panel/host/config.ts'
 import { hostPluginInject, mountHostPlugin } from '@mecha/dsh-panel/host/mount-host-plugin.ts'
 import { gpResolveHubUrl } from './host/gp-hub.ts'
-import { GP_BRIDGE, GP_PANEL, GP_TOOLS } from './gp-params.ts'
+import { GP_BRIDGE, GP_TOOLS } from './gp-params.ts'
 
 /** Cordis 插件显示名（诊断用；工具命名空间默认同此）。 */
 export const name = 'paperpilot'
@@ -84,8 +84,10 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       maxDelayMs: config.reconnectMaxDelayMs,
       maxAttempts: config.reconnectMaxAttempts,
     },
-    // 面板参数：host 半注入一次（client 半在 `src/client/index.ts` 另注入一次，各带 disposer）。
-    panelConfig: { ...GP_PANEL },
+    // ⭐ **不传 `panelConfig`**（2026-10-09）：监控地址路由**上提进框架**了 ——
+    //   框架的 host 插件按 `mecha_site.py` 的声明 + `MECHA_PANEL_PORT_FILES`（绝对路径）
+    //   现取端口 ⇒ ⚠ **同一条 `routePath` 注册两次是接线错误**（谁生效取决于顺序）。
+    //   面板参数也随之只剩**一个家**：声明的 `Service.monitor`。
     // ⚠ **不传 `registerCommand`**：交权按钮与 command 都不该存在。
     //   ⭐ 理由已从"GP 没有看门人"变成**结构性的**：三层架构（2026-10-08）删掉了整条
     //   "写 .mode-request 请看门人做进程交接"的链——切写权走**控制端点**、**不动进程**

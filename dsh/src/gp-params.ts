@@ -43,14 +43,18 @@ export const GP_TOOLS = {
 } as const
 
 /**
- * 面板参数（**注入**给资产 `@mecha/dsh-panel` 的 `configurePanel`）。
+ * ⚠ **已删（2026-10-09）：面板参数常量（路由 / 端口文件名 / 标题）。**
  *
- * 原先是资产目录里那个"参数块"（`panel/panel-config.ts`）的三个值；**依赖化之后参数必须住进
- * 项目侧**——三个项目共用同一份资产，资产里放不下项目值（会互相覆盖）。
- * ⚠ host 半与 client 半**各注入一次**（两个进程 / 两份 bundle）。
+ * 那三个值现在**只有一个家**：`Get Paper/mecha_site.py` 的 `Service.monitor`
+ * （`MonitorSpec(route_path=…, port_file='.web-port', title=…)`）。
+ *
+ * | 事 | 谁做 |
+ * |---|---|
+ * | 面板参数（3 项） | 框架按**声明**生成 → 框架的 host 插件读 **env** |
+ * | ⭐ 监控**地址路由**的注册 + 现取端口 | ⭐ **框架的 host 插件**（`mecha-panel-host.mjs`，按 `MECHA_PANEL_PORT_FILES`） |
+ * | 右栏 tab 的挂载 | ⭐ **框架的 client 插件**（本仓 `src/client/index.ts` 只留"自定义 UI"那一半） |
+ *
+ * ⇒ 本仓**不再传 `panelConfig`**（⭐ **同一条 `routePath` 注册两次是接线错误**，
+ *   谁生效取决于注册顺序 —— 那是静默的错）。
+ *   ⚠ 判据 `dsh/test/panel.test.ts` 钉着"不许再加回来"。
  */
-export const GP_PANEL = {
-  routePath: '/paperpilot/monitor-url',
-  portFile: '.web-port',
-  title: '操作审计',
-} as const

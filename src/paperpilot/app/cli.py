@@ -71,9 +71,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DSH_DIR = PROJECT_ROOT / "dsh"
 
 #: Web 的**端口发现文件**（项目根，与 `.mcp-port` / `.cockpit-port` 同级）。
-#: ⚠ 必须与 dsh 插件**注入给面板的**参数 `dsh/src/gp-params.ts` 的 `GP_PANEL.portFile`
-#: 一致——两边各写一份就是"漂移即面板空白"，故 `tests/test_cli_startup.py` 有一条判据
-#: 直接读那个 .ts 比对。
+#: ⚠ 必须与**站点声明**里 `Service.monitor` 的 `port_file` 一致（`Get Paper/mecha_site.py`）
+#: ——两边各写一份就是"漂移即面板空白"，故 `tests/test_cli_startup.py` 有一条判据
+#: 直接读那份声明比对。
+#: ⭐ 2026-10-09：框架按声明注册那条地址路由并**现读**这个文件取端口
+#: （项目侧原来的参数常量 `GP_PANEL` 已删）。
 WEB_PORT_FILE = ".web-port"
 
 

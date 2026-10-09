@@ -138,8 +138,8 @@ SITE = Site(
             #: ⚠ 框架把它生成成参数、经**框架自己的 patch** 带上的插件交给浏览器
             #: ⇒ 本项目 dsh 侧只留"一行 bootstrap + 自定义 UI"（`dsh/src/client/index.ts` 的
             #: 「☀ 评审今日」按钮**保留**：那是自定义 UI，不是监控面板那一份）。
-            #: ⚠ 与 `dsh/src/gp-params.ts` 的 `GP_PANEL` **必须同值**；由
-            #: `dsh/test/panel.test.ts` 的声明对拍钉住。
+            #: ⭐ 2026-10-09：**监控地址路由也由框架注册**（框架的 host 插件按 `port_file` 的
+            #: **绝对路径**现取端口）⇒ 这是那三个值的**唯一家**（项目侧的 `GP_PANEL` 已删）。
             monitor=MonitorSpec(
                 route_path="/paperpilot/monitor-url",
                 port_file=".web-port",

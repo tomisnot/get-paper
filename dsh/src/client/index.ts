@@ -26,9 +26,10 @@
  *
  * ## 面板参数的家在哪
  *
- * ⭐ **在声明**（`mecha_site.py` 的 `monitor=MonitorSpec(...)`）。⚠ `dsh/src/gp-params.ts`
- * 的 `GP_PANEL` **仍在**，因为 **host 半**那条"监控地址路由"仍由本仓注册
- * （§7.3.8 末段如实登记为下一步）；两处必须同值，由 `test/panel.test.ts` 的对拍钉住。
+ * ⭐ **在声明**（`mecha_site.py` 的 `monitor=MonitorSpec(...)`）。
+ * ⭐ **2026-10-09 起连地址路由也归框架**：本仓**不再有**面板参数常量（`gp-params.ts` 里那个
+ * 已删）、也**不再注册**那条路由（不传 `panelConfig`）⇒ 参数只剩**一个家**。
+ * ⚠ 判据 `test/panel.test.ts` 钉着"不许再加回来"。
  *
  * ⚠ client 半经 tsdown 打成 CJS + `__ModuleLoader__.load` 包装；改本目录源码后须
  * `npm run bundle` 并重启 dsh 才生效。

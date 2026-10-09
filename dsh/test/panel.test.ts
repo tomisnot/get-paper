@@ -3,182 +3,94 @@
  *
  * 跑：`npm run test:panel`（= `node --test test/panel.test.ts`，**裸跑**：不加任何旗标/loader）
  *
- * 面板来自**依赖包** `@mecha/dsh-panel`（`file:` junction，唯一副本在 mecha 仓）——
- * **本仓不再持有副本**，故"逐字一致"不再需要判据（结构保证，见 `dsh/README.md`）；
- * 项目自己的**反面语料**（"不许回落到历史默认 8080"这类）放本文件。
+ * 面板来自**依赖包** `@mecha/dsh-panel`（`file:` junction，唯一副本在 mecha 仓）。
  *
- * 钉三件事（**2026-10-01 收窄**：通用形态已由资产共享单测覆盖，见各用例内的 ⚠ 注释）：
- *  1. **地址不回落**：端口文件缺失/非法 ⇒ 路由 `503` 且失败体**没有 `base`**，且**不许**
- *     回落到任何默认端口（本项目曾有一份静态默认 `http://127.0.0.1:8080/`）。
- *  2. **取址打的是本项目自己的路由**（单一来源，不是别家的 `ROUTE_PATH`），且失败侧不回落。
- *  3. **client 入口 import 闭包零 `node:`**（浏览器安全靠结构，不靠树摇的运气）。
+ * ## 2026-10-09：监控面（参数 + 地址路由）**上提进框架** ⇒ 本文件大幅收窄
  *
- * 〔历史〕原钉 3/4 两件（renderPanel 不空白 / 两跳可诊断）盯的是📄简报 iframe 链，
- * 2026-09-26 第 5 批随该链整体退役（阅读面 = PaperPilot 自家 Web，dsh 只留监控页签）。
+ * | 原来钉的 | 现在由谁守 |
+ * |---|---|
+ * | "GP 注入的面板参数是项目值 + 注入往返" | ⭐ **结构性消灭**：本仓**不再有**参数（`gp-params.ts` 里那个常量已删） |
+ * | "声明与参数家同值"（两处对拍） | ⭐ mecha 的 `phase13_panel_decl_selfcheck`（**夹具 ↔ 三家真声明对拍**，读的是真声明） |
+ * | ① 地址不回落 / 坏内容 503 / 失败体无 `base` | ⭐ **框架的 host 插件**：`mecha/dsh-panel/host-plugin/mecha-panel-host.test.ts`（含与资产实现的**等价判据**）；资产那份单测仍覆盖 `503` 语义 |
+ * | ② client 取址打的是**本项目**的路由 + 落 `address` 档 + `isOriginLike` | ⭐ 本仓**已经没有取址代码**了（那条路由与取址都归框架）⇒ 这些是**资产**的形态，资产自测覆盖 |
+ *
+ * ## 本文件现在钉三件（都是"本仓自己的"）
+ *
+ *  1. ⭐ **那一行 bootstrap**：client 半必须接上**框架的** client 插件
+ *     （少了它 = 右栏一个 tab 都没有，而那不会报错）；本仓的**自定义 UI**（☀ 评审今日）照旧；
+ *  2. ⭐ **不许再自己注册面板/地址路由**（`GP_PANEL` / `panelConfig` / 手写 tab 注册 **不许回来**）：
+ *     ⚠ 同一条 `routePath` 注册两次是接线错误（谁生效取决于注册顺序）；
+ *  3. **反面语料**：本仓历史的静态默认地址 `http://127.0.0.1:8080` 不许出现在 dsh 源码里
+ *     （它当年是"回落假绿"的现场；现在连路由都不在本仓了，这条改成**源码级**的反面语料）；
+ *  4. client 入口 import 闭包零 `node:`（浏览器安全靠结构，不靠树摇的运气）。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { dirname, join, normalize, sep } from 'node:path'
+import { readFileSync, readdirSync } from 'node:fs'
+import { dirname, join, normalize, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { makeMonitorUrlHandler } from '@mecha/dsh-panel/host/monitor-url.ts'
-// ⚠ `BASIC_ROUTES` / `DEFAULT_ROUTE_PATH` 在资产的**浏览器安全** `panel/routes.ts` 里
-//   （不在 node-only 的 `host/monitor-url.ts` ⇒ client 半取值导入不会把 `node:fs` 拖进浏览器 bundle）。
-//   ⚠ 2026-10-01：`BASIC_ROUTES.length === 4`（四基础路由）已由**资产共享单测**覆盖
-//   （`monitor-url.test.ts` 的"默认路由是中性的"一例逐字断言四条）⇒ 本项目不再重抄一遍。
-import { DEFAULT_ROUTE_PATH } from '@mecha/dsh-panel/panel/routes.ts'
-import { configurePanel, panelConfig } from '@mecha/dsh-panel/panel/panel-config.ts'
-import { fetchMonitorBase, isOriginLike } from '@mecha/dsh-panel/panel/monitor-client.ts'
-import { GP_PANEL } from '../src/gp-params.ts'
 
-// ⚠ **注入一次**（依赖化后资产不存项目值）：与 host 半 / client 半各自在 apply 里做的是同一件事
-// ——本项目这份判据也要注入自己的项目值才能用面板（资产未注入 `panelConfig()` 会抛）。
-configurePanel({ ...GP_PANEL })
+const HERE = dirname(fileURLToPath(import.meta.url))
+const SRC = join(HERE, '..', 'src')
+const REPO = join(HERE, '..', '..')
 
 /** 本项目**历史**的静态默认地址（迁移前写在插件配置里）——只作为**反面语料**。 */
 const HISTORICAL_DEFAULT = 'http://127.0.0.1:8080'
 
-function fakeRes() {
-  const res: any = {
-    statusCode: 0,
-    headers: {} as Record<string, string>,
-    body: '',
-    setHeader(k: string, v: string) { res.headers[k] = v },
-    end(b: string | Uint8Array) {
-      res.body = typeof b === 'string' ? b : Buffer.from(b).toString('utf8')
-    },
-  }
-  return res
-}
+const read = (rel: string): string => readFileSync(join(SRC, rel), 'utf8')
 
-function jsonRes(status: number, payload: unknown): Response {
-  return { ok: status >= 200 && status < 300, status, json: async () => payload } as unknown as Response
-}
+/** 去掉注释：本文件几处"不许出现 X"的断言看的是**代码**，而注释里解释
+ *  "X 已删/不许回来"是**该留的**（否则下一个人查不到为什么不能走老路）。 */
+const stripComments = (s: string): string => s
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/(^|[^:])\/\/.*$/gm, '$1')
 
-/** 造一个 fetch 替身（资产那份自测同款思路：按 URL 决定回什么）。 */
-function fakeFetch(reply: (url: string) => Response | Error, seen?: string[]) {
-  return (async (input: any) => {
-    const url = String(input)
-    seen?.push(url)
-    const r = reply(url)
-    if (r instanceof Error) throw r
-    return r
-  }) as unknown as typeof fetch
-}
-
-function withTmp(fn: (dir: string) => void): void {
-  const dir = mkdtempSync(join(tmpdir(), 'paperpilot-panel-'))
-  try {
-    fn(dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
-
-// ---------------------------------------------------------------- 参数块
-
-test('⭐ GP 注入的参数是项目值（依赖化后参数不再是资产里的文件）', () => {
-  assert.equal(panelConfig().portFile, '.web-port', 'portFile 必须指向 Web 真正写的那个文件')
-  assert.equal(panelConfig().routePath, '/paperpilot/monitor-url')
-  assert.notEqual(panelConfig().routePath, DEFAULT_ROUTE_PATH)   // 不是资产的中性默认
-  assert.ok(panelConfig().title.length > 0)
-  // 反面：注入的值就是 gp-params 里那几个（**单一来源**，不是这里手抄的第二份）
-  assert.equal(panelConfig().routePath, GP_PANEL.routePath)
-  assert.equal(panelConfig().portFile, GP_PANEL.portFile)
-  assert.equal(panelConfig().title, GP_PANEL.title)
-})
-
-// ---------------------------------------------------------------- ① 地址不回落
-
-test('⭐ 端口文件缺失 ⇒ 503 + 无 base，且**绝不回落到历史默认**', () => {
-  withTmp((dir) => {
-    const res = fakeRes()
-    makeMonitorUrlHandler({ root: dir, portFile: panelConfig().portFile })({} as any, res)
-    assert.equal(res.statusCode, 503)
-    const body = JSON.parse(res.body)
-    assert.equal(body.base, undefined)                       // 不许回半截地址
-    assert.match(body.error, /监控端点未知/)
-    // 反面语料：不许偷偷用历史默认 —— 契约里能出现地址的地方只有 base，这里已为 undefined；
-    // 再钉一次"错误体里也不许出现**地址**"，防止有人把默认值塞进文案当"提示"。
-    assert.ok(!res.body.includes(HISTORICAL_DEFAULT), `失败体不许含默认地址：${res.body}`)
-    // ⚠ 判"没有地址"要用**地址形状**，不许用"有没有数字"：错误文案里本就含出错文件的**路径**，
-    // 而临时目录名偶尔带数字（例：`paperpilot-panel-G05d6O`）⇒ 按数字判会**概率性假红**。
-    // 我原先写成 `!/\d{2,5}/`，实测在全量 pytest 里偶发红、单跑又绿 —— **那正是 R7 明令
-    // 禁止的"守卫靠概率"**，也是我自己制造的一处 flaky（别再把这类红归给环境）。
-    assert.ok(!/127\.0\.0\.1|https?:\/\//.test(body.error),
-      `错误文案里不该出现地址（不许回落到任何默认地址）：${body.error}`)
-  })
-})
-
-test('端口文件坏内容（旧式整条 URL / 越界 / 0）⇒ 503（不猜、不截断）', () => {
-  // ⚠ 2026-10-01：三种坏内容的**逐条**枚举已由**资产共享单测**覆盖
-  //   （`monitor-url.test.ts` 的"内容非数字 / 越界 ⇒ 抛错"逐字用了同样三个输入）
-  //   ⇒ 本项目只留"handler 把它们如实转成 503"这一层的对偶（resolve 抛 ⇒ 503，不是 200 空 base）。
-  withTmp((dir) => {
-    for (const bad of [`${HISTORICAL_DEFAULT}/mcp`, '70000', '0']) {
-      writeFileSync(join(dir, panelConfig().portFile), bad, 'utf8')
-      const res = fakeRes()
-      makeMonitorUrlHandler({ root: dir, portFile: panelConfig().portFile })({} as any, res)
-      assert.equal(res.statusCode, 503, `坏内容 ${bad} 必须是 503`)
-      assert.equal(JSON.parse(res.body).base, undefined)
+/** 本仓 dsh 的源码文件（**含 `.tsx`**：死文件曾经就是这么漏掉的）。 */
+function sourceFiles(): string[] {
+  const out: string[] = []
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) walk(p)
+      else if (/\.tsx?$/.test(e.name)) out.push(relative(SRC, p).replace(/\\/g, '/'))
     }
-  })
-})
-
-// ---------------------------------------------------------------- ② client 取址（走**共享** fetchMonitorBase）
-
-test('⭐ client 取址打的是本项目自己的 ROUTE_PATH（缝是真的，且不回落）', async () => {
-  // ⚠ 2026-10-01 收窄：真形状 ⇒ base、以及"注入的 doFetch 真的被调用（换掉它结果就变）"这两条
-  //   **通用形态**已由**资产共享单测**覆盖（`monitor-client.test.ts` 的"⭐ fetchMonitorBase：
-  //   注入的 doFetch 真的被调用，且换掉它结果就变（R16）"）⇒ 本项目只留资产不知道的那一件：
-  //   **打的是本项目自己的 `panelConfig().routePath`**（单一来源，不是别家的路由），
-  //   且成功侧/失败侧结论不同（缝真有消费者）。
-  const seen: string[] = []
-  const ok = await fetchMonitorBase(
-    fakeFetch(() => jsonRes(200, { base: 'http://127.0.0.1:8123' }), seen),
-    panelConfig().routePath)
-  const dead = await fetchMonitorBase(fakeFetch(() => new Error('ECONNREFUSED')),
-    panelConfig().routePath)
-  assert.equal(ok.ok, true)
-  assert.equal(ok.ok === true && ok.data, 'http://127.0.0.1:8123')
-  assert.deepEqual(seen, [panelConfig().routePath])          // 单一来源：不是别的项目的路由路径
-  assert.equal(dead.ok, false)
-  assert.notDeepEqual(ok, dead)
-})
-
-test('地址失败一律落 address 档，且**绝不回落到历史默认**（GP 反面语料）', async () => {
-  // ⚠ 2026-10-01 收窄：形状枚举（缺 base / 空 / 相对串 / 路径 / 非 JSON）已由**资产共享单测**
-  //   覆盖（`monitor-client.test.ts` 的"地址形状自检"与"连不上 / 非 JSON"两例）
-  //   ⇒ 本项目只留两件资产不知道的：① 真实失败落 `address` 档（不是被误读成 offline）；
-  //   ② **本项目历史的静态默认地址**绝不许出现在失败信息里。
-  const cases: Array<[string, () => Response | Error]> = [
-    ['503', () => jsonRes(503, { error: '监控端点未知' })],
-    ['连不上', () => new Error('ECONNREFUSED')],
-  ]
-  for (const [label, reply] of cases) {
-    const r = await fetchMonitorBase(fakeFetch(reply), panelConfig().routePath)
-    assert.equal(r.ok, false, `${label} 必须失败`)
-    assert.equal(r.ok === false && r.failure.tier, 'address', `${label} 必须落 address 档`)
-    assert.ok(r.ok === false && r.failure.detail.length > 0, `${label} 必须给 detail`)
-    // 绝不回落到历史默认（反面语料）
-    assert.ok(r.ok === false && !r.failure.detail.includes(HISTORICAL_DEFAULT))
   }
+  walk(SRC)
+  return out
+}
+
+function codeHits(needle: string): string[] {
+  return sourceFiles().filter((f) => stripComments(read(f)).includes(needle))
+}
+
+// ---------------------------------------------------------------- 2 不许再自己注册
+test('⭐ 监控面归框架 ⇒ 本仓不许再有 GP_PANEL / panelConfig / 自己的 tab 注册', () => {
+  assert.match(read('client/index.ts'),
+    /applyMechaPanels\(ctx/,
+    'client 半必须调框架那份插件（applyMechaPanels）——少了它 = 右栏一个 tab 都没有')
+  for (const needle of ['GP_PANEL', 'panelConfig', 'makeMonitorUrlHandler', 'configurePanel']) {
+    const hits = codeHits(needle)
+    assert.deepEqual(hits, [], `${needle} 又回来了（路由/参数的第二处真值）：${hits.join('、')}`)
+  }
+  // ⚠ 只禁"**自己注册监控 tab 类型**"；`inject` 里声明 `sidebarRightTabs` 是**必须的**
+  //   （cordis 的 ctx 是代理：框架那份插件要经 GP 的 ctx 用这些服务，不声明就抛）
+  //   —— 把"声明服务"当"自己注册"来禁会造出一条**假判据**（实测踩到）。
+  assert.doesNotMatch(stripComments(read('client/index.ts')),
+    /sidebarRightTabs\s*\.\s*register/,
+    '本仓不许再自己注册右栏 tab 类型（监控 tab 归框架）')
+  // ⚠ host 半**不许**再传 panelConfig（那是"同一条 routePath 注册两次"的来源）
+  assert.doesNotMatch(stripComments(read('index.ts')), /panelConfig\s*:/,
+    'host 半不许再传 panelConfig（框架的 host 插件按声明注册那条地址路由）')
 })
 
-test('isOriginLike：只认 http(s):// 的源样字符串', () => {
-  assert.equal(isOriginLike('http://127.0.0.1:8123'), true)
-  assert.equal(isOriginLike('https://example.com'), true)
-  assert.equal(isOriginLike('http://127.0.0.1:8123/'), true)
-  assert.equal(isOriginLike('127.0.0.1:8123'), false)
-  assert.equal(isOriginLike('/monitor'), false)
-  assert.equal(isOriginLike(''), false)
-  assert.equal(isOriginLike(undefined), false)
-  assert.equal(isOriginLike(8123), false)
+// ---------------------------------------------------------------- 3 反面语料
+test('反面语料：历史静态默认地址 8080 不在本仓 dsh 源码里', () => {
+  const hits = sourceFiles().filter((f) => read(f).includes(HISTORICAL_DEFAULT))
+  assert.deepEqual(hits, [],
+    `dsh 源码里出现了历史默认地址（当年"回落假绿"的现场）：${hits.join('、')}`)
 })
 
-// ---------------------------------------------------------------- ⑤ 浏览器安全（项目自己的入口）
-
+// ---------------------------------------------------------------- 5 浏览器安全（项目自己的入口）
 /**
  * ⭐ **本项目 client 入口的 import 闭包必须零 `node:`**。
  *
@@ -189,8 +101,6 @@ test('isOriginLike：只认 http(s):// 的源样字符串', () => {
  * 才碰 `node:fs`），这条判据把**消费侧的运气**也变成**结构**。
  */
 test('⭐ 本项目 client 入口的 import 闭包里没有 node:（浏览器安全靠结构，不靠树摇的运气）', () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const src = join(here, '..', 'src')
   // ⚠ 2026-10-01（依赖化改造）：面板改从**包** `@mecha/dsh-panel` 取（junction）⇒ 闭包走到
   //   **包边界就不再往下走**（本判据不解析 node_modules）。分工因此变成：
   //   · 包**内部**那条"零 `node:`"由**资产自己的**闭包守卫守（`panel/monitor-client.test.ts`，
@@ -199,9 +109,6 @@ test('⭐ 本项目 client 入口的 import 闭包里没有 node:（浏览器安
   //     与这个资产包（别的裸包一律拒）。
   const ALLOWED_BARE = new Set(['react', 'react/jsx-runtime'])
   const ASSET_PKG = '@mecha/dsh-panel'
-  const stripComments = (s: string) => s
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/(^|[^:])\/\/.*$/gm, '$1')
   /** 把 `from './x'` / `from '../x'` 解析成相对 `src/` 的 posix 路径。
    *  ⚠ **别自己剥 `../`**：交给 `join`/`normalize` 处理（第一版剥掉前缀再拼 ⇒ 拼成
    *  `client/panel/...` 这种不存在的路径，判据以 ENOENT 假红——**自己的守卫自己先红过一次**）。 */
@@ -217,7 +124,7 @@ test('⭐ 本项目 client 入口的 import 闭包里没有 node:（浏览器安
     const rel = queue.shift() as string
     if (seen.has(rel)) continue
     seen.add(rel)
-    for (const line of stripComments(readFileSync(join(src, rel), 'utf8')).split('\n')) {
+    for (const line of stripComments(readFileSync(join(SRC, rel), 'utf8')).split('\n')) {
       if (/^\s*import\s+type\b/.test(line)) continue      // 类型导入会被剥掉，不是运行时依赖
       const m = line.match(/from\s+'([^']+)'/)
       if (!m) continue
@@ -242,44 +149,25 @@ test('⭐ 本项目 client 入口的 import 闭包里没有 node:（浏览器安
     + ' ⇒ 只许宿主注入的 react + 资产包 @mecha/dsh-panel + 相对路径')
   // R8 自证：闭包必须**真的走过若干文件**，否则"没命中"只是因为什么都没读到
   // ⚠ 走下界**跟着事实走**：`seen` 只记**本仓自己的**文件（走到 `@mecha/dsh-panel`
-  //   就停在包边界、不再深入，见上面的 `assetHits`）⇒ 阶段② 起本仓 client 闭包正好是
-  //   2 个：`client/index.ts` / `client/ReviewSopButton.tsx`
-  //   （⚠ `gp-params.ts` **不再进 client 闭包**：面板参数的家已经在**声明**里）。
-  //   ⭐ 这里**不是**放宽：下面的"对偶"逐条点名要求那 2 个**都在**。
+  //   就停在包边界、不再深入，见上面的 `assetHits`）。
   assert.ok(seen.size >= 2, `闭包只走了 ${seen.size} 个文件 ⇒ 检查可能没生效：${[...seen]}`)
   // 对偶（不许误报）：闭包**必须包含** GP 自己那个**自定义 UI**（监控面板那半归框架了）
-  for (const must of ['client/ReviewSopButton.tsx']) {
-    assert.ok(seen.has(must), `闭包里应当有 ${must}：${[...seen]}`)
-  }
+  assert.ok(seen.has('client/ReviewSopButton.tsx'),
+    `闭包里应当有 GP 的自定义 UI：${[...seen]}`)
   //   ⭐ 走到了**资产包**这件事由 `assetHits` 记录（`seen` 按设计**不含**包内文件），
   //   所以"必须接上框架那份插件"那条要查 `assetHits`，不能查 `seen`。
-  //   ⚠ 2026-10 阶段②：点名从 `mount-client-plugin` 改成**入口 `panel/auto.ts`**
-  //   （GP 自己不再手写挂载 ⇒ 它只接框架那一份；那条 helper 仍在资产内部被入口用着）。
-  const entryHit = assetHits.some((h) => h.includes('panel/auto.ts'))
-  assert.ok(entryHit,
+  assert.ok(assetHits.some((h) => h.includes('panel/auto.ts')),
     `client 半应当接上框架那份客户端插件（panel/auto.ts）：${assetHits.join('、')}`)
-  // ⭐ 反向对偶：面板**必须**来自包 —— 不是某个残留的相对副本路径（依赖化改造的验收）
   assert.ok(assetHits.length >= 1,
     `client 半没有从 ${ASSET_PKG} 取面板（是不是还在 import 旧副本？）：${[...seen]}`)
 })
 
-/**
- * ⭐ **声明 ↔ 参数家对拍**（阶段②新增）：面板参数的家搬到声明之后，两份值必须一致
- * —— 不一致的症状是"右栏 tab 在、取数却打到别的路由"（浏览器里才看得见）。
- */
-test('⭐ 声明与参数家同值：mecha_site.py 的 monitor 三项 = GP_PANEL', () => {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const decl = readFileSync(join(here, '..', '..', 'mecha_site.py'), 'utf8')
-  for (const [what, literal] of [
-    ['route_path', `route_path="${GP_PANEL.routePath}"`],
-    ['port_file', `port_file="${GP_PANEL.portFile}"`],
-    ['title', `title="${GP_PANEL.title}"`],
-  ] as const) {
-    assert.ok(decl.includes(literal),
-      `声明里没有 ${what} = ${literal}（两处必须同值：面板参数的家在声明，`
-      + 'host 半那条地址路由仍读 gp-params.ts）')
-  }
+// ---------------------------------------------------------------- 唯一家还在
+test('⭐ 那个唯一家还在：`mecha_site.py` 里有 monitor=MonitorSpec(...)', () => {
+  // ⚠ 本判据**只**断言"声明还在"；**值**由 mecha 的 `phase13_panel_decl_selfcheck`
+  //   拿**真声明**对拍（夹具↔真声明），不在这里抄一遍（抄一遍就是第二处真值）。
+  const decl = readFileSync(join(REPO, 'mecha_site.py'), 'utf8')
   assert.match(decl, /monitor=MonitorSpec\(/, '声明里没有 monitor=MonitorSpec(...)')
+  assert.match(decl, /route_path="/, '声明里 monitor 缺 route_path（框架按它注册地址路由）')
+  assert.match(decl, /port_file="/, '声明里 monitor 缺 port_file（框架按它现取端口）')
 })
-
-

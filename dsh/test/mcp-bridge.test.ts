@@ -13,7 +13,7 @@
  */
 import assert from 'node:assert/strict'
 import { mountHostPlugin, type HostContext } from '@mecha/dsh-panel/host/mount-host-plugin.ts'
-import { GP_BRIDGE, GP_PANEL, GP_TOOLS } from '../src/gp-params.ts'
+import { GP_BRIDGE, GP_TOOLS } from '../src/gp-params.ts'
 import { test } from './harness.ts'
 
 const notFound = (): Error & { code?: number } =>
@@ -57,7 +57,8 @@ test('⭐ GP 的值真的进了用户可见的面（R17）：logLabel / offlineH
     clientInfo: { ...GP_BRIDGE.clientInfo },
     offlineHint: GP_BRIDGE.offlineHint,
     reconnect: { initialDelayMs: 0, maxDelayMs: 0, maxAttempts: 1 },
-    panelConfig: { ...GP_PANEL },
+    // ⚠ **不传 `panelConfig`**（2026-10-09）：监控地址路由归**框架的 host 插件**
+    //   ⇒ 本仓不再注册它（同一条 `routePath` 注册两次是接线错误）。
     sessionFactory: async () => (n++ === 0 ? stale : dead) as never,
   })
 
