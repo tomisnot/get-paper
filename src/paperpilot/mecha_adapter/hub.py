@@ -275,14 +275,15 @@ def main(argv=None) -> int:
               f"/history /config /summary）")
 
     # ⭐ 控制端点（人侧专用，契约 §7.1.1）：**不门控**（写权与"有没有窗口"正交 ⇒
-    # 每个 mcp 进程都起）。⚠ **不挂 log**：框架的端点日志可能含回读到的端口，
-    # 而契约不许端口进任何日志；起不来会抛（响亮），不必靠日志。
-    from .control import CONTROL_PORT_FILE, build_control_registry, start_control_endpoint
+    # 每个 mcp 进程都起）。⭐ 机制在框架（`mecha.software_control`），这里只接线 +
+    # 三个回调（`start_control`）。⚠ **不挂 log**：端口号不许进任何日志；起不来由框架抛（响亮）。
+    from mecha.software_control import CONTROL_PORT_FILE
+
+    from .control import start_control
 
     control_file = str(Path(data_root).parent / CONTROL_PORT_FILE)
-    control = start_control_endpoint(
-        build_control_registry(stack["authority"], gate=stack["gate"]),
-        host=args.host, port_file=control_file, log=None)
+    control, _cport = start_control(stack["authority"], gate=stack["gate"],
+                                    port_file=control_file, host=args.host, log=None)
     print(f"[hub] 控制端点已起（端口只写 {control_file}，不外泄给 AI）")
     try:
         threading.Event().wait()                 # 阻塞到 Ctrl+C / terminate

@@ -267,7 +267,9 @@ def _boot_stack(settings, *, mode: str, with_cockpit: bool, log):
     ⚠ **未决**：框架经 `MECHA_INITIAL_MODE` 送来的"启动者声明的初始写权"GP **还没读**
     （`mecha_site.py` 里的 `initial_mode` 已声明；读与应用是下一轮）。
     """
-    from ..mecha_adapter.control import build_control_registry, start_control_endpoint
+    from mecha.software_control import CONTROL_PORT_FILE
+
+    from ..mecha_adapter.control import start_control
     from ..mecha_adapter.hub import boot_mode, build_stack, make_host
     from ..mecha_adapter.monitor import start_cockpit
     from .container import build_container
@@ -279,9 +281,10 @@ def _boot_stack(settings, *, mode: str, with_cockpit: bool, log):
                          port_file=str(root / ".mcp-port"), log=log)
     mcp_host.start()
     # ⚠ `log=None`：控制端点的日志可能含端口，而契约不许端口进任何日志（起不来会抛）。
-    control = start_control_endpoint(
-        build_control_registry(stack["authority"], gate=stack["gate"]),
-        host=settings.mcp.host, port_file=str(root / ".control-port"), log=None)
+    # ⭐ 机制在框架（`mecha.software_control`），GP 只给三个回调（见 `control.start_control`）。
+    control, _cport = start_control(stack["authority"], gate=stack["gate"],
+                                    port_file=str(root / CONTROL_PORT_FILE),
+                                    host=settings.mcp.host, log=None)
     cockpit = None
     if with_cockpit:
         cockpit = start_cockpit(stack, host=settings.web.host, port=0,

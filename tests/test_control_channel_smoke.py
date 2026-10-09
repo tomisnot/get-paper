@@ -10,15 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
 from mecha.authority import Mode
+from mecha.software_control import CONTROL_PORT_FILE
 
-from paperpilot.mecha_adapter.control import (
-    CONTROL_PORT_FILE,
-    build_control_registry,
-    start_control_endpoint,
-)
+from paperpilot.mecha_adapter.control import start_control
 from tests.test_mecha_adapter import _stack
 
 
@@ -48,14 +44,12 @@ def _call_over_wire(port: int, names: list[str]) -> dict:
 def test_control_endpoint_starts_and_three_ops_work(tmp_path):
     _container, stack = _stack(tmp_path, open_ai=False)
     port_file = tmp_path / CONTROL_PORT_FILE
-    host = start_control_endpoint(
-        build_control_registry(stack["authority"], gate=stack["gate"]),
-        port_file=str(port_file), log=None)
+    endpoint, port = start_control(stack["authority"], gate=stack["gate"],
+                                   port_file=str(port_file), log=None)
     try:
         # ① 端口文件写得对（回读的是**真端口**，不是预选值）
         assert port_file.is_file(), f"没写 {CONTROL_PORT_FILE}"
-        port = int(port_file.read_text(encoding="utf-8").strip())
-        assert port == host.port and port > 0
+        assert int(port_file.read_text(encoding="utf-8").strip()) == port and port > 0
 
         got = _call_over_wire(port, ["read_write_authority", "set_write_authority",
                                      "open_manual_surface"])
@@ -77,4 +71,4 @@ def test_control_endpoint_starts_and_three_ops_work(tmp_path):
         #    `{"is_error": True, "error": {"message":…, "info": {"kind":…, "hint":…}}}`
         assert open_out["error"]["info"]["kind"] == "no_manual_surface", open_out["error"]
     finally:
-        host.stop()
+        endpoint.stop()

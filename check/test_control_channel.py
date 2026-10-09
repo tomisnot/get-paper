@@ -20,7 +20,7 @@ from pathlib import Path
 
 from mecha.authority import Mode
 
-from paperpilot.mecha_adapter.control import build_control_registry
+from paperpilot.mecha_adapter.control import control_registry
 from tests.test_mecha_adapter import _call, _stack
 
 REPO = Path(__file__).resolve().parents[1]
@@ -29,8 +29,46 @@ REPO = Path(__file__).resolve().parents[1]
 def _control_reg(tmp_path):
     """建一个真栈 + 控制面注册表（**同一个 authority** ⇒ 与 AI 面共享同一道门）。"""
     _container, stack = _stack(tmp_path, open_ai=False)
-    reg = build_control_registry(stack["authority"], gate=stack["gate"])
+    reg = control_registry(stack["authority"], gate=stack["gate"])
     return stack, reg
+
+
+def test_gp_owns_no_control_mechanism():
+    """⭐ 本项目**不再持有**控制端点的机制实现 —— 只有接线（R13/R14：删了要有"不许回来"的判据）。
+
+    机制（三操作的工具表 / 起端点 / 端口回读）现在只在框架 `mecha.software_control` 里。
+    ⇒ 本判据断言 `mecha_adapter/control.py`：① **没有**那两个函数的**定义**；
+    ② 它们是**从框架 import 进来的**；③ 模块对象上也没有同名可调用件可被当成第二份实现。
+
+    ⚠ 为什么用 `ast` 而不是 grep：看的是**定义**（`def`/`class`）—— 注释与字符串里提到名字不算，
+    那才是准确的界。
+    红证（实测）：把 `def start_control_endpoint(...)` 或 `def build_control_registry(...)`
+    加回本文件 ⇒ 本判据当场红。
+    """
+    import ast
+    import inspect
+
+    from paperpilot.mecha_adapter import control as gp_control
+
+    src = Path(inspect.getsourcefile(gp_control)).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    defs = {n.name for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    assert "build_control_registry" not in defs, "GP 又定义了一份控制面机制（该用框架的）"
+    assert "start_control_endpoint" not in defs, "GP 又定义了一份控制端点机制（该用框架的）"
+
+    from_mecha = {alias.name for node in ast.walk(tree)
+                  if isinstance(node, ast.ImportFrom) and node.module == "mecha.software_control"
+                  for alias in node.names}
+    assert {"build_control_registry", "start_control_endpoint"} <= from_mecha, \
+        "这两个件应当**从 mecha.software_control import** 进来（用框架的，不是自己写的）"
+
+    # ③ 行为面：**用的一定是框架那一个对象**（不是第二份实现 —— 同名 from-import 会绑定在
+    #    本模块命名空间里，所以这里比的是**身份**，不是"有没有这个名字"）。
+    import mecha.software_control as fw
+
+    assert gp_control.build_control_registry is fw.build_control_registry
+    assert gp_control.start_control_endpoint is fw.start_control_endpoint
 
 
 def test_ai_face_has_no_write_authority_setters(tmp_path):
@@ -164,7 +202,9 @@ def test_control_port_never_leaks_into_ai_visible_text(tmp_path):
 
     能红：把 `.control-port` 路径或端口写进 `HOW_TO_OPEN` / 工具 description ⇒ 本判据红。
     """
-    from paperpilot.mecha_adapter.control import CONTROL_INSTRUCTIONS, HOW_TO_OPEN
+    from mecha.software_control import CONTROL_INSTRUCTIONS
+
+    from paperpilot.mecha_adapter.control import HOW_TO_OPEN
 
     for text in (CONTROL_INSTRUCTIONS, HOW_TO_OPEN):
         assert "control-port" not in text
