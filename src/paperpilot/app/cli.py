@@ -84,110 +84,54 @@ def _web_port_path(settings) -> Path:
     return Path(settings.data_dir).parent / WEB_PORT_FILE
 
 
-def _publish_web_port(port_file: Path, port: int) -> None:
-    """发布 Web 端口：**先清陈旧、再写自己的**（规则来自框架 `mecha.portfile`）。
+def _open_web_binding(settings_or_none, host: str, port: int, port_file: Path):
+    """拿一个**已清陈旧**的 `PortBinding`（端口的规则全在 `mecha.portfile`）。
 
-    为什么先清（`expected=None` 无条件删）：`terminate()` / `taskkill /F` 不跑 Python 的
-    `finally` ⇒ "起时写、止时删"不能只靠收尾；此刻本进程已装配成功（同一个项目根不可能
-    还有别的活宿主）⇒ 该文件必属死进程，删它不会误伤。
+    ⚠ 本项目只负责两件宿主该管的事：**文件叫什么**（`WEB_PORT_FILE`）与**CLI 措辞**；
+    "怎么清陈旧 / 什么时候才能公布 / 收尾删哪一个 / 怎么探活"都在框架那一处
+    （2026-10-10 之前这四件事在本文件里各写了一遍，共 ~80 行）。
     """
-    from mecha.portfile import clear_port_file, write_port_file
+    from mecha.portfile import PortBinding
 
-    clear_port_file(port_file)
-    write_port_file(port_file, port)
-
-
-def _unpublish_web_port(port_file: Path, port: int) -> None:
-    """收尾：**只删仍是自己写的那个端口**的文件（别误删接管者刚写的新端口）。"""
-    from mecha.portfile import clear_port_file
-
-    clear_port_file(port_file, expected=port)
+    binding = PortBinding(port_file=port_file, host=host, port=int(port))
+    binding.clear_stale()                      # R2：起之前无条件清陈旧
+    return binding
 
 
-def _publish_web_port_when_ready(host: str, port: int, port_file: Path,
-                                 *, timeout: float = 25.0) -> None:
-    """**端口真的在听之后**才发布端口文件（后台线程，尽力而为）。
+def _publish_when_ready(host: str, port: int, port_file: Path) -> None:
+    """**端口真的在听之后**才发布（后台线程；探测与规则见 `mecha.portfile`）。
 
-    为什么不"启动前就写"：写了但还没 listen ⇒ 面板拿到一个连不上的地址，与"权威没起来"
-    显示成"连上了但空白"是同一族假绿。起不来就**不写** ⇒ 地址路由 503 + 可读错误
-    （面板显示"地址不详 + 为什么"），而不是给个死地址。
-    0.0.0.0 等回环绑定按 127.0.0.1 探活。
+    ⚠ 为什么必须是**后台**线程：uvicorn 还没起（马上就要 `run`），主线程一阻塞就死锁。
+    ⚠ 为什么不是"先写文件"：写了但还没 listen ⇒ 面板拿到**死地址**，显示成
+    "连上了但空白"（与"服务没起"长得不一样 = 最坏的那类假绿）。
     """
-    import socket
     import threading
-    import time
 
-    probe_host = "127.0.0.1" if host in ("0.0.0.0", "", "*") else host
+    from mecha.portfile import PortBinding
 
-    def _wait_and_publish() -> None:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                socket.create_connection((probe_host, port), timeout=0.3).close()
-            except OSError:
-                time.sleep(0.2)
-                continue
-            _publish_web_port(port_file, port)
-            return
-
-    threading.Thread(target=_wait_and_publish, daemon=True).start()
+    binding = PortBinding(port_file=port_file, host=host)
+    threading.Thread(target=binding.publish_when_listening, args=(int(port),),
+                     kwargs={"timeout": 25.0}, daemon=True,
+                     name="gp-web-port").start()
 
 
 def _ensure_port_free(host: str, port: int, label: str) -> None:
-    """预检端口可绑定；被占则**响亮失败**（不半启动）。
+    """预检端口可绑定；被占则**响亮失败 + 可操作排障**（不半启动）。
 
-    为何必要：Web 在后台线程跑 uvicorn，bind 失败只会在那个线程里报错然后静默死掉，
-    主流程却继续拉 MCP/cockpit/dsh ⇒ 留下“dsh 起了、Web 死了”的半残态（实测：
-    Errno 10048 端口被占）。先在启动前探一下，占了就把可操作的排障步骤说清再退。
+    ⚠ 为什么必要：Web 在后台线程跑 uvicorn，bind 失败只会在那个线程里报错然后静默死掉，
+    主流程却继续拉 MCP/cockpit/dsh ⇒ 留下"dsh 起了、Web 死了"的半残态（实测 Errno 10048）。
+    规则与判据在框架（`mecha.portfile.ensure_free`，`kind="port_in_use"`），
+    **这里只把它翻译成人看得懂的 CLI 话**。
     """
-    import socket
+    from mecha.errors import MechaError
+    from mecha.portfile import ensure_free
 
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        probe.bind((host, port))
-    except OSError:
-        typer.echo(
-            f"❌ {label}端口 {host}:{port} 已被占用——多半是上一次 PaperPilot 没退干净，"
-            "或别的服务在用它。", err=True)
-        typer.echo(f"   查占用：netstat -ano | findstr :{port}   → 末列是 PID", err=True)
-        typer.echo("   释放它：taskkill /F /PID <pid>（确认那是残留的 PaperPilot/uvicorn 再杀）", err=True)
-        typer.echo("   或换端口：serve 用 --port；ai 改 config/settings.yaml 的 web.port"
-                   "（dsh 面板 webUrl 需同步）。", err=True)
+        ensure_free(host, port, label=label)
+    except MechaError as exc:
+        typer.echo(f"❌ {exc.message}", err=True)
+        typer.echo(f"   {exc.hint}", err=True)
         raise typer.Exit(code=1) from None
-    finally:
-        probe.close()
-
-
-def _open_browser_when_ready(host: str, port: int, path: str = "",
-                             timeout: float = 25.0) -> None:
-    """后台轮询 Web 就绪后自动开浏览器——把“人面”变成前台可见（而非隐在后台）。
-
-    Web 本质是本地服务（无独立窗口），浏览器就是它的前台；不自动开用户就不知道
-    去哪用。轮询端口连上后 `webbrowser.open`；`--no-open` 可关。0.0.0.0 等回环用 127.0.0.1。
-    """
-    import socket
-    import threading
-    import time
-    import webbrowser
-
-    url_host = "127.0.0.1" if host in ("0.0.0.0", "", "*") else host
-    url = f"http://{url_host}:{port}/{path.lstrip('/')}"
-
-    def _wait_and_open() -> None:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                socket.create_connection((url_host, port), timeout=0.3).close()
-            except OSError:
-                time.sleep(0.2)
-                continue
-            try:
-                webbrowser.open(url)
-            except Exception:  # noqa: BLE001 - 开不了浏览器不影响服务已起
-                pass
-            return
-
-    threading.Thread(target=_wait_and_open, daemon=True).start()
 
 
 def _dsh_patch_paths() -> tuple[list[Path], list[Path]]:
@@ -311,8 +255,10 @@ def _serve_impl(config, host=None, port=None, mode="", no_cockpit=False,
     web_host = host or settings.web.host
     web_port = port or settings.web.port
     web_port_file = _web_port_path(settings)
+    #: ⭐ 端口这件事全交给框架那一处（清陈旧 / 只在就听后公布 / 收尾只删自己那个）。
+    binding = _open_web_binding(settings, web_host, web_port, web_port_file)
     _ensure_port_free(web_host, web_port, "Web ")   # 预检：端口被占则不半启动
-    _publish_web_port_when_ready(web_host, web_port, web_port_file)
+    _publish_when_ready(web_host, web_port, web_port_file)
     container, stack, mcp_host, control, cockpit = _boot_stack(
         settings, mode=mode, with_cockpit=not no_cockpit, log=typer.echo)
     typer.echo(f"🌐 Web（人类面）: http://{web_host}:{web_port}  (AI: {container.ai_provider})")
@@ -324,7 +270,8 @@ def _serve_impl(config, host=None, port=None, mode="", no_cockpit=False,
     typer.echo(f"🔐 控制端点已起（人侧专用；端口只写 .control-port）· 写权模式 {stack['authority'].mode.value}"
                "（要独占/急停去 /settings 的写权卡切，本机可信、无口令）")
     if not no_open:
-        _open_browser_when_ready(web_host, web_port)   # 自动开浏览器 = 人面前台可见
+        #: "把人的面板带到眼前"＝本项目自己的安排；机制（就绪才开）在框架那一处。
+        binding.open_when_ready("", timeout=25.0)
         typer.echo("🖥  已尝试打开浏览器（人面工作台）；未弹出就手动访问上面的 Web 地址。")
     try:
         uvicorn.run(create_app(container, stack), host=web_host, port=web_port, log_level="info")
@@ -336,7 +283,7 @@ def _serve_impl(config, host=None, port=None, mode="", no_cockpit=False,
         control.stop()
         mcp_host.stop()
         stack["software"].close()
-        _unpublish_web_port(web_port_file, web_port)
+        binding.clear()                       # 收尾按内容清（只删仍是我写的那个）
 
 
 @app.command()
@@ -474,13 +421,14 @@ def web(
     settings = load_settings(config)
     container = build_container(settings)
     web_port_file = _web_port_path(settings)
-    _publish_web_port_when_ready(host, port, web_port_file)
+    binding = _open_web_binding(settings, host, port, web_port_file)
+    _publish_when_ready(host, port, web_port_file)
     typer.echo(f"🌐 http://{host}:{port}  (AI: {container.ai_provider})")
     typer.echo(f"🧭 dsh 面板发现: {web_port_file.name} ← {port}（同源路由读它）")
     try:
         uvicorn.run(create_app(container), host=host, port=port, log_level="info")
     finally:
-        _unpublish_web_port(web_port_file, port)
+        binding.clear()
 
 
 @app.command()
@@ -540,7 +488,8 @@ def ai(
         typer.echo("⚠ mcp.enabled=false：AI 模式需要 MCP 语义通道，仍继续启动…")
     _ensure_port_free(settings.web.host, settings.web.port, "Web ")   # 预检：端口被占则不半启动
     web_port_file = _web_port_path(settings)
-    _publish_web_port_when_ready(settings.web.host, settings.web.port, web_port_file)
+    binding = _open_web_binding(settings, settings.web.host, settings.web.port, web_port_file)
+    _publish_when_ready(settings.web.host, settings.web.port, web_port_file)
 
     # 1) 后台：MCP（AI 面）+ 控制端点（人侧）+ cockpit（监控面），共享一个 mecha 栈；AI 模式默认开闸到 AI
     container, stack, mcp_host, control, cockpit = _boot_stack(
@@ -562,7 +511,7 @@ def ai(
     web_thread.start()
     typer.echo(f"  Web 面板: http://{settings.web.host}:{settings.web.port}（后台）")
     if not no_open:
-        _open_browser_when_ready(settings.web.host, settings.web.port)   # 人面前台可见
+        binding.open_when_ready("", timeout=25.0)   # 人面前台可见（就绪才开）
 
     def _cleanup() -> None:
         try:
@@ -574,7 +523,7 @@ def ai(
         except Exception:  # noqa: BLE001 - 收尾尽力
             pass
         finally:
-            _unpublish_web_port(web_port_file, settings.web.port)
+            binding.clear()
 
     # 3) 前台：dsh harness（AI 界面 + 📄 PaperPilot 面板都在里面）
     dsh_exe = shutil.which("dsh")
