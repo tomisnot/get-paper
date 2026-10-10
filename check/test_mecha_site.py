@@ -1,7 +1,5 @@
 """站点声明（`mecha_site.py`）的判据：**框架能不能按约定吃掉它** + 两处"必须钉死"的事实。
 
-依据：`mecha/docs/v2/统一启动器-设计.md` §4.2（字段与发现点）· §2.2.1（命名律）· §5.6（环境变量）。
-
 ⚠ 这三条**只读 `load_sites()` 的产物**、不直接 import `mecha_site`：框架的加载路径就是
 被测对象（自己 import 会绕过它，那条"能被加载"就成了空话）。
 """
@@ -46,8 +44,16 @@ def test_declaration_is_loadable_and_valid():
     assert not hasattr(svc, "manual"), "`manual` 已被三层架构删除，不许回来"
     assert svc.has_gui is True, "GP 的人手那条腿是 Web 界面（serve + templates/）⇒ has_gui 为 True"
     #: ⚠ 比 `.value`：`Mode` 是 `str` 枚举，`str(Mode.AI)` 给的是 `'Mode.AI'` 而不是 `'ai'`。
-    assert getattr(svc.initial_mode, "value", None) == "ai", (
-        f"从 mecha 启动 = 永远 AI 组 ⇒ initial_mode 应为 ai：{svc.initial_mode!r}")
+    #: ⭐ **2026-10-10 改准**（用户裁决）：GP 的设计里**只有一种模式** —— 人和 AI **同时**能写
+    #: （项目出厂策略就是 `BOOT_MODE_DEFAULT="open"`），**没有"切到手动/交还给 AI"这回事**。
+    #: ⇒ 声明 **`open`（共用档）**，框架据此把它当"**没有写权切换需求**"（启动控制台上
+    #: 不画那两个假按钮）。⚠ 旧断言是 `ai`（"从 mecha 启动 = 永远 AI 组"）—— 那会让**人写的
+    #: 路径被闸住**，与"只有一种模式"的设计相反。
+    assert getattr(svc.initial_mode, "value", None) == "open", (
+        f"GP 只有一种模式（AI 与人共用）⇒ initial_mode 应为 open：{svc.initial_mode!r}")
+    from mecha.launch import LaunchController
+    assert LaunchController._authority_action(svc) == "none", (
+        "共用档不该在启动控制台上给「归人」的按钮（按下去也不改变谁能写）")
     for p in site.dsh.patches:
         assert p.is_file(), f"dsh 补丁不存在：{p}"
     for p in site.dsh.plugin_artifacts:

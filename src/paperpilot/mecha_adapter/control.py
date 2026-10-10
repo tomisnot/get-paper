@@ -57,8 +57,12 @@ from mecha.software_control import build_control_registry, start_control_endpoin
 #: ⭐ 由**本项目**给的「怎么切到人工」说明（框架**不写死**它：那是项目知识）。
 #: 它出现在 `read_write_authority()` 的回执里，给**被拒的一方**（AI 或人）指路。
 #: ⚠ **别写端口/凭据**（它会给 AI 读）。
+#: ⚠⭐ **2026-10-10 改准**（用户裁决）：GP 的设计里**只有一种模式** —— 人和 AI **同时**能写
+#: （声明的 `initial_mode=Mode.OPEN`）⇒ **没有"要切"的东西**。这句话如实说"无需切换"，
+#: 只在**真要临时独占/急停**时才指到本项目自己的 Web 页（那是项目自己的入口）。
 HOW_TO_OPEN = (
-    "在 Get Paper 的 Web 页 `/settings` 的「写权模式」卡上切"
+    "本项目 AI 与人**共用**写权（open 档）：**无需切换**。"
+    "要临时独占/急停，可在 Get Paper 的 Web 页 `/settings` 的「写权模式」卡上切"
     "（本机可信、无口令；也可用 `paperpilot serve --mode <locked|human|ai|open>` 起步）。"
     "⚠ AI 侧不能自解锁：它拿不到控制端点的地址。"
 )
