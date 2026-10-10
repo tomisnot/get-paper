@@ -7,7 +7,7 @@
 
 | 声明 | 依据（都实测过，不是照抄别家） |
 |---|---|
-| `argv = <python> -m paperpilot.main mcp` | ⭐ **只起 `mcp` 子命令**（headless 语义通道，写 `.mcp-port`）；**不用 `paperpilot ai`** —— 那个前台跑 dsh，编排已归框架 |
+| `argv = <python> -m paperpilot.main serve` | ⭐ **起 `serve`**＝**四个面同一个进程同一个栈**（Web 人类面 + MCP AI 面 + cockpit 监控面 + 控制端点）：GP 的人手那条腿是**浏览器里的 Web 工作台**，`mcp` 子命令**不起 Web 服务** ⇒ 人的腿会**整个消失**（详见 `_service_argv`）。**不用 `paperpilot ai`** —— 那个前台跑 dsh，编排已归框架 |
 | `ok_codes=()` | ⚠ **实测**：本仓 MCP 端点的 `GET /mcp` 回 **406**、`POST /mcp` 回 400、`/` 与 `/healthz` 回 404 ⇒ **该端口上没有任何 2xx 的只读路由**（`/healthz` 在 Web 应用上，不在这个端点）。故只能表达"**有 HTTP 响应即算在听**"（比 `tcp=True` 强：同端口可能是别的东西在听） |
 | `env["PAPERPILOT_CONFIG"]` | ⚠ **决定读哪份 settings.yaml** ⇒ 决定状态根（`data_dir` 相对它上级目录解析）。不钉死 ⇒ 继承来的环境变量可能把两腿指到**不同世界**（§5.6，ML/EL 各踩过一次） |
 | `env["PAPERPILOT_DATA_DIR"]` | ⚠ 状态根本身的显式值（`config.py:223` 只在 YAML 没写 `data_dir` 时生效 ⇒ 是**弱**覆盖，仍需钉，见下方"唯一不变量"） |
@@ -75,13 +75,25 @@ def _python() -> str:
 
 
 def _service_argv() -> tuple[str, ...]:
-    """起本项目的服务（headless 权威）：`<python> -m paperpilot.main mcp`。
+    """起本项目的服务：`<python> -m paperpilot.main serve`。
 
-    ⚠ **不写任何旗标**：`mcp` 子命令的默认值就是 GP 的项目策略（host `127.0.0.1`、port `0`＝
-    自动选、`--mode` 取 `hub.BOOT_MODE_DEFAULT="open"`、cockpit 默认开）。在这里再抄一遍
+    ## ⭐ 为什么是 `serve` 而不是 `mcp`（2026-10-10 用户裁决："按项目各自安排"）
+
+    GP 的人手那条腿是**浏览器里的 Web 工作台**（不是进程内窗口）⇒ 它必须**有人伺服**：
+    `mcp` 子命令**不起 Web 服务**（`.web-port` 永远不写）⇒ 从 mecha 启动时**人的腿根本不存在**，
+    而人要在那张页面的 `/settings` 写权卡上切模式、要看流水线结果。
+    `serve` = **四个面同一个进程同一个栈**（Web 人类面 + MCP(AI) + cockpit(监控) + 控制端点，
+    见 `cli.py:_boot_stack` 的 docstring）⇒ 与"该软件随 mecha 同生共死"的语义一致；
+    它同样写 `.mcp-port`（框架的就绪判据不看别的）与 `.cockpit-port`（监控面声明读它）。
+
+    ⚠ **不写任何旗标**：`serve` 的默认值就是 GP 的项目策略（host `127.0.0.1`、Web 端口取
+    `settings.web.port`、cockpit 默认开、**自动开浏览器**＝"人面前台可见"）。在这里再抄一遍
     ＝同一件事两处真值（本工程反复治的病）。
+    ⚠ 代价（如实记）：Web 端口是**固定**的（`settings.web.port`，缺省 8080）且被占时
+    **响亮失败**（`_ensure_port_free`，不半启动）；每次被 mecha 拉起都会**开一个浏览器标签**
+    —— 那正是"启动就把人的面板带到眼前"，要关就加 `--no-open`（本项目自己的选择）。
     """
-    return (_python(), "-m", "paperpilot.main", "mcp")
+    return (_python(), "-m", "paperpilot.main", "serve")
 
 
 #: ⚠ **两腿同源**：这两个变量一起决定"看到哪份状态"。见模块 docstring 的"唯一不变量"。
@@ -135,14 +147,16 @@ SITE = Site(
                          "（本机可信、无口令；AI 侧不能自解锁——它拿不到控制端点的地址）"),
             #: ⭐ **监控面声明**（三层架构 §7.3.6）：路由 / 端口文件名 / 标题只在这里写一次。
             #: ⚠ **2026-10-09 改准：`.web-port` → `.cockpit-port`**（实测抓到的真 bug）。
-            #:   · `paperpilot mcp`（框架起的那条形态）**不起 Web 服务** ⇒ `.web-port` **永远不写**
-            #:     ⇒ 框架那条地址路由回 **503「读不到监控端口」**、面板那页永远打不开；
-            #:   · 而它**确实**起的是 **cockpit**（`[mecha-cockpit] http://…`，只读
+            #:   · 当时框架起的是 `paperpilot mcp`，那条形态下**不起 Web 服务** ⇒ `.web-port`
+            #:     在那条路里**不写** ⇒ 框架那条地址路由回 **503「读不到监控端口」**、
+            #:     面板那页永远打不开（⭐ 2026-10-10 已把框架起的形态改成 `serve`，两条
+            #:     端口文件都写；**监控面仍然读 `.cockpit-port`**——它才是"只读审计"那个面）；
+            #:   · 而 `mcp`/`serve` **都**起的是 **cockpit**（`[mecha-cockpit] http://…`，只读
             #:     `/status /activity /history /config /summary`）—— ⭐ 那正是**资产面板**
             #:     要读的那个形状（资产文档原话："监控端点的端口是动态分配的
             #:     （`mecha.cockpit` 用 `port=0` 起端点）"）。
             #:   ⇒ 「监控面」= **cockpit**；`.web-port` 是另一件事（人用的 Web 工作台，
-            #:     由 `paperpilot serve` 写）。
+            #:     由 `paperpilot serve` 写 —— 现在是**框架起的那个形态**在写它）。
             #: ⚠ 框架把它生成成参数、经**框架自己的 patch** 带上的插件交给浏览器
             #: ⇒ 本项目 dsh 侧只留**那一行 bootstrap**（自定义 UI 已按用户裁决删除）。
             #: ⭐ **监控地址路由也由框架注册**（框架的 host 插件按 `port_file` 的

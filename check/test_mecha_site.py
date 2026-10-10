@@ -32,7 +32,13 @@ def test_declaration_is_loadable_and_valid():
     """A. 框架按约定吃得下：`load_sites()` + `validate()`（含 dsh 侧的补丁与产物存在）。"""
     site, svc = _service()
     assert svc.cwd == REPO
-    assert svc.argv[-1] == "mcp", f"服务那条腿必须起 headless 的 mcp 子命令：{svc.argv}"
+    #: ⚠ **2026-10-10 改准**（用户裁决："按项目各自安排"）：起 **`serve`** 而不是 `mcp`。
+    #: GP 的人手那条腿是**浏览器里的 Web 工作台**（不是进程内窗口）⇒ `mcp` 子命令不起 Web
+    #: 服务、人的腿整个消失。`serve` = 四个面同一个进程同一个栈，**照样写 `.mcp-port`**
+    #: （框架的就绪判据）与 `.cockpit-port`（下面的监控面声明读它）。
+    assert svc.argv[-1] == "serve", (
+        f"服务那条腿必须起 `serve`（Web 人类面 + MCP + cockpit + 控制端点同进程）：{svc.argv}")
+    assert "--no-open" not in svc.argv, "启动时要把人的面板带到眼前（这家的安排）；要关是它自己的选择"
     #: ⚠ 三层架构换代（2026-10-08）：`manual` 字段已被框架**删除**
     #: （"人那条腿"不再是"要 spawn 的进程"，而是**软件进程内的窗口**；写权切换不动进程）。
     #: ⇒ 旧断言 `svc.manual is None` 测的对象**已不存在**（R13：删机制时处理它的承诺）。
