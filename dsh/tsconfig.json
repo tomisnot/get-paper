@@ -1,4 +1,4 @@
-{
+﻿{
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
@@ -22,5 +22,5 @@
     // 里的 `@modelcontextprotocol/sdk`（TS2307 + TS7006）。mecha 已实测，EL 与 GP 都要加。
     "preserveSymlinks": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "types/**/*.d.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts"]
 }

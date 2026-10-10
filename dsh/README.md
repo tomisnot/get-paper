@@ -1,9 +1,26 @@
 # paperpilot-dsh —— PaperPilot 的 dsh 集成插件
 
-一个 **out-of-tree** 的 dsh（Cordis）插件，把 PaperPilot 接进 dsh：**接管 MCP 连接生命周期**
-（治好 dsh stock HTTP 桥"服务重启即永久 `Session not found`"的死区），并把 PaperPilot 的
-语义工具**原生注册**进 dsh；同时在会话头部加一个「📄 简报」开关，把 PaperPilot Web
-（今日简报/论文库/设置）挂进 dsh 右栏。
+> ## ⛔ 2026-10-10：**自愈 MCP 桥已整块删除**（用户裁决 = 方案 A）—— 读本文前先看这条
+>
+> **工具面只有一条腿**：**框架的聚合端点**（dsh 侧由框架的 overlay 插
+> `@deepseek-ai/dsh-mcp-client`，GP 的工具名形如 `mcp__mecha__gp_<tool>`，
+> **读/切写权与开关软件的元工具也在那条腿上**）。
+> ⇒ 本仓以下东西**已删除**：`src/host/gp-hub.ts`、`src/gp-params.ts`、
+> `test/mcp-bridge.test.ts`、`test/config.test.ts`、`test/run.ts`、`test/harness.ts`、
+> `types/dsh-shims.d.ts`，以及依赖 `@modelcontextprotocol/sdk` / `ws`。
+> ⭐ **现状**：本包只有**面板**那一件事 —— host 半 = **空载体**（只为"一条 patch entry
+> 带一个包"的加载形状），client 半 = 框架面板插件的**一行 bootstrap**。
+> ⚠ **代价（用户已认）**：**不经 mecha 单独跑 dsh 时，不再出现任何 GP 工具**。
+> ⚠ 反向判断：`dsh/test/panel.test.ts` 的载体那条与框架的 `checks/panel_one_leg_selfcheck.py`。
+> ⚠ **本文中凡描述"接管 MCP 连接生命周期 / 建桥 / 注册工具 / SDK 依赖 / 两套 runner"的段落
+> 都已失效**，原样保留只作历史记录（那段死区分析本身仍成立，只是**不再由本插件解决**）。
+>
+> ## 旧述（历史）
+>
+> 一个 **out-of-tree** 的 dsh（Cordis）插件，把 PaperPilot 接进 dsh：**接管 MCP 连接生命周期**
+> （治好 dsh stock HTTP 桥"服务重启即永久 `Session not found`"的死区），并把 PaperPilot 的
+> 语义工具**原生注册**进 dsh；同时在会话头部加一个「📄 简报」开关，把 PaperPilot Web
+> （今日简报/论文库/设置）挂进 dsh 右栏。
 
 > 架构与纪律详见 `docs/DESIGN.md` §17（对齐 Energy Level `re0-mecha-dsh` 的成熟模式）。
 
@@ -100,7 +117,8 @@ types/dsh-shims.d.ts       本地最小类型 shim（@deepseek-ai/* 是宿主提
 ## 加载
 
 ```sh
-# 首次/新检出必先装依赖（host 代码 import @modelcontextprotocol/sdk + ws）
+# 首次/新检出必先装依赖（⭐ 2026-10-10 起只是 client 半要用 @mecha/dsh-panel 构建；
+#  host 半不再 import @modelcontextprotocol/sdk + ws —— 桥已删）
 cd dsh && npm install && cd ..
 
 # 开发期（tsx 直接加载源、无需构建）
@@ -167,15 +185,14 @@ dsh 升级后先跑 `paperpilot dsh-config` 确认 `webserver` 表达式行未�
 cd dsh
 npm install                         # 含 @mecha/dsh-panel（file: junction）
 npm run typecheck                   # tsc --noEmit（0 错；preserveSymlinks 已开）
-npm test                            # ① 进程内迷你 runner（本项目侧）② npm run test:panel
-npm run test:panel                  # 面板判据（只剩 test/panel.test.ts；资产自带单测随包走）
+npm test                            # 面板判据 + 载体判据（就一份：test/panel.test.ts）
 npm run bundle                      # 产物：lib/index.mjs + lib/client.js（资产已内联）
 ```
 
 > ⚠ **跑 TS 一律裸跑**（无旗标、无 loader）：给 Node 加 `--preserve-symlinks` 会把模块标识停进
 > `node_modules/…`，而原生剥类型**拒绝那底下的 `.ts`**；不加时按 junction 的真实路径解析 ⇒ 正常。
-> 两套 runner 并存是有意的：桥/config 的测试用 `test/harness.ts` 的零依赖进程内 runner
-> （其按文件 spawn 在受限环境会 EPERM）；面板判据用 `node:test`。
+> ⚠ **2026-10-10**：原先这里还有"两套 runner 并存"（桥/config 用 `test/harness.ts` 的零依赖
+> 进程内 runner）—— 那些测试与 runner **随桥一起删了** ⇒ 现在只有 `node --test` 一套。
 > ⚠ **资产自带的共享单测不在本仓跑**（随包走了；执行面在框架的
 > `mecha/checks/dsh_panel_selfcheck.py`，已挂在 `checks/run_all.py`，硬依赖 `node`）。
 

@@ -1,96 +1,45 @@
 /**
- * paperpilot dsh 插件 —— **HOST 入口**（Cordis 插件，函数形态）。
+ * paperpilot dsh 插件 —— **HOST 半**（Cordis 插件，函数形态）。
  *
- * ⚠ **2026-10-01：通用机制已全部上提**——本文件只剩**参数与 GP 自己的知识**：
- * 建桥 / 会话工厂 / logger 转发 / `onTools→syncTools` 两阶段 swap / `onStatus` 三态日志 /
- * 监控地址路由的注册与注销 / 收尾顺序 / 端点每次现解的包装 / **SDK 懒加载**，
- * 现在都在资产包的 `mountHostPlugin`（`@mecha/dsh-panel/host/mount-host-plugin.ts`）里。
- * 面板与桥本身同样来自该包（`file:` junction，单一副本在 mecha 仓）。
+ * ## ⭐ 2026-10-10：它现在只是**载体**（工具面归框架的聚合端点）
  *
- * 留给 GP 的只有三样：**参数值**（`gp-params.ts`）、**端点怎么算**（`gpResolveHubUrl`，
- * 显式 URL > 端口文件 > 项目默认是项目知识）、以及 `paperpilot mcp` 那种**没有 web 服务
- * 也要照常工作**的激活语义（骨架的 `hostPluginInject()` 默认就是这个语义）。
+ * 用户裁决（**方案 A**）：**工具面只有一条腿** = 框架的聚合端点
+ * （dsh 侧由框架的 overlay 插 `@deepseek-ai/dsh-mcp-client`，GP 的工具名形如
+ * `mcp__mecha__gp_<tool>`，**读/切写权与开关软件的元工具也在那条腿上**）。
+ * ⇒ 本仓原有的**自愈 MCP 桥**（`src/host/gp-hub.ts` + 资产骨架 `mountHostPlugin`）
+ * **整块删除**，`src/gp-params.ts`（桥的参数家）一并删除。
+ * ⚠ **代价（用户已认）**：**不经 mecha 单独跑 dsh 时，不再出现任何 GP 工具**
+ *   —— 那条路本来就不在架构的需求里（AI 面 = 一个聚合端点）。
  *
- * 安全红线：**只 connect、绝不 spawn 服务**（人启动 launcher = 权威）。换 harness 只丢
- * 本插件，PaperPilot 的独立 MCP server 照用（跨 harness）。
+ * | 事 | 现在谁做 |
+ * |---|---|
+ * | **AI 工具面**（含读/切写权、开关软件） | ⭐ **框架的聚合端点**（唯一一条腿） |
+ * | 监控端点的**地址路由**（读 cockpit 的端口文件现取端口、**不回落**） | ⭐ **框架的 host 插件**（`mecha/dsh-panel/host-plugin/mecha-panel-host.mjs`，按 `MECHA_PANEL_PORT_FILES` 的**绝对**路径现读） |
+ * | 面板参数（路由 / 端口文件名 / 标题） | ⭐ **声明**（`Get Paper/mecha_site.py` 的 `Service.monitor`）——本仓不再有第二份 |
+ * | 右栏 tab 的挂载 | ⭐ **框架的 client 插件**（`src/client/index.ts` 只留那一行 bootstrap） |
+ *
+ * ## ⚠ 那它为什么还在（"载体的代价"，如实记）
+ *
+ * dsh 的加载形状是"**一条 patch entry 带一个包**"：`dsh/cordis.patch.yml` 里
+ * `- id: paperpilot / name: './lib/index.mjs'` 既加载**这个包的 host 半**，
+ * 也（经 `package.json` 的 `dsh.client`）把**这个包的 client 半**送进浏览器。
+ * ⇒ 少了这一件，**右栏一个 tab 都没有，而且那是静默的**。
+ *
+ * ⚠ 删它需要**同时**改 `mecha_site.py`（`patches` / `plugin_artifacts`）与
+ * `package.json` 的 exports —— 而"换一种加载方式"是 **dsh 的机制**，不是本仓能定的
+ * ⇒ 保留这个空载体。⚠ 判据：`dsh/test/panel.test.ts`（本文件**必须**是载体）
+ *   与框架的 `checks/panel_one_leg_selfcheck.py`（**三家同形**、桥不许回来）。
+ *
+ * 安全红线：本插件**不** spawn/kill 任何进程、不写任何文件、也不注册任何路由。
  */
-import type { Context } from '@deepseek-ai/cordis'
-import { buildRequestInit } from '@mecha/dsh-panel/host/config.ts'
-import { hostPluginInject, mountHostPlugin } from '@mecha/dsh-panel/host/mount-host-plugin.ts'
-import { gpResolveHubUrl } from './host/gp-hub.ts'
-import { GP_BRIDGE, GP_TOOLS } from './gp-params.ts'
 
-/** Cordis 插件显示名（诊断用；工具命名空间默认同此）。 */
+/** Cordis 插件显示名（诊断用）。 */
 export const name = 'paperpilot'
 
-/**
- * 顶层 `inject`（cordis 要求它在模块顶层）。
- *
- * ⚠ **不传参**：`hostPluginInject()` 现在的默认就是 `['tools']`（2026-10-01 mecha 把默认值
- * 修成正确语义、删掉了 `needsWebServer` 参数）。这正是 GP 要的：GP 有 **headless** 用法
- * （`paperpilot mcp` 只起 MCP，不进 dsh；换 harness / 无 web 服务时桥仍要活）——顶层不声明
- * `webServer`，骨架内部那句 `ctx.inject(['webServer'])` 在没有它时**跳过路由**而不是不激活
- * ⇒ 保住"没有 web 服务 ≠ AI 工具也没了"。
- */
-export const inject = hostPluginInject()
+/** ⚠ **不再需要任何服务**：地址路由归框架、工具面归聚合端点（原先这里要 `tools`）。 */
+export const inject: string[] = []
 
-/**
- * 插件配置（用户在 cordis.patch.yml 的 entry `config:` 里给；全部可选，缺省在 apply 里兜）。
- *
- * 刻意**不导出 schemastery 的 Config 校验 schema**：那会引入对 `@deepseek-ai/schemastery` 的
- * **运行时** import，而 out-of-tree 插件的 node_modules 里没有它（它是 dsh 宿主提供的 peer）。
- * 去掉后，host 半对 @deepseek-ai/* **只剩类型 import（编译期擦除）**、运行时零 peer 依赖。
- */
-export interface Config {
-  /** 显式 PaperPilot MCP 端点；留空则从 mcpPortFile 解析。 */
-  hubUrl?: string
-  /** 端口文件路径（launcher 写；默认项目根 `.mcp-port`，相对 dsh 的 cwd）。 */
-  mcpPortFile?: string
-  /** 工具命名空间：`mcp__<serverName>__<tool>`。 */
-  serverName?: string
-  /** 项目根（面板端口文件所在目录；默认 dsh 进程的 cwd = launcher 已切到项目根）。 */
-  projectRoot?: string
-  /** 远程 MCP 鉴权 token（→ Authorization: Bearer）；本地默认空。 */
-  hubToken?: string
-  /** 额外请求头。 */
-  hubHeaders?: Record<string, string>
-  /** 重连退避：首次延迟 ms（不传 = 用桥自己的默认 300）。 */
-  reconnectInitialDelayMs?: number
-  /** 重连退避：上限 ms（不传 = 用桥自己的默认 15000）。 */
-  reconnectMaxDelayMs?: number
-  /** 重连最多尝试次数（不传 = 用桥自己的默认 0 = 无限后台重连）。 */
-  reconnectMaxAttempts?: number
-}
-
-/** 挂载 host 半插件：**一次 `mountHostPlugin`**，参数全来自 GP 自己的参数家。 */
-export async function apply(ctx: Context, config: Config = {}): Promise<void> {
-  await mountHostPlugin(ctx, {
-    // `logLabel` 同时就是**服务名**（骨架把这两个词并成一个，避免同一个词写两遍）；
-    // GP 的 `serverName`（工具命名空间）与它同值（'paperpilot'），但语义是另一件事，故仍分开给。
-    serverName: config.serverName || GP_TOOLS.serverName,
-    logLabel: GP_BRIDGE.logLabel,
-    // 面板端口文件所在的项目根：默认 dsh 进程 cwd（launcher 已把 cwd 钉在项目根）。
-    projectRoot: config.projectRoot?.trim() || process.cwd(),
-    // 端点**每次建会话现解**（骨架只存这个函数，不缓存结果）——GP 的 MCP 端点由框架以
-    // `port=0` 起，权威重启会换端口；固化 URL 就会对着旧端口永久重试。
-    resolveUrl: () => gpResolveHubUrl(config),
-    clientInfo: { ...GP_BRIDGE.clientInfo },
-    // 远程鉴权头（本地 hubToken 空 ⇒ `buildRequestInit` 回 undefined，不带头）。
-    requestInit: buildRequestInit(config),
-    offlineHint: GP_BRIDGE.offlineHint,
-    // 三个旋钮**只在部署显式给了值时才覆盖**（不给 = undefined ⇒ 用桥自己的默认，别手抄第二份）。
-    reconnect: {
-      initialDelayMs: config.reconnectInitialDelayMs,
-      maxDelayMs: config.reconnectMaxDelayMs,
-      maxAttempts: config.reconnectMaxAttempts,
-    },
-    // ⭐ **不传 `panelConfig`**（2026-10-09）：监控地址路由**上提进框架**了 ——
-    //   框架的 host 插件按 `mecha_site.py` 的声明 + `MECHA_PANEL_PORT_FILES`（绝对路径）
-    //   现取端口 ⇒ ⚠ **同一条 `routePath` 注册两次是接线错误**（谁生效取决于顺序）。
-    //   面板参数也随之只剩**一个家**：声明的 `Service.monitor`。
-    // ⚠ **不传 `registerCommand`**：交权按钮与 command 都不该存在。
-    //   ⭐ 理由已从"GP 没有看门人"变成**结构性的**：三层架构（2026-10-08）删掉了整条
-    //   "写 .mode-request 请看门人做进程交接"的链——切写权走**控制端点**、**不动进程**
-    //   ⇒ 没有"交权 command"这个形状了（无消费者 = 不留"按了没反应"的死缝）。
-  })
+/** 空的挂载点：本插件的价值在"**它被加载**"（client 半随之进 dsh），不在它做了什么。 */
+export async function apply(): Promise<void> {
+  // 有意为空（见文件头）。⚠ 不注册任何东西 ⇒ 也不留"按了没反应"的死缝。
 }

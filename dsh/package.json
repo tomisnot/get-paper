@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "dsh (Cordis) plugin for PaperPilot: takes over the MCP connection lifecycle (self-healing reconnect past dsh's streamable-http dead-zone) and surfaces the read-only AI-monitor tab in the right sidebar.",
+  "description": "dsh (Cordis) plugin for PaperPilot. ⭐ 2026-10-10 起本包只有**面板**那一件事：client 半是框架面板插件的一行 bootstrap；host 半是**空载体**（工具面只有一条腿 = 框架的聚合端点，自愈 MCP 桥已删除）。",
   "main": "lib/index.mjs",
   "types": "src/index.ts",
   "exports": {
@@ -28,40 +28,25 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node test/run.ts && npm run test:panel",
-    "test:panel": "node --test test/panel.test.ts",
+    "test": "node --test test/panel.test.ts",
     "bundle": "tsdown"
   },
-  "dependencies": {
-    "@mecha/dsh-panel": "file:../../../../../../../code-nosync/mecha/mecha/dsh-panel",
-    "@modelcontextprotocol/sdk": "1.30.0",
-    "ws": "^8.21.0"
-  },
+  "dependencies": {},
   "devDependencies": {
+    "@mecha/dsh-panel": "file:../../../../../../../code-nosync/mecha/mecha/dsh-panel",
     "@types/node": "^22.20.0",
     "@types/react": "^18.3.1",
-    "@types/ws": "^8.18.1",
     "tsdown": "^0.22.2",
     "typescript": "^5.9.0"
   },
   "peerDependencies": {
     "react": "^18.2.0",
     "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-brand": "*",
-    "@deepseek-ai/dsh-client-locale": "*",
-    "@deepseek-ai/dsh-client-ui-slots": "*",
-    "@deepseek-ai/dsh-host-webserver": "*",
-    "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/schemastery": "*"
+    "@deepseek-ai/dsh-client-ui-slots": "*"
   },
   "peerDependenciesMeta": {
     "react": { "optional": true },
     "@deepseek-ai/cordis": { "optional": true },
-    "@deepseek-ai/dsh-brand": { "optional": true },
-    "@deepseek-ai/dsh-client-locale": { "optional": true },
-    "@deepseek-ai/dsh-client-ui-slots": { "optional": true },
-    "@deepseek-ai/dsh-host-webserver": { "optional": true },
-    "@deepseek-ai/dsh-tools": { "optional": true },
-    "@deepseek-ai/schemastery": { "optional": true }
+    "@deepseek-ai/dsh-client-ui-slots": { "optional": true }
   }
 }

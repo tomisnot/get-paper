@@ -14,7 +14,7 @@
  * | ① 地址不回落 / 坏内容 503 / 失败体无 `base` | ⭐ **框架的 host 插件**：`mecha/dsh-panel/host-plugin/mecha-panel-host.test.ts`（含与资产实现的**等价判据**）；资产那份单测仍覆盖 `503` 语义 |
  * | ② client 取址打的是**本项目**的路由 + 落 `address` 档 + `isOriginLike` | ⭐ 本仓**已经没有取址代码**了（那条路由与取址都归框架）⇒ 这些是**资产**的形态，资产自测覆盖 |
  *
- * ## 本文件现在钉三件（都是"本仓自己的"）
+ * ## 本文件现在钉**四**件（都是"本仓自己的"）
  *
  *  1. ⭐ **那一行 bootstrap**：client 半必须接上**框架的** client 插件
  *     （少了它 = 右栏一个 tab 都没有，而那不会报错）；⚠ **本仓的自定义 UI 已删**
@@ -24,6 +24,11 @@
  *  3. **反面语料**：本仓历史的静态默认地址 `http://127.0.0.1:8080` 不许出现在 dsh 源码里
  *     （它当年是"回落假绿"的现场；现在连路由都不在本仓了，这条改成**源码级**的反面语料）；
  *  4. client 入口 import 闭包零 `node:`（浏览器安全靠结构，不靠树摇的运气）。
+ *  5. ⭐ **2026-10-10（方案 A）：host 半必须是空载体** —— 那条"项目自己接 MCP"的
+ *     自愈桥整块删除了；`src/host/` 不存在、`gp-params.ts` 不存在、`mountHostPlugin`
+ *     与 `@mecha/dsh-panel/host/` **不许**出现在本仓源码里（工具面只有一条腿）。
+ *     ⚠ 同批删掉的还有 `test/mcp-bridge.test.ts` / `test/config.test.ts` /
+ *     `test/run.ts` / `test/harness.ts`（它们测的就是那座桥）。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -179,4 +184,37 @@ test('⭐ 那个唯一家还在：`mecha_site.py` 里有 monitor=MonitorSpec(...
   assert.match(decl, /monitor=MonitorSpec\(/, '声明里没有 monitor=MonitorSpec(...)')
   assert.match(decl, /route_path="/, '声明里 monitor 缺 route_path（框架按它注册地址路由）')
   assert.match(decl, /port_file="/, '声明里 monitor 缺 port_file（框架按它现取端口）')
+})
+
+// ---------------------------------------------------------------- ⭐ 空载体（方案 A）
+test('⭐ host 半是**空载体**：桥那套不许回来（工具面只有一条腿 = 框架的聚合端点）', () => {
+  // ⚠ 这是 **2026-10-10 用户裁决（方案 A）** 的机器守卫。为什么非要钉：
+  //   桥是"每个项目自己接 MCP"时代的产物，而聚合端点是**后加的** ⇒ 两条腿并存时
+  //   ① 只开一家也会加载别家的桥（`merge_dsh` 的 patches 是全站点并集）；② 工具名重复；
+  //   ③ ⭐ **能力不等**：写权/开关元工具只在聚合端点那条腿上（GP 侧实测：只开 GP 时
+  //      别家的桥照样被加载、而框架元工具只在聚合面上）。
+  //   ⇒ 删掉桥之后，三家**接法相同**；⚠ 代价（用户已认）：不经 mecha 单独跑 dsh 时无工具。
+  const idx = stripComments(read('index.ts'))
+  for (const needle of ['mountHostPlugin', 'hostPluginInject', 'dsh-panel/host']) {
+    assert.ok(!idx.includes(needle), `host 半不许再出现 ${needle}（桥已按方案 A 删除）`)
+  }
+  assert.match(idx, /export const inject: string\[\] = \[\]/,
+    'host 半必须**不依赖任何服务**（`inject = []`）——它只是载体')
+  assert.match(idx, /export async function apply\(\)/,
+    'host 半的 apply **不许**再接受 ctx/config（没有桥要装了）')
+
+  // 结构性：桥的家（`src/host/`）、桥的参数家（`gp-params.ts`）、以及测桥的那套测试
+  // 都**不该存在**（R13：删机制要留"不许回来"）。
+  const src = sourceFiles()
+  assert.ok(!src.some((f) => f.startsWith('host/')),
+    `src/host/ 又出现了（桥的家）：${src.join('、')}`)
+  assert.ok(!src.includes('gp-params.ts'),
+    `gp-params.ts 又出现了（桥的参数家）：${src.join('、')}`)
+  const tests = readdirSync(join(HERE)).filter((f) => f.endsWith('.ts'))
+  for (const gone of ['mcp-bridge.test.ts', 'config.test.ts', 'run.ts', 'harness.ts']) {
+    assert.ok(!tests.includes(gone), `${gone} 又回来了（它测的就是已删的桥）`)
+  }
+  // R8 自证：本判据确实读到了源码（不是"文件都不存在所以全绿"）
+  assert.ok(src.includes('index.ts') && src.includes('client/index.ts'),
+    `判据没读到本仓源码：${src.join('、')}`)
 })

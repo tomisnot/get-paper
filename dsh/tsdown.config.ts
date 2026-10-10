@@ -2,20 +2,24 @@ import { defineConfig } from 'tsdown'
 
 /**
  * 两个产物（对应 package.json 的 "." 与 "./client" 导出）：
- *  · lib/index.mjs  —— HOST 半（node 平台）：把 @modelcontextprotocol/sdk + ws **打进** bundle
- *    （自包含，运行时不依赖 dsh 解析我们的 node_modules）；只 @deepseek-ai/* peer 外置（宿主提供）。
- *  · lib/client.js  —— CLIENT 半（browser 平台）：react 外置（dsh web client 提供，避免双 React）。
- * dts 关（类型走 src + types/shim；--patch 源加载本就直读 src）。
+ *  · lib/index.mjs  —— HOST 半（node 平台）：⭐ **2026-10-10 起它只是空载体**
+ *    （方案 A：工具面只有一条腿 = 框架的聚合端点；自愈桥连同 `@modelcontextprotocol/sdk` /
+ *    `ws` 一起删了）⇒ 本产物**没有任何依赖要打进去**，只 @deepseek-ai/* peer 外置。
+ *  · lib/client.js  —— CLIENT 半（browser 平台）：react 外置（dsh web client 提供，避免双 React）；
+ *    ⭐ **资产包必须打进来**（`alwaysBundle`，见下）。
+ * dts 关（类型走 src；--patch 源加载本就直读 src）。
  */
 const dshExternal = [/^@deepseek-ai\//]
 
 /**
  * ⭐ **`@mecha/dsh-panel` 必须**打进** bundle（`alwaysBundle`），不许外置**（2026-10-01 实测）：
  * 它是 `file:` 依赖（junction）且**发布物是 `.ts` 源**。若按默认"依赖即外置"处理，产物里会留下
- * `import … from "@mecha/dsh-panel/mcp-bridge.ts"` ⇒ 走**构建产物那条交付路径**（`cordis.patch.yml`
- * → `lib/index.mjs`）时，运行期要去 node_modules 里加载 `.ts`，而 **Node 原生剥类型明确拒绝
+ * `import … from "@mecha/dsh-panel/panel/auto.ts"` ⇒ 走**构建产物那条交付路径**（`cordis.patch.yml`
+ * → `lib/client.js`）时，运行期要去 node_modules 里加载 `.ts`，而 **Node 原生剥类型明确拒绝
  * `node_modules` 下的 `.ts`**（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`）⇒ 运行时就炸。
  * 与本文件既有的"自包含、运行时不依赖 dsh 解析我们的 node_modules"同一条意图。
+ * ⚠ **2026-10-10**：现在**只有 client 半**需要它（host 半是空载体、不再 import 资产）；
+ *   留着这一项是因为两个 entry 共用同一份 `deps`，且它对 client 半是**必需**的。
  * ⚠ 这是**消费者侧**的打包配置（mecha 未核这一条；EL 已独立实测同一结论并采用同样的
  * `deps.alwaysBundle`；本仓前缀与 EL 对齐为 `@mecha/`，将来 mecha 再发包自动覆盖）。
  */
