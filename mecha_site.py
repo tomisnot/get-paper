@@ -74,25 +74,32 @@ def _python() -> str:
 
 
 def _service_argv() -> tuple[str, ...]:
-    """起本项目的服务：`<python> -m paperpilot.main serve`。
+    """起本项目的服务：`<python> -m paperpilot.main mcp --with-web`。
 
-    ## ⭐ 为什么是 `serve` 而不是 `mcp`（2026-10-10 用户裁决："按项目各自安排"）
+    ## ⭐ 形态旗标按**词汇表**（2026-10-10 用户裁决："三家 CLI 按词汇表改名"）
+
+    `--mcp`（起语义通道）＋ `--with-web`（**本进程同时伺服交互式网页** —— GP 的人面工作台
+    就在同一个栈里）。⇒ 声明从此**不用记每家自己的方言**：EL/ML 是 `--mcp --with-gui[…]`，
+    GP 是 `--mcp --with-web`，一眼看出"这一家有哪些面"。
+    ⚠ `serve` 保留为**对人友好的别名**（同一套实现），但**框架声明用词汇表那套**。
+
+    ## 为什么必须带 `--with-web`（而不是只 `mcp`）
 
     GP 的人手那条腿是**浏览器里的 Web 工作台**（不是进程内窗口）⇒ 它必须**有人伺服**：
-    `mcp` 子命令**不起 Web 服务**（`.web-port` 永远不写）⇒ 从 mecha 启动时**人的腿根本不存在**，
+    只 `mcp` 时**不起 Web 服务**（`.web-port` 永远不写）⇒ 从 mecha 启动时**人的腿根本不存在**，
     而人要在那张页面的 `/settings` 写权卡上切模式、要看流水线结果。
-    `serve` = **四个面同一个进程同一个栈**（Web 人类面 + MCP(AI) + cockpit(监控) + 控制端点，
-    见 `cli.py:_boot_stack` 的 docstring）⇒ 与"该软件随 mecha 同生共死"的语义一致；
+    `--with-web` = **四个面同一个进程同一个栈**（Web 人类面 + MCP(AI) + cockpit(监控) + 控制端点，
+    见 `cli.py:_serve_impl` / `_boot_stack`）⇒ 与"该软件随 mecha 同生共死"的语义一致；
     它同样写 `.mcp-port`（框架的就绪判据不看别的）与 `.cockpit-port`（监控面声明读它）。
 
-    ⚠ **不写任何旗标**：`serve` 的默认值就是 GP 的项目策略（host `127.0.0.1`、Web 端口取
+    ⚠ **不写别的旗标**：其余默认值就是 GP 的项目策略（host `127.0.0.1`、Web 端口取
     `settings.web.port`、cockpit 默认开、**自动开浏览器**＝"人面前台可见"）。在这里再抄一遍
     ＝同一件事两处真值（本工程反复治的病）。
     ⚠ 代价（如实记）：Web 端口是**固定**的（`settings.web.port`，缺省 8080）且被占时
-    **响亮失败**（`_ensure_port_free`，不半启动）；每次被 mecha 拉起都会**开一个浏览器标签**
-    —— 那正是"启动就把人的面板带到眼前"，要关就加 `--no-open`（本项目自己的选择）。
+    **响亮失败**（`ensure_free`，不半启动）；每次被 mecha 拉起都会**开一个浏览器标签**
+    —— 那正是"启动就把人的面板带到眼前"，要关加 `--no-open`（本项目自己的选择）。
     """
-    return (_python(), "-m", "paperpilot.main", "serve")
+    return (_python(), "-m", "paperpilot.main", "mcp", "--with-web")
 
 
 #: ⚠ **两腿同源**：这两个变量一起决定"看到哪份状态"。见模块 docstring 的"唯一不变量"。

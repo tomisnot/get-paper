@@ -30,19 +30,17 @@ def test_declaration_is_loadable_and_valid():
     """A. 框架按约定吃得下：`load_sites()` + `validate()`（含 dsh 侧的补丁与产物存在）。"""
     site, svc = _service()
     assert svc.cwd == REPO
-    #: ⚠ **2026-10-10 改准**（用户裁决："按项目各自安排"）：起 **`serve`** 而不是 `mcp`。
-    #: GP 的人手那条腿是**浏览器里的 Web 工作台**（不是进程内窗口）⇒ `mcp` 子命令不起 Web
-    #: 服务、人的腿整个消失。`serve` = 四个面同一个进程同一个栈，**照样写 `.mcp-port`**
-    #: （框架的就绪判据）与 `.cockpit-port`（下面的监控面声明读它）。
-    assert svc.argv[-1] == "serve", (
-        f"服务那条腿必须起 `serve`（Web 人类面 + MCP + cockpit + 控制端点同进程）：{svc.argv}")
-    assert "--no-open" not in svc.argv, "启动时要把人的面板带到眼前（这家的安排）；要关是它自己的选择"
+    #: ⚠ **2026-10-10：这里原来钉"`argv[-1] == "serve"`"（还有一条"不许带 --no-open"）——
+    #: 已删**。用户裁决："三家 CLI 按词汇表改名，但是相关判据删掉，不要什么都加判据"。
+    #: 旗标**拼写**属于接入指南里的**词汇表约定**（`--mcp` / `--with-gui` / `--with-web` /
+    #: `--with-panel` / `--no-open`），不是"产品行为"——钉它只会让每次改名都动判据。
+    #: 真要有守卫，该守的是**行为**（"人的那条腿真的起来了吗"），那是真机验收的事。
     #: ⚠ 三层架构换代（2026-10-08）：`manual` 字段已被框架**删除**
     #: （"人那条腿"不再是"要 spawn 的进程"，而是**软件进程内的窗口**；写权切换不动进程）。
     #: ⇒ 旧断言 `svc.manual is None` 测的对象**已不存在**（R13：删机制时处理它的承诺）。
     #:   换成：`manual` **不许回来** + 新表达的字段**在**。
     assert not hasattr(svc, "manual"), "`manual` 已被三层架构删除，不许回来"
-    assert svc.has_gui is True, "GP 的人手那条腿是 Web 界面（serve + templates/）⇒ has_gui 为 True"
+    assert svc.has_gui is True, "GP 的人手那条腿是 Web 界面（Web 工作台 + templates/）⇒ has_gui 为 True"
     #: ⚠ 比 `.value`：`Mode` 是 `str` 枚举，`str(Mode.AI)` 给的是 `'Mode.AI'` 而不是 `'ai'`。
     #: ⭐ **2026-10-10 改准**（用户裁决）：GP 的设计里**只有一种模式** —— 人和 AI **同时**能写
     #: （项目出厂策略就是 `BOOT_MODE_DEFAULT="open"`），**没有"切到手动/交还给 AI"这回事**。

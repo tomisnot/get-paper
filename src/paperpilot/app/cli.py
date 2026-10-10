@@ -297,6 +297,9 @@ def serve(
 ) -> None:
     """统一启动入口：Web（人类面）+ mecha MCP（AI 面）+ cockpit（监控面），共享一个 mecha 栈。
 
+    ⭐ 词汇表口径：**本命令 = `mcp --with-web`**（同一套形态旗标里的"人面工作台在同一个栈里"）。
+    留着 `serve` 只是对人友好（它是最常用的那条路）。
+
     人机同路：Web 写经 human 通道、AI 写经 ai 通道，同一道写权门 + 同一份审计。
     ⚠ **写权默认 `--mode open`**（两侧都能写，用户裁决"不卡写权"）；`--mode locked` 是急停。
     dsh 经 `.mcp-port` 发现 MCP；右栏「📄简报」iframe Web 可视化面、「◈监控」是原生面板
@@ -437,9 +440,33 @@ def mcp(
     port: int = typer.Option(0, "--port", "-p", help="0=自动选空闲端口（写 .mcp-port 供发现）"),
     mode: str = typer.Option("", "--mode", help=_MODE_HELP),
     no_cockpit: bool = typer.Option(False, "--no-cockpit", help="不起 cockpit 监控端点"),
+    with_web: bool = typer.Option(
+        False, "--with-web",
+        help="⭐ 同时伺服交互式网页（人面工作台）＝四面子同栈；不带则 headless 只有语义通道"),
+    no_open: bool = typer.Option(False, "--no-open",
+                                 help="带 --with-web 时不自动开浏览器"),
     config: Path = typer.Option(None, "--config", "-c"),
 ) -> None:
-    """只起 mecha MCP 语义通道（headless，无 Web）；DSH 等 harness 经 .mcp-port attach。"""
+    """起 mecha MCP 语义通道（AI 面）。**形态由旗标选**（接入指南的词汇表）：
+
+    - 不带 `--with-web` ⇒ **headless**：语义通道 + 控制端点（+ cockpit），
+      DSH 等 harness 经 `.mcp-port` attach；
+    - 带 `--with-web` ⇒ **人面工作台在同一个栈里**（Web + MCP + cockpit + 控制端点
+      四个面一个进程，同一份写权与审计）＝ `serve` 的等价形态
+      （`serve` 保留为**对人友好的别名**，见它的 docstring）。
+
+    ⚠ 端口口径：headless 时 `--port` 是**语义通道**的端口；带 `--with-web` 时 `--port`
+    指 **Web** 端口，语义通道仍 `0`＝自动选（真端口写 `.mcp-port`）—— 两个端口不混成一个。
+    """
+    if with_web:
+        cfg = config
+        web_port = int(port) if port else None
+        if web_port is not None:
+            typer.echo(f"⚠ --with-web：`--port {web_port}` 按 **Web** 端口用；"
+                       "语义通道仍 0＝自动选（写 .mcp-port）", err=True)
+        _serve_impl(cfg, host or None, web_port, mode, no_cockpit, no_open)
+        return
+
     from ..mecha_adapter import hub as mecha_hub
 
     # ⚠ 只在**显式给了**时才把它当 argv 传给 hub（argparse 的 `choices` 会拒空串）。
