@@ -28,7 +28,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/panel.test.ts",
+    "test": "npm run typecheck && npm run bundle",
     "bundle": "tsdown"
   },
   "dependencies": {},

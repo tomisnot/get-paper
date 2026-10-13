@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
 from mecha.authority import Mode
 
 from paperpilot.app.container import build_container
@@ -270,6 +271,7 @@ async def _drive(port: int) -> dict:
                     "has_output": has_output, "is_err": bool(is_err), "text": text}
 
 
+@pytest.mark.integration
 def test_mcp_projection_endtoend(tmp_path):
     """接入指南第 3 步验收：真 MCP 客户端连上、列出、真调写工具、journal 落盘。"""
     container, stack = _stack(tmp_path)

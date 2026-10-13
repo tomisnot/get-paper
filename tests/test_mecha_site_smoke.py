@@ -22,7 +22,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import pytest
 from mecha.launch import load_sites
+
+pytestmark = pytest.mark.integration
 
 REPO = Path(__file__).resolve().parents[1]
 

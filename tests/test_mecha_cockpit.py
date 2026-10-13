@@ -10,11 +10,14 @@ import json
 import urllib.error
 import urllib.request
 
+import pytest
 from mecha.monitor import Claim, Monitor
 
 from paperpilot.mecha_adapter.monitor import paperpilot_summarizer, start_cockpit
 
 from .test_mecha_adapter import _call, _stack
+
+pytestmark = pytest.mark.integration
 
 
 def _get(url: str):

@@ -60,9 +60,10 @@ where = ["src"]
 paperpilot = ["app/templates/*.html", "data/*.xml"]
 
 [tool.pytest.ini_options]
-# check/ = 必要判据（不许烂的守卫，随仓发布）；tests/ = 普通测试（单元/契约/回放，本地）。
+# check/ 与 tests/ 都按实际契约与结果运行，名称不赋予额外文档/红证义务。
 testpaths = ["check", "tests"]
-addopts = "-q"
+addopts = "-q -m 'not integration'"
+markers = ["integration: real subprocess or HTTP/MCP service lifecycle"]
 
 [tool.ruff]
 line-length = 100

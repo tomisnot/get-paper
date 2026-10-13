@@ -258,7 +258,7 @@ tests/                     # 契约 / 解析 / 策略 / 流水线 / Web / mecha 
 ## 测试
 
 ```bash
-.venv\Scripts\python -m pytest        # 全部离线可跑（含真 HTTP + 真 MCP 协议的 e2e）
+.venv\Scripts\python -m pytest        # 默认离线契约与结果；-m "" 为全量，详 check/README.md
 .venv\Scripts\python -m ruff check .  #  lint
 cd dsh && npm test                    # 插件：自愈重连桥 + 端点解析
 cd dsh && npm run typecheck           # tsc 零错误

@@ -1,4 +1,4 @@
-"""Phase 4 · PaperPilot 接入判据（R7–R15：每条守卫配「能红」证据 + 「不许误报」对偶）。
+"""Phase 4 · PaperPilot 接入判据（项目接线与参数契约）。
 
 框架的门禁验不了 PaperPilot 的领域正确性——这些判据自己写。留下的都是**只有本仓能守**的：
 ① 工具名合 mecha 律（本仓的名字是模型可见面）；② capabilities↔tools 单一来源
@@ -20,7 +20,7 @@ from mecha.tools import check_tool_name
 
 from paperpilot.capabilities import registry_for
 from paperpilot.mecha_adapter.hub import INSTRUCTIONS, MCP_SERVER_NAME
-from paperpilot.mecha_adapter.tools import TOOL_DECLS, TOOL_TO_CAPABILITY
+from paperpilot.mecha_adapter.tools import TOOL_DECLS
 from tests.test_mecha_adapter import _stack
 
 
@@ -37,19 +37,6 @@ def test_tool_names_obey_mecha_naming_law(tmp_path):
 
 
 # ---------------------------------------------------------------- ② 单一来源
-def test_every_capability_projected_exactly_once(tmp_path):
-    """22 能力全被投影、无幽灵工具：TOOL_TO_CAPABILITY 的值集 == 能力层名单。
-
-    能红：漏投影任一能力 / 多一个不存在的能力，集合比较当场失败（确定性）。
-    """
-    container, _stack_ = _stack(tmp_path)
-    cap_names = set(registry_for(container).names())
-    assert len(cap_names) == 58
-    # 人类专属写能力（不投影给 AI）：reset_profile＝防自改画像锚；
-    # delete_graph_view＝图是作品、处置权归人；delete_mark＝批注是精读痕迹、处置权归人。
-    human_only = {"reset_profile", "delete_graph_view", "delete_mark"}
-    assert set(TOOL_TO_CAPABILITY.values()) == cap_names - human_only
-    assert len(set(TOOL_TO_CAPABILITY)) == len(TOOL_TO_CAPABILITY) == 55
 
 
 def test_tool_parameters_derive_from_capability_no_drift(tmp_path):

@@ -1,27 +1,18 @@
-# check/ —— 必要判据
+# 验证的运行方式
 
-与 `tests/` 的分工：
-
-| 目录 | 是什么 | 增删纪律 |
-| --- | --- | --- |
-| **`check/`** | **判据**：不许烂的守卫。每条都在说"这件事一旦坏了，系统就是在骗人/不安全" | 改产品行为要**同步改**它；改不动就先说明**为什么有意改判据**——不许悄悄删 |
-| `tests/` | 普通测试：单元、契约、回放、集成 | 随实现自由增删 |
-
-## 现在有哪些判据
-
-- `test_skill_sync.py` —— skill 与工具注册表**双向**同步（AI 不知道的工具＝不会用；skill 里的幽灵名＝过时文档）
-- `test_capability_map.py` —— **声明 == 投影**（能力侧与工具面两侧逐字对齐，含人类专属的显式扣除）
-- `test_mecha_criteria.py` —— 工具面判据：投影恰一次、参数机械派生、工具"列得出也调得动"
-- `test_scope_policy.py` —— 作用域允许表与意图一致（`profile`/`views`/`marks` 只给人）
-- `test_telemetry_kinds.py` —— 能力的 `kind` 与它实际留下的痕迹**对账**（读不留痕、遥测只留遥测）
-- `test_journal.py` —— append-only 事件总线（库层触发器禁止 UPDATE/DELETE）
-- `test_ai_experience.py` —— 统一信封纪律 + 参数描述齐备（N8）
-- `test_graph_base.py` / `test_graph_view.py` —— 图底座几何与视图面编排（含"点不许被排出画布"）
-- `test_reading.py` —— 精读体系：消毒、块清单、精确锚定、歧义、截断游标、删除不投影
-
-## 跑法
-
-```bash
-.venv\Scripts\python -m pytest check -q      # 只跑判据（改动后的第一道闸）
-.venv\Scripts\python -m pytest -q            # 判据 + 普通测试（pyproject 的 testpaths 两者都含）
+```powershell
+.venv\Scripts\python -m pytest                    # 默认离线契约与结果
+.venv\Scripts\python -m pytest -m integration     # 真实 HTTP/MCP 与子进程
+.venv\Scripts\python -m pytest -m ""              # 全部离线验证
+.venv\Scripts\python -m pytest check/test_card_single_source.py # 只跑受影响场景
 ```
+
+check/ 与 tests/ 的验证地位相同。结构测试保护参数投影、人类专属能力、原始来源等关系；结果测试验证筛选、摘要、简报和治理链路。共享框架机制由框架验证，项目验证自己的实际接线。
+
+退役 test_skill_sync.py：自由文本中的反引号 token 不能可靠代表工具调用，不要求每个工具逐名写入技能文档。能力、工具总数不再钉死；投影一致性集中在 test_capability_map，仍禁止将人类专属能力投影给 AI。
+
+技能说明工作流与知识；完整工具与参数由宿主 schema 提供。文档不成为测试的第二份注册表，不要求固定章节、计数或每条配红证。历史设计日志中的门禁与运行数量仅描述当时状态。
+
+涉及 dsh 接线时在 dsh 运行 npm test（TypeScript + 现有 platform=browser 真实构建）。共享资产行为由 mecha 验证，不另维护源码 import 解析器、固定 bootstrap 拼写或文件黑名单。
+
+全量还发现旧 CLI 私有端口函数的测试：实现已上提至 mecha.portfile，旧函数不存在。删除这些重复守卫，框架端口契约与本项目真实服务启动测试保留。

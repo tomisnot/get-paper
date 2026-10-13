@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import re
 import socket
-import time
 from pathlib import Path
 
 import pytest
@@ -175,58 +174,10 @@ def test_partial_patch_set_still_fails_loudly(tmp_path, monkeypatch, capsys):
 
 # ---------------------------------------------------------------- Web 端口发现文件（面板取址的**产地**）
 
-def test_web_port_publish_clears_stale_then_writes(tmp_path):
-    """发布 = **先清陈旧、再写自己**（规则来自框架 `mecha.portfile`）。
-
-    为什么必须清：`terminate()` / `taskkill /F` 不跑 Python 的 `finally` ⇒ 端口文件会留下
-    上一代的死端口；不清的话面板会拿到一个连不上的地址（"假绿"的邻居）。
-    """
-    port_file = tmp_path / cli.WEB_PORT_FILE
-    port_file.write_text("9999", encoding="utf-8")        # 上一代残留
-    cli._publish_web_port(port_file, 8123)
-    assert port_file.read_text(encoding="utf-8") == "8123"
 
 
-def test_web_port_unpublish_only_deletes_own(tmp_path):
-    """收尾**只删仍是自己写的那个端口**的文件（别误删接管者刚写进去的新端口）。"""
-    port_file = tmp_path / cli.WEB_PORT_FILE
-    cli._publish_web_port(port_file, 8123)
-    cli._unpublish_web_port(port_file, 8123)
-    assert not port_file.exists()
-
-    # 交接窗口：文件已被下一代（8180）改写 ⇒ 老进程收尾不许删它
-    cli._publish_web_port(port_file, 8180)
-    cli._unpublish_web_port(port_file, 8123)
-    assert port_file.read_text(encoding="utf-8") == "8180"
 
 
-def test_web_port_published_only_when_listening(tmp_path):
-    """**端口真在听之后**才写发现文件；没人听就**不写**（不许发布死地址）。"""
-    port_file = tmp_path / cli.WEB_PORT_FILE
-
-    # ① 有人在听 ⇒ 写
-    srv = socket.socket()
-    srv.bind(("127.0.0.1", 0))
-    srv.listen(1)
-    live_port = srv.getsockname()[1]
-    try:
-        cli._publish_web_port_when_ready("127.0.0.1", live_port, port_file, timeout=5.0)
-        deadline = time.time() + 5
-        while time.time() < deadline and not port_file.exists():
-            time.sleep(0.05)
-        assert port_file.read_text(encoding="utf-8") == str(live_port)
-    finally:
-        srv.close()
-
-    # ② 没人听 ⇒ 不写（路由会 503 + 可读错误）
-    port_file.unlink()
-    probe = socket.socket()
-    probe.bind(("127.0.0.1", 0))
-    dead_port = probe.getsockname()[1]
-    probe.close()
-    cli._publish_web_port_when_ready("127.0.0.1", dead_port, port_file, timeout=0.6)
-    time.sleep(0.9)
-    assert not port_file.exists(), "没人听却发布了端口文件 = 面板拿到死地址（假绿）"
 
 
 def test_monitor_port_file_name_matches_declaration():

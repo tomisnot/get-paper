@@ -11,11 +11,14 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
 from mecha.authority import Mode
 from mecha.software_control import CONTROL_PORT_FILE
 
 from paperpilot.mecha_adapter.control import start_control
 from tests.test_mecha_adapter import _stack
+
+pytestmark = pytest.mark.integration
 
 
 def _call_over_wire(port: int, names: list[str]) -> dict:
