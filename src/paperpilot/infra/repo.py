@@ -89,6 +89,7 @@ class PaperRepository:
                 "reason": reason or "", "before": before, "after": after,
                 "undoable": undoable,
                 "operation_id": (current_operation().id if current_operation() else ""),
+                "call_id": (current_operation().call_id if current_operation() else ""),
                 "role": "mutation",
             })
 
