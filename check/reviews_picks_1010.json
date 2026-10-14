@@ -1,0 +1,142 @@
+[
+  {
+    "arxiv_id": "2610.10357",
+    "label": "must_read",
+    "score": 0.198,
+    "reason": "本批最强且最对口：在商用 Rydberg 原子器件上用畴壁编码模拟海森堡 XXZ 链，正面解决「平台原生只有 ZZ 耦合」这一模拟瓶颈",
+    "summary": {
+      "tldr": "在商用 Rydberg 原子量子器件上模拟海森堡 XXZ 自旋链",
+      "problem": "在可编程模拟器上实现给定哈密顿量的难点在于可用耦合类型有限——多数平台（含 Rydberg 阵列）天然只提供 Ising 的 ZZ 耦合，而 XXZ 还需要 XX+YY 耦合",
+      "method": "沿用其基于畴壁编码的方法，把一维自旋链映射为只需 Ising 哈密顿量的形式，并在商用 Rydberg 原子器件上实现与演化",
+      "results": "在真实 Rydberg 硬件上完成 XXZ 模型模拟（摘要未给出具体保真度数字）",
+      "novelty": "把畴壁编码从理论方案推进到商用 Rydberg 器件的实测，使超出原生 ZZ 耦合范围的模型可在现成硬件上运行",
+      "keywords": ["Rydberg atom array", "XXZ model", "domain-wall encoding", "analog quantum simulation"]
+    }
+  },
+  {
+    "arxiv_id": "2610.10713",
+    "label": "must_read",
+    "score": 0.176,
+    "reason": "材料特异多轨道 Hubbard 模拟的完整原子架构：钟态编码合成轨道+差分极化率给出轨道选择隧穿，直通关联材料低能物理",
+    "summary": {
+      "tldr": "用费米碱土原子搭建可编程的多轨道材料哈密顿量模拟架构",
+      "problem": "量子模拟的长期目标是忠实复现关联量子材料的低能哈密顿量，从而把固态实验、电子结构理论与可编程多体系统连起来",
+      "method": "长寿命钟态编码合成轨道；其差分极化率产生轨道选择隧穿；接触相互作用提供多轨道 Hubbard 与 Hund 耦合；空间结构化的相干驱动给出可编程控制",
+      "results": "提出一套集成式量子模拟架构，可编程调控多轨道材料哈密顿量的各项关键要素",
+      "novelty": "把合成轨道、轨道选择隧穿与 Hund 耦合在一次架构里同时做出来，指向材料特异的 Hubbard 模拟",
+      "keywords": ["alkaline-earth atoms", "multi-orbital Hubbard", "Hund coupling", "clock states"]
+    }
+  },
+  {
+    "arxiv_id": "2610.12348",
+    "label": "worth",
+    "score": 0.139,
+    "reason": "耗散工程：以量子物质耦合耗散玻色模构造大尺度且结构化的无退相干子空间，含涌现对称性",
+    "summary": {
+      "tldr": "在混合量子系统中构造大尺度、有结构的无退相干子空间",
+      "problem": "如何构造既大又具非平凡结构的无退相干子空间（DFS）",
+      "method": "量子物质耦合到耗散玻色模；耗散对物质施加全局约束，在长时极限挑出 matter null states；再用李代数表示论构造具物理意义 null states 的多体算符",
+      "results": "由 null states 张成的 DFS 呈现奇异量子性质与涌现对称性——这些性质并不出现在完整 Liouvillian 动力学中",
+      "novelty": "给出以表示论为工具的构造框架，可按需挑选模型",
+      "keywords": ["decoherence-free subspace", "dissipative boson mode", "null states", "Lie algebra"]
+    }
+  },
+  {
+    "arxiv_id": "2610.11071",
+    "label": "worth",
+    "score": 0.135,
+    "reason": "模拟场论平台：超导传输线无截断地编码标量场，用格点蒙特卡洛核对低能谱，hep-lat 味道的模拟方案",
+    "summary": {
+      "tldr": "用超导传输线模拟 (1+1) 维 φ⁴ 场论",
+      "problem": "相互作用量子场的动力学理解仍是根本挑战，需要可控的模拟平台",
+      "method": "传输线由 fluxonium 式电路元件构成：连续且无界的相位变量直接编码标量场（无希尔伯特空间截断），非谐势提供强相互作用；调参可进入两种 regime",
+      "results": "第一种 regime 对应单井 φ⁴ 场论，其低能谱通过与格点蒙特卡洛计算比对得到确认",
+      "novelty": "无截断的场论模拟硬件方案，并给出与经典格点计算的交叉验证",
+      "keywords": ["phi^4 theory", "superconducting transmission line", "analog simulation", "fluxonium"]
+    }
+  },
+  {
+    "arxiv_id": "2610.12406",
+    "label": "worth",
+    "score": 0.129,
+    "reason": "光镊阵列使能技术（你的主题6）：实现逐点独立的线偏振旋转，服务各向异性矢量/张量光移与态选择寻址",
+    "summary": {
+      "tldr": "光镊阵列的位点分辨线偏振控制",
+      "problem": "矢量/张量光移的各向异性与态选择操作都依赖寻址光偏振，但单镊或局部寻址光束的偏振控制一直是实验难题",
+      "method": "在光学镊阵列上演示独立、位点分辨的线偏振旋转",
+      "results": "实现阵列上逐点可编程的偏振控制，为各向异性光移的量子态工程与偏振依赖的态选择操作提供自由度",
+      "novelty": "把偏振从全局常量变成阵列上逐点可编程的自由度",
+      "keywords": ["optical tweezer array", "polarization control", "vector light shift", "site-resolved addressing"]
+    }
+  },
+  {
+    "arxiv_id": "2610.10682",
+    "label": "worth",
+    "score": 0.123,
+    "reason": "拓扑相理论：连续指数对称（q-变形 XXZ Haldane 链）下 SPT 相依赖自旋 S 与底数 q 的奇偶",
+    "summary": {
+      "tldr": "连续指数对称性自旋链的拓扑相分类",
+      "problem": "带连续指数对称性的对称 gapped 基态，其拓扑如何依赖自旋 S 与对称性的整数底数 q",
+      "method": "研究一维自旋 S 链，对称群为 U(1)⋊Z₂ 且 U(1) 电荷单位随位点指数衰减 q^{L-j}；最简模型可视为 XXZ Haldane 链的 q-变形",
+      "results": "整数 S 时奇数 q 支持非平凡 Z₂ Haldane 型 SPT 相（带受保护边缘模），偶数 q 无非平凡 SPT；半奇整数 S 另有结论",
+      "novelty": "指数对称性下的 SPT 相判据（S 与 q 的奇偶配对）",
+      "keywords": ["exponential symmetry", "SPT phase", "Haldane chain", "q-deformation"]
+    }
+  },
+  {
+    "arxiv_id": "2610.09662",
+    "label": "worth",
+    "score": 0.122,
+    "reason": "非遍历物理：闭系统渐近多体 scars 与开系统扩散 NG 模的谱对应，把两类弱遍历性破缺统一起来",
+    "summary": {
+      "tldr": "闭系统渐近多体 scars 与开系统扩散 Nambu-Goldstone 模的谱对应",
+      "problem": "闭系统的弱遍历性破缺与开系统的扩散流体力学之间是否存在共同结构",
+      "method": "建立 rainbow 多体 scar（RQMBS）母哈密顿量与强耗散开系统有效 Lindbladian 的谱对应；开系统取强 U(1) 对称与局域电荷退相位 Lindblad 算符",
+      "results": "对自旋、费米子、玻色子等广泛类构造渐近 scars 并给出对应关系",
+      "novelty": "把闭系统的 scar 与开系统的扩散 NG 模（连同 SWSSB）统一到同一谱结构",
+      "keywords": ["many-body scars", "Nambu-Goldstone modes", "strong-to-weak SSB", "Lindbladian"]
+    }
+  },
+  {
+    "arxiv_id": "2610.11081",
+    "label": "worth",
+    "score": 0.111,
+    "reason": "模拟平台新几何：在超导线路参数空间实现双曲几何并做成可动态驱动的量子系统",
+    "summary": {
+      "tldr": "用超导线路模拟双曲几何驱动的量子系统",
+      "problem": "双曲几何承载全息对偶与新拓扑相等现象，但天然晶格的欧氏约束使实验实现困难；已有的合成晶格多为静态，缺少探索完整几何版图所需的动态可调性",
+      "method": "在超导量子线路的参数空间内实现双曲几何的量子模拟，构造「双曲驱动量子系统」（HDQS），把双曲性质映射到可动态调节的参数上",
+      "results": "给出可动态调控的双曲几何模拟实现",
+      "novelty": "把双曲几何从静态合成晶格推进到动态可调的超导线路参数空间",
+      "keywords": ["hyperbolic geometry", "superconducting circuits", "driven quantum system", "quantum simulation"]
+    }
+  },
+  {
+    "arxiv_id": "2610.10731",
+    "label": "worth",
+    "score": 0.109,
+    "reason": "原子阵列纠错架构：qLDPC 码的单发魔术态工厂，用「逃逸」传送把后选择魔术态搬到更大距离码",
+    "summary": {
+      "tldr": "面向 qLDPC 码的时空高效单发魔术态工厂",
+      "problem": "qLDPC 码能大幅降低容错量子计算的比特开销，但需要高效机制以容错方式实现非 Clifford 门",
+      "method": "把近期 tricycle 码的横向非 Clifford 门与单发四维平衡积 quadcycle 码结合；关键是一个高效「逃逸」机制，将后选择的逻辑魔术态从 tricycle 码传送到距离更大的 quadcycle 码",
+      "results": "在标准电路级噪声模型下给出时空高效的魔术态工厂（摘要截断于此）",
+      "novelty": "单发构造 + 逃逸传送，兼顾码率与容错非 Clifford 门",
+      "keywords": ["qLDPC codes", "magic state factory", "tricycle code", "fault tolerance"]
+    }
+  },
+  {
+    "arxiv_id": "2610.09673",
+    "label": "worth",
+    "score": 0.101,
+    "reason": "拓扑测量方法论：用动量选择性层析直接取每个 Bloch 态的动量依赖几何信息，并在超导处理器上实测",
+    "summary": {
+      "tldr": "用动量选择性层析直接探测带拓扑",
+      "problem": "动量本征态在实空间非局域，使拓扑不变量的测量一直困难；Bloch 振荡、量子行走、电荷泵、淬火动力学等既有手段都拿不到每个 Bloch 态直接的动量依赖几何信息",
+      "method": "提出一套直接带拓扑层析框架：以动量选择性测量取信息，并在具有高连接度耦合架构的超导处理器上实验实现——用「星形」几何让辅助探针耦合到一维拓扑链",
+      "results": "在超导处理器上完成实验演示",
+      "novelty": "直接测量动量分辨的几何信息，而非间接推断拓扑不变量",
+      "keywords": ["topological invariant", "momentum-selective tomography", "superconducting processor", "Bloch state"]
+    }
+  }
+]

@@ -1,280 +1,161 @@
-# PaperPilot 📄
+# PaperPilot
 
-arXiv 每日文献情报系统：**抓取 → AI 智能筛选 → AI 结构化精读 → 每日简报（本地 Web）**。
+人机共用的文献研究工作台：收集 arXiv 论文，组织评审与简报，积累可检索的论文库、阅读笔记和引用图谱。
 
-想看日报时打开软件，让 AI 把关注领域的新论文筛完、读完、写成简报（脉冲式，无常驻定时）；
-同时沉淀一个可全文检索的个人论文库，支持收藏、笔记（BibTeX 导出为规划项）。
+软件保存材料、研究资产与操作记录，并提供确定性的检索和管理能力。AI 在外部宿主中执行评审、总结和研究判断，人通过本地 Web 工作台阅读、反馈与管理；两侧共享数据和写入治理。
 
-> **文档三层**：[`PRINCIPLES.md`](docs/PRINCIPLES.md)（项目宪法 / 基调）→ [`SPEC.md`](docs/SPEC.md)（要实现什么）→ [`DESIGN.md`](docs/DESIGN.md)（怎么实现）；决策冲突时以 `PRINCIPLES.md` 为准。
-> 基调一句话：**人机共享的 Web 工作台**——对话驱动 AI + 渐进式工具固化，人和 AI 共同操作同一份内部状态。
-> AI 能力统一接入走 **mecha** 框架（已接入，见下节）；本项目只定义契约（`domain/ports/ai.py`），换 AI 后端只改一个 Adapter。
+## 主要能力
 
-## 它所在的那套东西：四个兄弟项目的关系
+| 能力 | 内容 |
+|---|---|
+| 收集与简报 | 按研究主题抓取论文、规则过滤、分阶段评审、结构化论文卡和历史简报 |
+| 论文库 | 标题、摘要与总结检索；已读、收藏、跳过和笔记 |
+| 兴趣推荐 | 由主题和行为信号形成画像，生成带来源理由的推荐流 |
+| 引用图谱 | 上下游引用、共引相似、标签、可发布和复用的图视图 |
+| 正文精读 | arXiv HTML 章节与文本块、搜索、带原文锚点的批注和阅读记录 |
+| 记录与治理 | 操作者、理由、前后状态、可逆操作撤销和人类写权控制 |
+| 接入方式 | Web、CLI、自描述能力层与经 mecha 投影的 MCP 工具 |
 
-本仓不是孤立项目——它是**用 mecha 框架做的三个真实项目**之一：
+论文卡、笔记、标签和评审记录在后续工作中持续复用。项目定位见 [设计原则](docs/PRINCIPLES.md)。
 
-| 项目 | 是什么 | 用 mecha 的哪一面 |
-| --- | --- | --- |
-| **mecha** | **框架**（人机同门）：Gate / History / Surface / Monitor + Provider 层 | —— |
-| **get-paper** | 论文管理与推荐（**本仓**） | **命令面 + 工具面（MCP）** |
-| **energy-level** | 物理仿真 | **CodeAct 通道** |
-| **ml-toolbox** | 机器学习试验台 | **宿主适配 + 面板** |
+## 安装
 
-⚠ **三个项目是用这套框架做的真实项目，不是框架的一部分**；**框架里没有任何领域实现**
-（没有论文、没有物理、没有 ML —— 只有"谁在写、写了什么、怎么看见"这一层）。
-
-> ⭐ **该从哪读起**：先读框架的 **[`docs/接入指南.md`](https://github.com/tomisnot/mecha/blob/main/docs/接入指南.md)**
-> ——它讲清"哪些归框架、哪些归你"。
-> ⚠ **陌生人最容易犯的错**：把几个示例仓当成框架的目录树，**以为框架里有那些领域东西**。
-> 框架里没有；本仓的领域代码全在 `src/paperpilot/`，`src/paperpilot/mecha_adapter/` 才是"接进来的那一段"。
-
-## 怎么装
-
-⚠ 先看清一件事：**统一入口（`paperpilot` / `paperpilot ai`）需要 mecha（框架）**；
-**纯 Web 界面（GUI）本体不依赖它**，但**当前版本的 CLI 入口在导入时会用到 mecha** ⇒ 想跑入口就得装上。
+Python 3.10+。建议同时检出当前 mecha 源码：
 
 ```bash
-# ① 推荐：含 AI 面所需的框架
+git clone https://github.com/tomisnot/mecha.git
+git clone https://github.com/tomisnot/get-paper.git
+cd get-paper
 python -m venv .venv
-.venv\Scripts\pip install -e ".[dev,mecha]"          # Windows
-# source .venv/bin/pip install -e ".[dev,mecha]"     # Linux/macOS
 ```
+
+激活环境：Windows PowerShell 使用 `.venv/Scripts/Activate.ps1`，Linux/macOS 使用 `source .venv/bin/activate`。随后执行：
 
 ```bash
-# ② 只装本仓本体（不含框架；见上面那条提醒）
-.venv\Scripts\pip install -e ".[dev]"
+python -m pip install -e "../mecha[mcp]"
+python -m pip install -e ".[dev]"
 ```
 
-**框架的两种来源（mecha 不进 PyPI）**：
+目录布局不同，请替换 `../mecha`。`.[mecha]` extra 另提供基于框架 `v0.2.0` 的发布依赖；当前开发代码建议与框架源码配套使用。软件入口和受控服务需要 mecha。
 
-- **发布 / 他机**：`[mecha]` extra 走 GitHub 直接 URL，钉 `v0.2.0` tag
-  （`mecha[mcp] @ git+https://github.com/tomisnot/mecha@v0.2.0`）。
-  ⚠ **如实说明**：该 URL **今天可能还装不上**——实测它现在只能 clone 到**空仓**、**找不到 `v0.2.0` tag**
-  （**不是 404**，是仓里还没有那个 tag）⇒ **等上游仓就绪后即可解析**。
-- **本机开发**：走 editable，**前提是两仓是同级目录**（框架仓与本仓并排）：
-  ```bash
-  .venv\Scripts\pip install -e "..\mecha[mcp]"   # 先把框架装成 editable
-  .venv\Scripts\pip install -e ".[dev]"          # 再装本仓（`.` 不会去抓那个 URL）
-  ```
-  ⚠ 别把本机路径写进 `pyproject.toml`（会污染发布物）——那里只放 URL 形式。
-
-Windows 上也可以直接双击 **`开始.bat`**：它建虚拟环境 → 装 Python 依赖 → 装插件依赖 → 启动
-**Web 工作台（自动弹浏览器）+ mecha MCP + cockpit + dsh AI 界面**，首次约 1–3 分钟。
-
-## 怎么跑
-
-**两种用法（两个"前门"，都是前台可见）：**
-
-- **人面（你自己用）** = Web 工作台。起服务后**自动弹浏览器**到 `http://127.0.0.1:8080`：
-  看今日简报 / 检索论文库 / 标已读收藏笔记 / 下 PDF / 改主题参数 / 跑批 / 切写权模式（`/settings`）。
-- **AI 面（对话驱动）** = dsh（复用现成 harness）。在 dsh 里跟 AI 说"看看今天候选、帮我评审生成简报"；
-  dsh 右栏另有「📄 简报」（PaperPilot Web 可视化面）与「◈ 监控」（AI 干了什么 = mecha cockpit 原生面板）。
-
-> Web 本质是本地服务（无独立窗口），"前台"就是浏览器；所以启动时会**自动帮你打开**（`--no-open` 可关）。
-> "人面写"与"AI 面写"走**同一道写权门**（**默认 `--mode open` = 两侧都能写，人机互不挤**）。
-> 要独占或急停，去 Web 的 **`/settings` → 写权模式**卡切换（「放开 / 授予 AI / 取回 human / 锁定」），
-> 或在**统一启动器的常驻面板**上点「切到手动」/「交还给 AI」
-> ——**切换只由人类侧发起，且不会被谁偷偷改回去**。
-
-手动方式（等价）：
+## 启动
 
 ```bash
-python -m venv .venv
-.venv\Scripts\pip install -e ".[dev,mecha]"   # Windows（Linux/macOS 用 .venv/bin/pip）
+# 本地工作台，同时提供 MCP 与只读监控
+paperpilot
+paperpilot --no-open
 
-# 离线演示：不联网，用内置样例灌库并生成今日简报
-.venv\Scripts\paperpilot demo
+# 整站 AI 使用：由 mecha 统一编排软件、dsh 与面板
+python -m mecha --all --root .
 
-# 打开面板（默认 127.0.0.1:8080）
-.venv\Scripts\paperpilot
+# 本软件的服务形态，不启动 AI 宿主
+paperpilot mcp --with-web
 ```
 
-**排障**：`paperpilot ai` 起不来 dsh 时——① `cd dsh && npm install`；② 报
-`EPERM ~/.dsh/profiles/web/cordis.yml` 说明该 profile 被占用（关掉其它 dsh 实例）；
-③ 没装 dsh 就 `npm i -g @deepseek-ai/dsh`（没装也能用：自动降级纯 Web 模式）；
-④ 报 `ModuleNotFoundError: mecha` ⇒ 见「怎么装」，`pip install -e ".[dev,mecha]"`。
+Web 默认使用本机地址 `http://127.0.0.1:8080`；以启动输出和实际配置为准。MCP、监控与控制端点通过项目根的端口发现文件接入。
 
-## 功能一览
-
-| 功能 | 说明 |
-| --- | --- |
-| 每日简报 | 候选 → 硬规则过滤 → AI 相关性打分 → 主题配额筛选 → AI 结构化精读 → Markdown/Web 简报 |
-| 多主题管理 | 每个研究主题独立关键词/分类白名单/排除词/配额/阈值，配置即改即生效 |
-| 论文库 | SQLite FTS5 全文检索（标题/摘要/TL;DR），评级/分类/关键词过滤 |
-| 阅读态 | 已读/收藏/不感兴趣/笔记 |
-| 离线演示 | `paperpilot demo` 用内置样例不联网跑通全链路 |
-| 数据自主 | 全部数据在本地 `data/`（SQLite） |
+整站 AI 界面需要 PATH 中的 dsh 可执行命令和本仓 `dsh/` 插件资产。插件通过本地 `file:` 引用共享面板；换目录布局时，先将 `dsh/package.json` 的 `@mecha/dsh-panel` 指向所用 mecha 仓的 `mecha/dsh-panel/`，再在 `dsh/` 执行 `npm install` 和 `npm run bundle`。工具聚合与重连由框架负责，项目插件提供研究和监控面板。
 
 ## 日常使用
 
 ```bash
-paperpilot                 # 统一启动：Web + mecha MCP + cockpit（自动开浏览器到工作台）
-paperpilot --no-open       #   同上，但不自动弹浏览器
-paperpilot ai              # AI 模式：上面那些后台起 + 前台弹 dsh（AI 在 dsh 里驱动）
-paperpilot web             # 只启动 Web（不接 mecha 栈；无 MCP/监控）
-paperpilot fetch --days 3  # 抓取近 3 天提交的新论文入库（遵守 arXiv 3s 限速）
-paperpilot run             # 立即跑一次「打分→精读→简报」
-paperpilot run --force     # 当天已有简报也重跑
-paperpilot topics          # 查看当前主题
-paperpilot tools           # 列出全部能力（连接层，自描述；--json 供程序解析）
-paperpilot call <能力> -p k=v  # 调用一个能力，输出统一信封 JSON（外部程序/AI 用）
-paperpilot backup          # 打包 data/ 到 backups/
+paperpilot demo                     # 离线样例，会写入当前数据目录
+paperpilot fetch --days 3            # 收集近期论文
+paperpilot run                      # 程序化生成当天简报
+paperpilot run --force               # 生成新的简报版本
+paperpilot topics                   # 查看研究主题
+paperpilot tools --json             # 查看能力与参数
+paperpilot call search_papers -p query=rydberg
+paperpilot backup                   # 备份数据
 ```
 
-Web 页面：`/` 今日简报 · `/digest/{date}` 历史简报 · `/papers` 论文库检索 · `/papers/{arxiv_id}` 详情与笔记 ·
-`/activity` **记录仪**（**两区**：上区"数据变更"= 域事件 `before→after` + 一键撤销；下区"操作审计"= mecha 框架账
-`command.*`；两区按实体标识互引） · `/settings` 主题与参数管理、手动触发跑批、**写权模式**。
+主要页面包括推荐流 `/feed`、今日与历史简报、论文库 `/papers`、论文详情、引用图谱 `/network`、操作记录 `/activity` 和设置 `/settings`。
 
-> ⚠ **`/monitor` 页已退役**：AI 监控改走 **dsh 右栏的原生面板**（共享资产 `dsh-panel/`）——
-> **Web 侧不再有第二套审计视图**。**`POST /monitor/mode` 控制端点仍在**（人类控制端点，路径未动；⚠ **鉴权已按 2026-10-08 裁决去掉**——本机可信、无口令），
-> 它的 UI 落点搬到了 `/settings` 的「写权模式」卡。
+写权默认允许人机共同操作，可在人类设置页或统一启动面板切换。写权变化不要求重启服务；AI 工具面提供查询与业务操作，人类控制面负责切换写权。
 
-## AI 接入：mecha 人机同门
+## AI 协作流程
 
-**AI 对话、模型管理、界面全部复用 DSH（DeepSeek Harness）**；PaperPilot 经 **mecha** 把连接层投影成
-AI 面（MCP 工具）+ 监控面（cockpit），人机同过**一道写权门**（authority）：
+AI 可通过 MCP 或能力接口执行研究任务，典型简报流程为：
 
-```
-DSH（AI 对话/管理/UI） ──MCP(streamable-http, 仅 localhost)──▶ mecha 投影（.mcp-port 发现）
-        │                                                          │ 工具 = 能力层薄封装；写经命令面（authority 门 + 审计）
-        └── dsh/ 插件（Cordis）──────────────────────────────────────┘
-              · 自愈 MCP 桥：服务重启自动重连重试（治 dsh stock 桥的永久 404 死区）
-              · 工具原生注册：mcp__paperpilot__* 供 AI 调用
-              · 「📄 简报」按钮：PaperPilot Web（可视化面）挂进 dsh 右栏
-              · 「◈ 监控」页签：AI 干了什么（mecha cockpit 的原生面板）
-                地址走**同源只读路由** `/paperpilot/monitor-url` ← 读项目根 `.web-port`（Web 真 listen 后才写）
-                ⇒ 换端口自愈；**读不到就显可读错误，绝不空白、绝不回落默认端口**
-```
+| 阶段 | 工具 | 用途 |
+|---|---|---|
+| 收集与准备 | `fetch_papers`、`prepare_review` | 获取候选、主题画像和已有材料；支持先粗筛再精评 |
+| 评审 | `submit_review` | 提交逐篇分数、分类、理由与结构化总结 |
+| 定稿 | `finalize_briefing` | 按评审和配额生成并保存简报 |
 
-> ⭐ **写权切换：本机可信、无口令**（三层架构 2026-10-08 裁决 2）。
-> 人在**统一启动器的常驻面板**上切（或走 `/settings` 的写权模式卡）；
-> 程序侧的口子是 **`.control-port`** 控制端点（`read_write_authority()` /
-> `set_write_authority(mode)` / `open_manual_surface()`）。
->
-> ⚠ **防线在哪（明说，不假装有口令在挡）**：靠 ⭐ **那个端点的地址只给框架**
-> —— AI 那条能力面（`.mcp-port`）上**没有**这两个改操作，AI 也**拿不到** `.control-port`
-> 的地址去直连。**不是**靠口令：本生态是单用户开发环境，写权的护栏在 `Gate` 的 side 判定
-> （AI 通道改不了 mode），端点本身不做鉴权。
-> ⚠ **边界（明说，不假装在防）**：这个口令挡的是**本机其他进程**，**挡不住有权读你文件的 AI**
-> ——它能读到那个文件。放在仓外只是让"AI 不能自授权"这条边界**尽量**成立，**不是**一道挡住它的墙。
+总结应与实际读到的材料对应：只有摘要时按摘要判断，取得正文后再做正文精读。正文读取通过章节和文本块定位，批注保留原文锚点。
 
-**AI 协作三段流程**（MCP 工具，AI 在 DSH 对话里驱动）：
+研究任务还可使用 `read_paper`、`write_summary`、引用同步、批量标签和图视图工具。参数以 `paperpilot tools --json` 或 AI 宿主提供的 schema 为准；[操作指南](.agents/skills/paperpilot/SKILL.md) 说明典型流程。
 
-| 阶段 | 工具 | 做什么 |
-| --- | --- | --- |
-| 1 | `fetch_papers` → `prepare_review` | 抓取入库 → 取过规则后的候选（含主题画像、摘要截断、基线分） |
-| 2 | `submit_review` | AI 逐篇评审：`score/label/reason` + 入选者的结构化 `summary`（只依据给定摘要，不编造） |
-| 3 | `finalize_briefing` | 用 AI 评审（缺的用基线分）筛选、精读、生成简报落库 |
+读接口提供分页或体积说明；必要的评审候选有专门的返回策略。后台流水线可通过 `submit_job` / `read_job` / `cancel_job` 跟踪，取消是协作式请求。
 
-**归因与记录仪**（写入全部留痕）：
+## 配置与数据
 
-- 所有写入工具接受 `reason`（为什么）；写入带 `actor`（ai/human）进 **append-only 事件总线**
-  （DB 触发器钉死只增不改：任何 UPDATE/DELETE 都被拒绝）；写同时经 mecha 命令面审计进 History（与 dsh call_id 互引）；
-- `read_activity(since_seq/actor/op)` 读「谁、何时、为什么、改了什么」（diff-since-seq + 过滤 + 体积闸）；
-  Web 侧对应只读页 `/activity`（域数据 + 框架账两区）；
-- 写错了 `undo_change(seq=0)` 撤销最近一条可逆操作（按事件的 before 快照回写）；
-  抓取入库/简报定稿**不可逆**，undo 会明确拒绝并说明原因，不静默；
-- 不可逆操作、未分类异常都带可教学 hint（第一次错就能改对）。
-
-不走对话、程序化使用时：`paperpilot run` 走程序化档——配了 API key 就用
-`unified`（OpenAI 兼容，DeepSeek 默认），没配就 `heuristic` 本地 Mock，**任何一档流程都完整**。
-
-## 配置（`config/settings.yaml`）
-
-⚠ **真配置不进仓**（`.gitignore`）：仓里发布的是 **`config/settings.example.yaml`**（默认值/空主题）。
-**没有 `settings.yaml` 时程序会回落到它**（它也没有就用代码内默认值）⇒ clone 下来直接能跑；
-设置页保存**只写你的 `settings.yaml`**，不会改写发布物。
+仓库提供 [配置示例](config/settings.example.yaml)。未创建 `config/settings.yaml` 时使用示例或代码默认值；个人配置和密钥不随仓发布。
 
 ```yaml
-data_dir: data            # 相对路径基于项目根
-lookback_days: 7          # 候选论文只看最近 N 天进入库的
+data_dir: data
+lookback_days: 7
 arxiv_categories: [cs.CL, cs.AI, cs.LG]
 
-scoring:
-  threshold: 0.6          # 入选简报的最低相关性
-  quota_per_topic: 4      # 每主题每天入选上限
-  max_papers: 12          # 每天简报总上限
-  max_per_author: 1       # 同作者每天上限
-  must_read_cap: 3        # 必读直通上限
-
-ai:
-  provider: auto          # auto | unified | heuristic | off
-  api_key: ""             # 建议留空，用环境变量 PAPERPILOT_API_KEY / DEEPSEEK_API_KEY
-
 topics:
-  - name: 大模型推理与 Test-Time Compute
+  - name: 大模型推理
     categories: [cs.CL, cs.AI]
-    keywords: [reasoning, chain-of-thought, test-time computation]
+    keywords: [reasoning, chain-of-thought]
     exclude_keywords: [survey]
     quota: 4
     threshold: 0.6
+
+ai:
+  provider: auto
+  api_key: ""
 ```
 
-**topics 以 YAML 为唯一事实源**：Web/CLI 对主题的增删改都会写回 `settings.yaml`，数据库里的 `topics` 表只是打分外键镜像。
+主题配置以 YAML 为来源，设置页与 CLI 的修改写回个人配置。论文、阅读态、简报和业务事件保存在本地 SQLite；默认数据目录为 `data/`，可在配置中调整。
 
-## AI 接入（两轨，见 `docs/DESIGN.md`）
+当前代码仍保留接入前形成的程序化模型适配路径（`unified` / `heuristic`），主要用于离线演示和历史兼容；它不是新的 AI 接入方向。新的交互式工作应经 mecha 的 MCP 能力面，由外部 AI 操作者完成判断，软件提供原料、接收结果并留痕。程序化路径的退役范围与兼容策略见 [history 与 run 说明](docs/说明-history与run.md)。
 
-**主轨 = DSH/MCP**（`paperpilot ai`，上面那节）：AI 对话、模型管理、UI 全部复用 DSH，
-PaperPilot 把连接层投影成语义工具（经 mecha 命令/门/审计）。错误可教学
-（`{ok:false, error:{kind,hint,suggest}}`）、回程过体积闸（截断必带「截了多少/完整数据去哪看」）、
-工具与 CLI/Web 走同一批 service。
+业务事件保留操作者、理由及前后状态，并与框架审计关联。可逆操作可用 `undo_change` 撤销；入库、引用同步和简报生成等操作的可逆性以实际接口说明为准。
 
-**辅轨 = 程序化 LLM**（无对话的程序化使用，如批量脚本）：`infra/ai/unified.py` 的 `UnifiedAIAdapter`
-按 OpenAI 兼容协议直连（DeepSeek 默认，换后端只改 `ai.base_url` + `ai.model`）：
+## 架构
 
-- 配了 key（`ai.api_key` 或 `PAPERPILOT_API_KEY`/`DEEPSEEK_API_KEY`）→ `unified` 档；
-- 没配 → `auto` 自动落 `heuristic`（本地 Mock：关键词重合度 + 抽取式摘要），不联网也能跑；
-- AI 故障时自动降级，简报照常生成并标注原因（`ai_calls` 表记账：耗时/token/成败）；
-- 错误分类可教学：401 认证 / 402 余额 / 429 限速（重试）/ 400 上下文超长 / 空 content，
-  每条都带「下一步该怎么办」。
-
-## 项目结构
-
-```
+```text
 src/paperpilot/
-├── config.py              # YAML 配置加载（pydantic；缺 settings.yaml 时回落到 example）
-├── mecha_adapter/         # mecha 接入：能力→工具、写命令、Gate 配置、cockpit 监控、MCP 端点、作用域策略
-├── domain/                # 纯业务：不认识 HTTP/SQLite/arXiv
-│   ├── models.py          # AI 边界 DTO（RelevanceScore/PaperSummary/BriefingContent）
-│   ├── policy.py          # 硬规则 / 配额 / 兜底打分 / 抽取式摘要（纯函数）
-│   ├── pipeline.py        # DailyPipelineService：run() 一键 + prepare/submit/finalize 分段
-│   ├── services.py        # RetrievalService：检索与阅读态门面
-│   └── ports/             # 契约：ai.py（对外）、repo/render/notify（对内）
-├── infra/                 # 外部世界
-│   ├── arxiv.py           # arXiv API 客户端：限速/重试/缓存/Atom 解析
-│   ├── orm.py / db.py / fts.py / repo.py   # 数据表（含 append-only events）
-│   ├── render.py / notify.py
-│   └── ai/                # errors（可教学错误）/ heuristic（Mock）/ llm_based / unified（OpenAI 兼容客户端）
-├── app/
-│   ├── container.py       # DI 绑定（换 AI 实现只改这里）
-│   ├── web.py + templates/# FastAPI + Jinja2，无 CDN 依赖（含「记录仪」两区只读页）
-│   └── cli.py             # typer CLI（含 ai 模式 launcher；缺框架时给可教学错误）
-└── data/sample_arxiv.xml  # demo 样例（离线）
-dsh/                       # DSH 插件（Cordis）：自愈 MCP 桥 + 工具注册 +「◈ 监控」原生页签
-docs/                      # PRINCIPLES / SPEC / DESIGN / GAPS（技术文档）
-tests/                     # 契约 / 解析 / 策略 / 流水线 / Web / mecha 适配 / 归因记录仪
+  capabilities/    协议无关的自描述能力与调用入口
+  domain/          评审、推荐、检索与业务策略
+  infra/           arXiv、SQLite、正文材料与模型适配
+  mecha_adapter/   受控命令、工具投影、监控与服务接线
+  app/             Web 工作台与 CLI
+config/            配置示例
+dsh/               AI 宿主中的项目面板
+check/ + tests/    结构、业务结果与集成验证
+docs/              定位、规格和设计记录
 ```
 
-## 测试
+业务语义留在 PaperPilot，通用治理与连接使用 [mecha](https://github.com/tomisnot/mecha)。同一框架也用于 [Energy Level](https://github.com/tomisnot/energy-level)、[ML Toolbox](https://github.com/tomisnot/ml-toolbox) 和 Tutor。
+
+## 开发与验证
 
 ```bash
-.venv\Scripts\python -m pytest        # 默认离线契约与结果；-m "" 为全量，详 check/README.md
-.venv\Scripts\python -m ruff check .  #  lint
-cd dsh && npm test                    # 插件：自愈重连桥 + 端点解析
-cd dsh && npm run typecheck           # tsc 零错误
+python -m pytest
+python -m pytest -m integration
+python -m pytest -m ""
+python -m ruff check .
 ```
 
-覆盖：AI 契约（合法/非法 JSON、长度不符必须抛错）、UnifiedAIAdapter（MockTransport：错误分类/重试/token 记账）、
-Atom 解析与去重、规则过滤与配额、流水线幂等与降级、**MCP 分段协作全流程（prepare→submit→finalize，
-工具直调 + 真协议活体）**、FTS 检索、Web 路由与配置写回、DSH 插件自愈桥（头号验收：服务重启→旧 session 404→自动恢复）、
-**归因与记录仪判据**（写入必带 actor/reason；events 只增不改；undo 往返一致 + 不可逆拒绝）、
-**作用域策略真的生效**、**能力 `kind` 与行为对账**（读 / 读+遥测 / 写三档）。
+默认执行离线契约和业务结果，真实 HTTP/MCP 与子进程场景单独选择。`check/` 与 `tests/` 都由 pytest 收集，按改动范围运行；不要求工具数量、技能文本或文档章节与手写名单同步。见 [验证说明](check/README.md)。
 
-## 已知取舍
+修改项目面板时，在 `dsh/` 执行 `npm test`，检查 TypeScript 与浏览器构建。
 
-- **实体即 SQLAlchemy ORM 模型**（而非纯 pydantic 领域模型）：个人自用项目的务实简化，Port 层保证业务不依赖具体 IO。
-- **arXiv 官方 API**（3s 限速）而非爬 HTML：合规且稳定；只抓关注领域，请求量很小。
-- **DSH 插件的 client 半**（简报面板）需真 `dsh web` 活体验证；host 半（工具+重连）已本地全验证。
-- **编排面（CodeAct）未做**（`docs/GAPS.md`）：当前"流水线即编排"（三段评审协议）；如要 ad-hoc 多步组合再加。
-- **CLI 入口依赖框架**：纯 Web 的 GUI 本体不依赖 mecha，但入口模块会 import 它（缺它时给可教学错误）。
-- 智能问答、语义检索、BibTeX 导出为规划项（`QAPort` 已预留）。
+## 当前边界
+
+正文精读目前主要依赖 arXiv HTML，部分论文没有可用正文。引用服务、在线抓取与历史程序化模型路径受外部服务可用性影响。通用研究问答、语义检索和 BibTeX 导出仍是规划方向；已有批注与正文搜索不等于通用问答系统。
+
+## 文档与许可
+
+- [设计原则](docs/PRINCIPLES.md)
+- [功能规格](docs/SPEC.md)
+- [设计说明](docs/DESIGN.md)
+- [AI 操作指南](.agents/skills/paperpilot/SKILL.md)
+
+许可：[MIT](LICENSE)。
