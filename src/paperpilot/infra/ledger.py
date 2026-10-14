@@ -6,7 +6,7 @@
 （`mecha.assembly.assemble(log_sink=...)` 那个注入点）。
 
 ## 三件事说清
-* **形状对齐**：mecha `Event` = `seq/kind/op/target/after/before/actor/reason/call_id/ts/undoable`
+* **形状对齐**：mecha `Event` = `seq/kind/op/target/after/before/actor/reason/call_id/ts/undoable/operation_id/role`
   ⇒ 本表列名与它**同名**（`kind`/`call_id` 是本轮新加的两列；`reversible` 已**改名** `undoable`）。
 * **同事务**：`append()` 优先写进 `ledger_session(...)` 里那个在途 session（**跟着调用方一起 commit**）
   ⇒ mecha 完全不需要知道"事务"这回事（缝在本侧收口）。没有在途 session 时（如 `gate.set` 的配置写、
@@ -61,6 +61,8 @@ class SqlLedger:
             actor=str(record.get("actor") or "system"),
             reason=str(record.get("reason") or ""),
             call_id=str(record.get("call_id") or ""),
+            operation_id=str(record.get("operation_id") or ""),
+            role=str(record.get("role") or ""),
             # ⚠ `after`/`before` 可能是**标量**（配置键的值就是 1/"x"）⇒ 原样落 JSON 列，**不许包一层**
             # （包了就把值改坏：undo 与前像都会失真）。
             before=record.get("before"),
@@ -97,6 +99,8 @@ class SqlLedger:
             "call_id": e.call_id,
             "ts": e.ts.isoformat() if e.ts else "",
             "undoable": e.undoable,
+            "operation_id": e.operation_id,
+            "role": e.role,
         }
 
     def since(self, seq: int, *, actor: str | None = None, op: str | None = None,

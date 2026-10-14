@@ -1039,7 +1039,7 @@ def build_registry(container) -> Registry:
                   max_items_applied=int(max_items) if max_items else None)
 
     @reg.tool(name="run_pipeline", kind="write",
-              description="一键全流程（无外部评审）：候选→规则→程序化AI档（未配key时heuristic）→简报。")
+              description="一键全流程（无外部评审）：候选→规则筛选→抽取式摘要→简报。")
     def run_pipeline(date: str = "", force: bool = False,
                      actor: str = ACTOR_DEFAULT, reason: str = "") -> dict:
         result = pipeline.run(

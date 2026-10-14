@@ -49,7 +49,7 @@ flowchart TB
     subgraph L3["领域层 · Domain（纯业务，无 IO）"]
         D1[Paper / PaperSummary / Briefing]
         D2[RelevancePolicy 阈值与配额]
-        D3[AI Ports: LLMPort / RankerPort / SummarizerPort]
+        D3[DSH/MCP 分段评审]
     end
 
     subgraph L4["基础设施层 · Infra"]
@@ -67,145 +67,35 @@ flowchart TB
 
 ### 2.1 每日数据流
 
-```
-arXiv API ──► ArxivFetcher ──► PaperNormalizer ──► SQLite(papers, status=new)
-                                                          │
-   ┌────────────────────────── DailyPipelineService ◄──────┘
-   │ 1. 取候选：status=new 且匹配主题分类/关键词
-   │ 2. RuleGate：硬规则过滤（排除词、语言、分类、作者黑名单）→ status=scored-pending
-   │ 3. RankerPort.score_batch：AI 相关性 0~1 + 理由 + 标签 → paper_scores
-   │ 4. 每主题按 (评分, 新鲜度) 取 TopK 配额（默认 8 篇 + 关注作者直通）
-   │ 5. SummarizerPort.summarize：结构化精读 → paper_summaries
-   │ 6. Renderer 组装 briefing（Markdown）→ briefings + status=in-briefing
-   │ 7. 可选通知（webhook / 邮件）
-   ▼
-/digest/YYYY-MM-DD  ← 全部可追溯、可重跑（幂等靠 run_id + date）
+```text
+arXiv → 抓取入库 → 规则筛选 → prepare_review → 外部 AI 评审
+     → submit_review → finalize_briefing → SQLite 当前状态 + events 事实流
 ```
 
-**关键不变量**
-
-- 每个阶段落库前先校验（pydantic），AI 输出解析失败 → 降级（抽取式摘要兜底）+ 记录 `ai_calls.error`。
-- 全流程幂等：同一天重跑不会重复生成 paper/summary/briefing（`arxiv_id`、`(run_id, paper_id)`、`(date)` 唯一约束）。
-- AI 是「奢侈品」不是「必需品」：AI 挂掉时简报降级为「规则筛选 + 原文摘要摘编」，页面标注 `ai=false`。
+一键 `paperpilot run` 只执行确定性规则筛选和抽取式摘要；AI 判断只在分段评审流程中出现。
 
 ---
 
 ## 3. 模块职责
 
-| 模块 | 职责 | 输入 → 输出 |
-| --- | --- | --- |
-| `infra.arxiv.ArxivFetcher` | 按主题检索 arXiv API，增量抓取，限速与重试 | (主题, 日期窗) → `RawPaper` |
-| `infra.arxiv.Normalizer` | Atom XML → `Paper` 实体，字段清洗/补全 | Atom entry → `Paper` |
-| `domain.policy.RuleGate` | **全局**硬规则过滤：语言、作者黑名单（分类/排除词已改走画像软权重，见 §兴趣池） | `[Paper]` → `[Paper]` |
-| `domain.policy.SelectionPolicy` | 阈值、**总量配额**、连坐降权（同一作者一天最多 N 篇） | `[Score]` → `[SelectedPaper]` |
-| `domain.service.DailyPipelineService` | 编排上面所有步骤，产出 Briefing | 任务参数 → `Briefing` |
-| `domain.ports.ai.*` | AI 能力契约（本项目的**集成边界**） | 见 §5 |
-| `infra.ai.AIMockService` | 本地确定性假实现，供联调/测试/降级 | 同 Port 签名 |
-| `infra.repo.*` | SQLite 读写，FTS5 索引维护 | 实体 ↔ 行 |
-| `infra.render.BriefRenderer` | Briefing → Markdown/HTML | `Briefing` → str |
-| `infra.notify.Notifier` | Webhook/邮件推送（默认关闭） | `Briefing` → 发送结果 |
-| `app.web` | FastAPI 路由 + Jinja2 模板 + HTMX | HTTP ↔ Service |
+| 模块 | 职责 |
+| --- | --- |
+| `infra.arxiv` | 抓取、限速、Atom 解析与缓存 |
+| `domain.policy` | 规则筛选、画像池打分与抽取式摘要 |
+| `domain.pipeline` | 一键基线流程和 prepare/submit/finalize 协作流程 |
+| `infra.repo` | SQLite 当前状态、业务事件和物化读模型 |
+| `mecha_adapter` | 命令治理、MCP 投影、操作关联和监控接线 |
+| `app.web` | 人类页面与 CLI |
+
+业务语义留在 PaperPilot；写权、操作关联、事件序列和通用失败形状由 mecha 提供。
 
 ---
 
-## 4. AI 接入抽象层（本项目最关键的边界）
+## 4. AI 责任边界
 
-> 统一 AI 框架在别处开发。本项目的策略：**只依赖最小契约 `LLMPort`**，上层能力（相关性排序、总结、问答）都用 `LLMPort` 组合实现。框架就绪时只需提供 1 个类，DI 里换掉绑定。
+PaperPilot 不维护模型客户端、LLM port、供应商、模型地址或 API key。AI 经 DSH/MCP 调用 `prepare_review`、`submit_review` 和 `finalize_briefing`：软件给出论文与规则材料，接收外部判断，保存产物，并把判断作为 `derivation` 事件写入统一账本。
 
-### 4.1 分层契约
-
-```
-统一 AI 框架（外部）
-      │  实现
-      ▼
-┌─────────────────────────────────────────────┐
-│ LLMPort            ← 唯一必须实现的契约      │
-│   complete(messages, temperature, json_mode)│
-│       → LLMResult(text, tokens, latency)    │
-├─────────────────────────────────────────────┤
-│ RankerPort         ← 默认实现跑在 LLMPort 上 │
-│ SummarizerPort     ← 默认实现跑在 LLMPort 上 │
-│ QAPort(预留)       ← 文献问答，二期          │
-└─────────────────────────────────────────────┘
-```
-
-设计为「一个大口 + 三个小口」的原因：上层能力随产品迭代频繁变化，而底层 `complete()` 签名极稳定，把框架依赖压缩到最小面。
-
-### 4.2 契约代码草图（冻结条款）
-
-```python
-# src/paperpilot/domain/ports/ai.py
-from __future__ import annotations
-from typing import Literal, Protocol, Sequence
-from pydantic import BaseModel, Field
-
-# ---------- 底层契约：外部框架唯一必须实现的东西 ----------
-class Message(BaseModel):
-    role: Literal["system", "user", "assistant"]
-    content: str
-
-class LLMResult(BaseModel):
-    text: str
-    model: str
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    latency_ms: int = 0
-
-class LLMPort(Protocol):
-    """统一 AI 框架适配器必须满足的最小接口。"""
-    def complete(
-        self,
-        *,
-        messages: Sequence[Message],
-        temperature: float = 0.2,
-        max_tokens: int = 2048,
-        json_mode: bool = False,   # True 时框架须保证返回可 json.loads 的文本
-    ) -> LLMResult:
-        ...
-
-# ---------- 上层能力：默认实现组合自 LLMPort ----------
-class RelevanceScore(BaseModel):
-    score: float = Field(ge=0.0, le=1.0)
-    label: Literal["must_read", "worth", "skip"]
-    reason: str                                  # 给用户看的中文一句话理由
-    tags: list[str] = []                         # 如 ["RAG", "长文本"]
-
-class PaperSummary(BaseModel):
-    tldr: str = Field(max_length=120)            # 一句话结论
-    problem: str                                 # 解决什么问题
-    method: str                                  # 怎么做的
-    results: str                                 # 关键结果/数字
-    novelty: str = ""                            # 主要贡献点
-    keywords: list[str] = []
-
-class RankerPort(Protocol):
-    def score_batch(
-        self, *, papers: Sequence[Paper], profile: InterestProfile, run_id: str
-    ) -> list[RelevanceScore]: ...               # 长度必须与 papers 相同，失败项抛/标记降级
-
-class SummarizerPort(Protocol):
-    def summarize(
-        self, *, paper: Paper, profile: InterestProfile, run_id: str
-    ) -> PaperSummary: ...
-```
-
-### 4.3 对统一 AI 框架的最低要求（交给对接方的验收清单）
-
-1. 提供 `LLMPort` 的实现类（异步优先，允许同步适配），可并发、可限流、可重试。
-2. `json_mode=True` 时返回合法 JSON；本项目会用 pydantic 二次校验，**解析失败必须抛错而不是返回垃圾**。
-3. 支持 system/user 消息与 temperature 参数；提供 token 用量与耗时（用于 `ai_calls` 记账与本地产能/成本观测）。
-4. 模型可配置（`settings.ai.model`），允许本地小模型与云端模型混用。
-5. 明确的错误分类（限流/超时/上下文超长/服务不可用），本项目分别走「退避重试 / 降级 / 跳过」三种策略。
-
-### 4.4 本地 Mock 与降级链
-
-| 等级 | 实现 | 用途 |
-| --- | --- | --- |
-| A | `UnifiedAIAdapter`（未来） | 真实能力 |
-| B | `LLMHeuristicService` | 基于 TF-IDF 关键词重合度的「伪相关性」+ 抽取式摘要（首句+含数字句），链路可跑通、可测试 |
-| C | 完全无 AI | 简报只放原 Abstract 摘编，标注 `ai=false` |
-
-配置项 `ai.provider: auto|unified|heuristic|off`，默认 `auto`（unified 未注册就落 heuristic）。**任何等级下业务流程都必须走完**，这是本项目不等 AI 框架的关键。
+`infra/ai/baseline.py` 只提供确定性画像池打分和抽取式摘要，用于离线运行、测试和没有外部 AI 时的可解释结果。它不向 AI 面暴露，也不作为模型降级路径。
 
 ---
 
@@ -382,7 +272,7 @@ Get Paper/
 │   ├── config.py             ← pydantic-settings 加载 yaml/env
 │   ├── domain/               ← 纯业务，零 IO
 │   │   ├── models.py         ← Paper/Score/Summary/Briefing/Topic (pydantic)
-│   │   ├── ports/ai.py       ← LLMPort/RankerPort/SummarizerPort（契约）
+│   │   ├── ai/baseline.py    ← 确定性规则打分与抽取式摘要
 │   │   ├── policy.py         ← RuleGate / ScoringPolicy / 配额
 │   │   └── services.py       ← DailyPipelineService / RetrievalService
 │   ├── infra/
@@ -393,7 +283,7 @@ Get Paper/
 │   │   ├── db.py / repo.py / fts.py
 │   │   ├── render.py / notify.py
 │   ├── app/
-│   │   ├── container.py      ← DI 绑定：Port → 实现（按 settings.ai.provider）
+│   │   ├── container.py      ← 绑定确定性基线与外部评审接线
 │   │   ├── web.py            ← FastAPI 路由
 │   │   ├── templates/ + static/
 │   │   └── cli.py            ← typer/argparse CLI
@@ -470,15 +360,14 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 | AI 上下文纪律 | prompt 设计 + `_gate` 回程体积闸 | 摘要默认/明细显式要；大回程截断必带「截了多少+去哪看」；prompt 含 json 字样+样例（DeepSeek JSON Output 前提） |
 | 端口文件发现（T4：harness 绝不拉起权威） | `mcp_server.py` + `paperpilot ai` | `.mcp-port` 由 launcher 写，DSH 插件据此 attach |
 
-同时按 OpenAI 兼容协议实现了 `UnifiedAIAdapter`（DeepSeek 默认后端）作为**程序化辅轨**，
-供无对话的程序化使用；DSH/MCP 为主轨。
+程序化模型辅轨已删除；DSH/MCP 是唯一的内容型 AI 入口。
 
 ### 17.1 交付物与设计文档的对应关系
 
 | 设计章节 | 落地文件 | 状态 |
 | --- | --- | --- |
-| §4 AI 契约 | `src/paperpilot/domain/ports/ai.py`（LLMPort/RankerPort/SummarizerPort） | ✅ 冻结 |
-| §4.4 三档 AI | `infra/ai/heuristic.py`（Mock）、`infra/ai/llm_based.py`（默认 LLM 组合）、`infra/ai/unified.py`（OpenAI 兼容客户端） | ✅ |
+| §4 AI 边界 | `mecha_adapter/` 的 prepare/submit/finalize 接线 + `infra/ai/baseline.py` | ✅ |
+| §4.4 确定性基线 | `infra/ai/baseline.py`（规则打分、抽取式摘要） | ✅ |
 | §5 采集 | `infra/arxiv.py`（限速 3s / 指数退避 / 24h 磁盘缓存 / Atom 解析 / 分页去重） | ✅ RSS 兜底预留 |
 | §6 流水线 | `domain/pipeline.py` + `domain/policy.py`（幂等、降级、配额、作者连坐、must_read cap） | ✅ |
 | §6 + §17 分段驱动 | `pipeline.prepare_review / submit_review / finalize_review`（AI 经 MCP 分段协作） | ✅ M4 新增 |
@@ -497,7 +386,7 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 1. **实体即 SQLAlchemy ORM 模型**（而非纯 pydantic 领域模型）：个人自用项目的务实简化；AI 边界与渲染边界仍是 pydantic DTO，IO 边界全部收敛在 Port 后面。
 2. **topics 以 `config/settings.yaml` 为唯一事实源**：Web/CLI 的主题增删改直接写回 YAML，DB `topics` 表仅作打分外键镜像，避免双源漂移。
 3. **Web 交互用原生表单 POST + 303 重定向**，未引入 HTMX/CDN：保证离线可用、零前端构建链。
-4. **AI 两轨而非单轨**：外部框架经调研是 MCP 服务端框架（服务 AI，而非被程序调用），故主轨改为 DSH/MCP（复刻其架构），程序化 LLM 客户端降为辅轨（定时任务用）。
+4. **AI 只在适配器侧**：外部框架提供 MCP 服务端与 DSH 对话接线；项目只提供原料、接收判断并记账，软件内不保存模型客户端。
 5. **DSH 插件测试用进程内迷你 runner**（非 `node --test`）：后者的按文件 spawn 在受限环境 EPERM；插件测试全是纯逻辑，进程内足够且跨环境可跑。
 
 ### 17.3 验证结果
@@ -634,7 +523,7 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 硅基用户实测（`AI-EXPERIENCE` 记录，**未随仓发布**）提出 N1~N10；按 `AI-EXPERIENCE-PLAN`（未随仓发布）分四批修。**差的不是功能，是“出错能诊断 + 边界能自省”**：
 
 - **EXP-1 止血（P0）**：N1 `submit_review` 改 **per-item fail**（坏 item 进 `rejected`、捕 `KeyError`，不再一根手滑整批蒸发）；N2 `review_status` 走**标准信封** + 桥接 `bad_envelope` 兜底透传（读写两路一致）；N5 新增只读工具 **`read_write_authority`**（写前自省写权，被拒 hint 指回它；⚠ 2026-10-08 起该实现**已上提进框架** `mecha.authority`，本仓不再自持一份判定规则）；N6 三段 `date` 对称（`submit_review` 默认今天）；N9 label 归一化+enum（尾空格仍直连、非法值进 rejected）；N3 `prepare_review` 评审输入**豁免体积闸**（40 篇全达、不再静默砍半）。判据：`tests/test_ai_experience.py`。
-- **EXP-2 长活不阻塞**：`run_pipeline` **job 化**（`submit_job`/`read_job`/`cancel_job`）——走 run_pipeline 命令面（同写权门+审计+engine 取消点），项目侧 `BoundedSemaphore` 兜并发上限（框架 local JobRegistry 不排队）；命令 `estimate_sec` 改**非零/callable**（AI 能据此判断要不要 job 化）。判据含“取消后副作用不继续”（引擎级确定性）与并发上限。
+- **EXP-2 长活不阻塞**：一键 `run_pipeline` 收回人类/调度入口；AI 面使用 `prepare_review` / `submit_review` / `finalize_briefing`，长操作通过统一 operation 关联。
 - **EXP-3 视野/自描述**：N4 `search_papers` 加 `offset`/`next_offset`（retrieval/repo 透传，翻页零交集）；N8 参数描述**下沉为单一事实源**（住 `ToolSpec.params[..]["description"]`，mecha 层透传，不再两份手抄；`attach_param_descriptions` 漂移即响亮报错）。
 - **EXP-4 AI 面守卫**（钉住“改对后的面”）：`test_ai_surface.py`（命名 snake_case 动词_宾语、禁 get_/list_、描述无实现词）、`test_capability_map.py`（声明==投影：22 能力 + 6 非能力面 = 28 工具，两侧都数）。工具面从 24 → **28**。
 - 框架回馈见内部 n=3 报告 §9（未随仓发布）；验收：`ruff` 净、`pytest` 全绿（EXP 判据均配“能红 + 不误报”对偶）。

@@ -6,7 +6,7 @@
 - **可被 AI 分段驱动**（M4，DSH/MCP 集成轨）：`prepare_review` 只做到「候选+规则+基线分」
   并把候选交给外部（DSH 里的 AI 或人）；`submit_review` 收回评审；
   `finalize_review` 用评审（缺的用基线分）完成筛选与组装。
-  一键全流程仍是 `run()`（程序化 AI 档或 heuristic）。
+    一键全流程仍是 `run()`（确定性基线）；AI 判断只在分段评审命令中进入。
 """
 
 from __future__ import annotations
@@ -128,7 +128,7 @@ class DailyPipelineService:
         renderer: BriefRenderer | None = None,
         notifier: Notifier | None = None,
         blocked_authors: Sequence[str] = (),
-        ai_provider: str = "heuristic",
+        ai_provider: str = "baseline",
     ) -> None:
         self.repo = repo
         self.settings = settings
@@ -163,7 +163,7 @@ class DailyPipelineService:
         actor: str = "pipeline",
         reason: str = "",
     ) -> RunResult:
-        """无外部评审的一键全流程（程序化 AI 档或 heuristic）。"""
+        """无外部评审的一键全流程（规则筛选 + 抽取式摘要）。"""
         target = when or date.today()
         date_str = target.isoformat()
         run_id = uuid.uuid4().hex[:12]
@@ -198,7 +198,7 @@ class DailyPipelineService:
         self, when: date | None = None, *, actor: str = "ai", reason: str = "",
         requeue: bool = False, stage: str = "full", arxiv_ids: tuple[str, ...] = (),
     ) -> PreparedReview:
-        """阶段 1-3：候选 → 硬规则 → 基线分（heuristic）。落 review 文件，等外部评审。
+        """阶段 1-3：候选 → 硬规则 → 基线分。落 review 文件，等外部评审。
 
         `requeue=True`（再审回炉）：先把近 lookback 窗口内 archived/in_briefing 拉回
         new（走可逆的 `reset_statuses` 事件，undo 一键回退）再走正常流程。同一天想
@@ -490,7 +490,7 @@ class DailyPipelineService:
             # `topic_id=None`：打分从此**只对画像池**，不再挂任何主题（老行保留历史值）。
             self.repo.save_scores(
                 run_id=run_id, paper=paper, topic_id=None,
-                score=score, model="dsh-review" if cand.get("ai") else "heuristic",
+                score=score, model="dsh-review" if cand.get("ai") else "baseline",
             )
             ranked.append((paper, score))
             if cand.get("ai_summary"):

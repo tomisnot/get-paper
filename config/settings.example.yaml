@@ -6,8 +6,7 @@
 #      ⇒ 陌生人 clone 下来**直接能跑**，不用先手写配置；
 #   3. ⚠ 设置页保存时**只写你的 `settings.yaml`**，**不会**写回本文件（本文件是发布物）。
 #
-# 环境变量（可选）：`PAPERPILOT_CONFIG`（指定配置文件）· `PAPERPILOT_DATA_DIR`（数据目录）·
-#                  `PAPERPILOT_API_KEY` / `DEEPSEEK_API_KEY`（AI key，建议用它而不是写进 yaml）。
+# 环境变量（可选）：`PAPERPILOT_CONFIG`（指定配置文件）· `PAPERPILOT_DATA_DIR`（数据目录）。
 
 data_dir: data # 相对路径基于项目根 ⇒ 从任何 cwd 启动都写到同一处
 lookback_days: 7
@@ -27,15 +26,8 @@ scoring:
   review_floor: 0.4
 
 ai:
-  provider: auto # auto | unified | heuristic | off（没有 key 时 auto 自动落 heuristic）
-  model: deepseek-chat
-  temperature: 0.2
+  # 内容型 AI 通过 DSH/MCP 的 prepare → submit → finalize 流程进入
   max_concurrency: 2
-  max_abstract_chars: 1600
-  api_key: "" # 建议留空，用环境变量 PAPERPILOT_API_KEY / DEEPSEEK_API_KEY
-  base_url: https://api.deepseek.com
-  timeout_seconds: 60.0
-  max_retries: 3
 
 notify:
   enabled: false

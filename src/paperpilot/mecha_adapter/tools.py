@@ -55,6 +55,7 @@ class ToolDecl:
     kind: str                       # "read" | "write"
     description: str
     via_surface: bool = False        # True = 走 Engine.run（每日流水线）
+    ai_visible: bool = True          # False = 仅保留项目内部/人类命令，不投给 AI
     omit: tuple[str, ...] = ()       # 不作为模型可见参数的能力入参
 
 
@@ -187,8 +188,8 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
              "评审阶段3：用已提交评审（缺的用基线分）筛选、精读、生成简报并落库。",
              omit=("actor",)),
     ToolDecl("run_pipeline", "run_pipeline", "write",
-             "一键全流程（无外部评审）：候选→规则→程序化打分（未配模型时用启发式兜底）→简报。",
-             via_surface=True, omit=("actor",)),
+             "一键全流程（人类/调度入口）：候选→规则筛选→抽取式摘要→简报。",
+             via_surface=True, ai_visible=False, omit=("actor",)),
     ToolDecl("add_topic", "add_topic", "write",
              "新增研究主题（即时生效）。keywords/categories/exclude_keywords 用逗号分隔。",
              omit=("actor",)),
@@ -239,7 +240,9 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
 )
 
 #: mecha 名 → 能力名（判据/宿主自省用的单一来源投影）。
-TOOL_TO_CAPABILITY: dict[str, str] = {d.mecha_name: d.cap_name for d in TOOL_DECLS}
+TOOL_TO_CAPABILITY: dict[str, str] = {
+    d.mecha_name: d.cap_name for d in TOOL_DECLS if d.ai_visible
+}
 
 
 def _suggest_text(suggest: object) -> str:
@@ -351,7 +354,7 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
       （``command.<name>`` 落 History）由命令面治理（Phase 2）。
 
     另有三块**不从声明来**的面（各自手写注册）：``set_config`` / ``read_config``（配置标量，
-    Scheme E）、``read_write_authority``（写权自省，**框架的唯一实现**）、``submit_job`` / ``read_job`` / ``cancel_job``
+    Scheme E）、``read_write_authority``（写权自省，**框架的唯一实现**）
     （长活 job 化）。
 
     ``channel`` 缺省 = ``sw.channels['ai']``（AI 侧，actor 钉死 'ai'）。
@@ -369,7 +372,7 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
     specs_by_name = {s.name: s for s in sw.commands.specs()}
     cap_rev = {c["name"]: bool(c["reversible"]) for c in capabilities.specs(container)}
     policy = getattr(sw.commands, "_scope_policy", None)
-    decls_by_name = {d.mecha_name: d for d in TOOL_DECLS}
+    decls_by_name = {d.mecha_name: d for d in TOOL_DECLS if d.ai_visible}
     # 全部声明（30 写 + 25 读，按声明序）+ 两条人类专属手写命令（见 `_ADMIN_ONLY_COMMANDS`）。
     for mecha_name in (*decls_by_name, *_ADMIN_ONLY_COMMANDS):
         decl = decls_by_name.get(mecha_name)
@@ -438,7 +441,6 @@ def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRe
         reg, sw.authority,
         how_to_open=("在 Get Paper 的 Web 页 `/settings` 的「写权模式」卡上切"
                      "（本机可信、无口令；AI 侧不能自解锁——它拿不到控制端点的地址）"))
-    _register_job_tools(reg, sw, channel, container)
     return reg
 
 
@@ -578,110 +580,6 @@ def _read_config(gate):
                      for k, v in CONFIG_SCHEMA.items()}}
 
 
-def _register_job_tools(reg: ToolRegistry, sw, channel, container,
-                       max_concurrent: int = 2) -> None:
-    """长活 job 化（E2.1 / 缺口1）：submit/read/cancel，先接最慢的 run_pipeline。
-
-    ⚠ 框架 local JobRegistry **每次 submit 新起一个 daemon 线程、不排队、无上限**——
-    并发度必须项目自兜：这里用 `BoundedSemaphore` 兜住上限（超额响亮拒绝，不静默起线程）。
-    job 体走 run_pipeline **命令面**（同一道写权门 + 审计 + engine 取消点），不是绕开门直跑。
-    """
-    import threading
-
-    from .commands import invoke_command
-
-    sem = threading.BoundedSemaphore(max_concurrent)
-    commands, gate, jobs, authority = sw.commands, sw.gate, sw.jobs, sw.authority
-
-    def _err(kind: str, message: str, hint: str = "") -> dict:
-        return {"ok": False, "error": {"kind": kind, "message": message, "hint": hint}}
-
-    def _submit(reason: str = "") -> dict:
-        # ⚠ 这不是"治理闸"（治理检查已由框架在调 handler 之前做）；这里是**提交前的 UX 预检**：
-        # 让 AI **同步**拿到拒绝（而不是提交一个注定被拒的 job、再去轮询失败）。它**之前**
-        # 没有任何副作用（sem.acquire 在它之后）⇒ 不构成"改动落地才报审计失败"那类风险。
-        # （保留与否的取舍已报主代理；若判定"多余守卫"，删掉它只影响拒绝的**时序**，不影响安全。）
-        try:
-            authority.gate(channel.side)
-        except MechaError as e:
-            return _err(e.kind, e.message, f"{e.hint} 先 read_write_authority 查写权。")
-        if not sem.acquire(blocking=False):               # 项目兜并发上限（框架不给队列）
-            return _err("job_limit", f"并发后台任务已满（上限 {max_concurrent}）",
-                        "用 read_job 看进度、等某个跑完再提交；不要反复重试。")
-
-        def _work(ctx):
-            try:
-                return invoke_command(commands, gate, channel, "run_pipeline",
-                                      {"reason": reason or "后台流水线"}, context=ctx,
-                                      approval=sw.approval)
-            finally:
-                sem.release()
-
-        job = jobs.submit(_work, command="run_pipeline", cancel_supported=True)
-        return {"ok": True, "job_id": job.id, "state": job.state.value,
-                "hint": "read_job(job_id) 轮询进度/结果；cancel_job(job_id) 可取消"
-                        "（协作式：跑到写库前取消才不产生副作用）"}
-
-    def _read(job_id: str = "") -> dict:
-        if not job_id:
-            return {"ok": True, "jobs": jobs.list()}
-        try:
-            job = jobs.get(job_id)
-        except MechaError as e:
-            return _err(e.kind, e.message, e.hint)
-        out: dict = {"ok": True, **job.status()}
-        if job.state.value == "done":
-            out["result"] = job.result
-        elif job.state.value == "failed":
-            out["error_detail"] = job.error
-        return out
-
-    def _cancel(job_id: str) -> dict:
-        # 框架 `JobRegistry.cancel` 现在**回真话**（2026-09-26 第 3 批）：
-        # `{job_id, state_before, terminal, cancel_requested}` ⇒ 本项目原先"先探 `job.state`
-        # 再自己编文案"的兜底**已删**（框架 docstring 的判词：**一个什么都不告诉你的接口，
-        # 就是在邀请调用方自己编**——而"对已跑完的 job 说取消已登记"就是编出来的谎话）。
-        # 字段直接用框架的名字（同一事实一个名字）；终态/协作式的**语义由框架说**，不再由我们猜。
-        try:
-            res = jobs.cancel(job_id)
-        except MechaError as e:
-            return _err(e.kind, e.message, e.hint)      # 含未知 id / cancel_supported=False
-        terminal = bool(res["terminal"])
-        return {
-            "ok": True,
-            "job_id": res["job_id"],
-            "state_before": res["state_before"],
-            "terminal": terminal,
-            "cancel_requested": res["cancel_requested"],
-            "note": (f"任务已是终态（{res['state_before']}），无需取消" if terminal
-                     else "取消已登记；协作式取消——已在写的会跑完，未开工的直接不写"),
-        }
-
-    reg.register(define_tool(
-        name="submit_job",
-        description="把每日流水线作为后台任务提交（不阻塞对话），立刻拿 job_id。配合 read_job 轮询、cancel_job 取消。",
-        parameters={"reason": {"type": "string", "default": "",
-                               "description": "一句话中文说明本次后台跑批目的"}},
-        output_schema={"type": "object", "required": ["ok"]},
-        execute=_submit, banned_words=_BANNED_WORDS,
-    ))
-    reg.register(define_tool(
-        name="read_job",
-        description="读后台任务状态：给 job_id 查单个（done 时带结果），不给则列全部。用于轮询进度。",
-        parameters={"job_id": {"type": "string", "default": "",
-                               "description": "submit_job 返回的任务 id（省略=列全部）"}},
-        output_schema={"type": "object", "required": ["ok"]},
-        execute=_read, banned_words=_BANNED_WORDS,
-    ))
-    reg.register(define_tool(
-        name="cancel_job",
-        description="请求取消一个后台任务（协作式：在安全点停下，不强杀线程）。",
-        parameters={"job_id": {"type": "string", "description": "要取消的任务 id"}},
-        output_schema={"type": "object", "required": ["ok"]},
-        execute=_cancel, banned_words=_BANNED_WORDS,
-    ))
-
-
 class PaperPilotRequiredSource:
     """MCP 投影的必填项注入来源（``mecha.providers.mcp.RequiredSource`` 协议）。
 
@@ -693,6 +591,8 @@ class PaperPilotRequiredSource:
     def __init__(self, container) -> None:
         self._map: dict[str, list[str]] = {}
         for decl in TOOL_DECLS:
+            if not decl.ai_visible:
+                continue
             cap_params = _cap_params(container, decl.cap_name)
             self._map[decl.mecha_name] = _required_names(cap_params, decl)
 

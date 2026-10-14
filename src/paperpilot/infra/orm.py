@@ -342,7 +342,7 @@ class Event(Base):
 
     只 INSERT，不 UPDATE/DELETE——由 `infra/db.py` 的触发器在数据库层钉死
     （判据：任何 UPDATE/DELETE 必须失败）。**列名与 mecha 账事件同名**（2026-09-30 对齐）：
-    `seq/kind/op/target/after/before/actor/reason/call_id/ts/undoable` —— 这份表就是
+    `seq/kind/op/target/after/before/actor/reason/call_id/ts/undoable/operation_id/role` —— 这份表就是
     mecha 账的**落地点**（`infra/ledger.py::SqlLedger`）：**配置写 / 域写 / 命令审计共用同一个序列**。
     """
 
@@ -366,3 +366,7 @@ class Event(Base):
     undoable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     #: 调用链标识（与 mecha 审计互引；GP 的域写目前留空）。
     call_id: Mapped[str] = mapped_column(String(64), default="")
+    #: 统一操作范围标识；一笔 command/job 的域事件与审计事件共用它。
+    operation_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    #: action / mutation / derivation；空值表示历史记录尚未声明角色。
+    role: Mapped[str] = mapped_column(String(16), default="")

@@ -64,7 +64,7 @@ repo/MCP/pipeline 三条路径）；② `UPDATE/DELETE events` 抛 `SQLAlchemyEr
 - **dsh 集成**（`dsh/`）：自愈 MCP 桥（并**修复了 Energy Level 原版 `ensureReady` 的一个缺陷**）、
   两阶段工具 swap 注册、client 简报面板、launcher `paperpilot ai`。
 - **契约与降级**：`ports/ai.py` 冻结 + pydantic 强校验 + `json_mode` 解析失败必抛错；
-  AI 是"奢侈品"（heuristic/off 兜底、简报标 `ai=false`，**不静默降级**）。
+  内容型 AI 只经 DSH/MCP 评审进入；本地流水线使用确定性基线，简报如实标记来源。
 - **可复现/幂等**：run_id + 唯一约束防重、简报不可变（重跑生成新 run、旧 briefing `superseded`）、
   `ai_calls` 记账、topics 以 `settings.yaml` 为单一事实源。
 - **自检**：58 pytest 全绿 + ruff 零告警 + dsh 14/14 + MCP 活体协议测试通过。

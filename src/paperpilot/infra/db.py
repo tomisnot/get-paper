@@ -31,7 +31,12 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str, str]]] = {
     # 2026-09-30 账事件与 mecha 对齐：新加两列。⚠ 纯 DDL（ADD COLUMN 带默认值）⇒ 老行
     # **自动**拿到默认值（`kind='history'` 对现有事件是**正确**的：它们全是域事件），
     # **一个 UPDATE 都不用** ⇒ 不碰 events 表那道 append-only 触发器。
-    "events": [("kind", "VARCHAR(16)", "'history'"), ("call_id", "VARCHAR(64)", "''")],
+    "events": [
+        ("kind", "VARCHAR(16)", "'history'"),
+        ("call_id", "VARCHAR(64)", "''"),
+        ("operation_id", "VARCHAR(64)", "''"),
+        ("role", "VARCHAR(16)", "''"),
+    ],
     # 2026-09-30 画像池化：主题不再"一次性播种"，而是以幂等 upsert 往池子里注入带权重的词条
     # ⇒ 需要溯源两列。老行自动拿默认值：`source='signal'`（它们本来就是行为学出来的）、
     # `w_base=0.0`（没有基线可撤）——语义对老家底是**正确**的。

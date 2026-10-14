@@ -47,6 +47,8 @@ def test_tool_parameters_derive_from_capability_no_drift(tmp_path):
     container, stack = _stack(tmp_path)
     tools = stack["tools"]
     for decl in TOOL_DECLS:
+        if not decl.ai_visible:
+            continue
         tool = tools.get(decl.mecha_name)
         cap_params = registry_for(container).get(decl.cap_name).params
         expected = set(cap_params) - set(decl.omit)

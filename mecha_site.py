@@ -25,7 +25,7 @@
 ## 查清后**没有**发现的两类（免得后人再查一遍）
 
 * **`*_NO_*` 开关类：GP 没有**。`settings.mcp.enabled` / `settings.web.enabled` 只影响提醒与
-  是否起对应服务，**不会让 `mcp` 子命令起不来**；`ai.provider=off` 也只是无 AI 档。
+  是否起对应服务，**不会让 `mcp` 子命令起不来**；本地流水线只走确定性基线，内容 AI 经 DSH/MCP 评审流进入。
 * **`DSH_HOME`：刻意不钉**。它只服务 `paperpilot ai --debug-home`（用项目内 `.dsh-debug`
   隔离会话/凭据）；把它钉进声明会让**每次启动都要求重新登录**，而框架自己起 dsh 时用
   共享 `~/.dsh` 即可。`--debug-home` 仍是可以手动跑的调试开关，不进声明。

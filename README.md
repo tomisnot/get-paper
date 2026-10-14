@@ -61,7 +61,7 @@ Web 默认使用本机地址 `http://127.0.0.1:8080`；以启动输出和实际�
 ```bash
 paperpilot demo                     # 离线样例，会写入当前数据目录
 paperpilot fetch --days 3            # 收集近期论文
-paperpilot run                      # 程序化生成当天简报
+paperpilot run                      # 人类/调度入口：规则筛选 + 抽取式摘要生成简报
 paperpilot run --force               # 生成新的简报版本
 paperpilot topics                   # 查看研究主题
 paperpilot tools --json             # 查看能力与参数
@@ -87,7 +87,7 @@ AI 可通过 MCP 或能力接口执行研究任务，典型简报流程为：
 
 研究任务还可使用 `read_paper`、`write_summary`、引用同步、批量标签和图视图工具。参数以 `paperpilot tools --json` 或 AI 宿主提供的 schema 为准；[操作指南](.agents/skills/paperpilot/SKILL.md) 说明典型流程。
 
-读接口提供分页或体积说明；必要的评审候选有专门的返回策略。后台流水线可通过 `submit_job` / `read_job` / `cancel_job` 跟踪，取消是协作式请求。
+读接口提供分页或体积说明；必要的评审候选有专门的返回策略。长任务由命令的操作范围统一关联，不另设一套 AI job 工具。
 
 ## 配置与数据
 
@@ -107,13 +107,12 @@ topics:
     threshold: 0.6
 
 ai:
-  provider: auto
-  api_key: ""
+  max_concurrency: 2  # 内容判断通过 DSH/MCP 评审流程进入
 ```
 
 主题配置以 YAML 为来源，设置页与 CLI 的修改写回个人配置。论文、阅读态、简报和业务事件保存在本地 SQLite；默认数据目录为 `data/`，可在配置中调整。
 
-当前代码仍保留接入前形成的程序化模型适配路径（`unified` / `heuristic`），主要用于离线演示和历史兼容；它不是新的 AI 接入方向。新的交互式工作应经 mecha 的 MCP 能力面，由外部 AI 操作者完成判断，软件提供原料、接收结果并留痕。程序化路径的退役范围与兼容策略见 [history 与 run 说明](docs/说明-history与run.md)。
+软件内部不保存模型客户端、供应商或 API key。确定性基线只负责规则筛选与抽取式摘要；内容判断统一经 mecha 的 MCP 能力面，由外部 AI 操作者完成。历史演进和现行账本/运行边界见 [history 与 run 说明](docs/说明-history与run.md)。
 
 业务事件保留操作者、理由及前后状态，并与框架审计关联。可逆操作可用 `undo_change` 撤销；入库、引用同步和简报生成等操作的可逆性以实际接口说明为准。
 
@@ -123,7 +122,7 @@ ai:
 src/paperpilot/
   capabilities/    协议无关的自描述能力与调用入口
   domain/          评审、推荐、检索与业务策略
-  infra/           arXiv、SQLite、正文材料与模型适配
+  infra/           arXiv、SQLite、正文材料与确定性基线
   mecha_adapter/   受控命令、工具投影、监控与服务接线
   app/             Web 工作台与 CLI
 config/            配置示例
@@ -149,7 +148,7 @@ python -m ruff check .
 
 ## 当前边界
 
-正文精读目前主要依赖 arXiv HTML，部分论文没有可用正文。引用服务、在线抓取与历史程序化模型路径受外部服务可用性影响。通用研究问答、语义检索和 BibTeX 导出仍是规划方向；已有批注与正文搜索不等于通用问答系统。
+正文精读目前主要依赖 arXiv HTML，部分论文没有可用正文。引用服务、在线抓取与外部 DSH/MCP 服务可用性会影响对应功能。通用研究问答、语义检索和 BibTeX 导出仍是规划方向；已有批注与正文搜索不等于通用问答系统。
 
 ## 文档与许可
 

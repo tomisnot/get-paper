@@ -181,7 +181,7 @@ def create_app(container: Container, stack: dict | None = None) -> FastAPI:
                 "lane_label": _LANE_LABEL.get(e["lane"], e["lane"]),
                 "summary": ({"tldr": s.tldr, "problem": s.problem, "method": s.method,
                              "results": s.results, "novelty": s.novelty} if s else None),
-                "ai_summary": bool(s and s.model and s.model != "heuristic"),
+                "ai_summary": bool(s and s.model and s.model not in {"baseline", ""}),
                 "review_reason": (sc.reason if sc and sc.reason else "")})
         return out
 

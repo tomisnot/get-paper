@@ -20,14 +20,13 @@ from mecha.authority import Mode
 from paperpilot.app.container import build_container
 from paperpilot.capabilities.base import gate as volume_gate
 from paperpilot.infra.arxiv import parse_atom
-from paperpilot.mecha_adapter.hub import build_stack, make_host
+from paperpilot.mecha_adapter.hub import build_stack, human_write, make_host
 from paperpilot.mecha_adapter.tools import TOOL_TO_CAPABILITY
 
 from .conftest import SAMPLE_XML, make_settings
 
-# 28 工具的模型可见名（22 能力投影 + 配置/自省/长活面 6：set_config/read_config/read_write_authority/submit_job/read_job/cancel_job）。
-NON_CAPABILITY_TOOLS = {"set_config", "read_config", "read_write_authority",
-                        "submit_job", "read_job", "cancel_job"}
+# 模型面只包含 AI 协作所需能力；一键跑批是人类/调度命令，不再投给 AI。
+NON_CAPABILITY_TOOLS = {"set_config", "read_config", "read_write_authority"}
 EXPECTED_TOOLS = set(TOOL_TO_CAPABILITY) | NON_CAPABILITY_TOOLS
 
 
@@ -62,6 +61,17 @@ def _call(tools, _tool, **args):
             error["suggest"] = info["suggest"]
         return {"ok": False, "error": error}
     return res["value"]
+
+
+def _human(stack, command, **args):
+    """人类命令的 mecha 回执折回项目能力信封。"""
+    res = human_write(stack, command, **args)
+    if res.get("is_error"):
+        info = (res.get("error") or {}).get("info") or {}
+        return {"ok": False, "error": {"kind": info.get("kind"),
+                "message": (res.get("error") or {}).get("message"),
+                "hint": info.get("hint", "")}}
+    return res.get("value", {})
 
 
 # ---------------------------------------------------------------- 只读面
@@ -215,7 +225,8 @@ def test_reading_state_tools(tmp_path):
 def test_run_pipeline_one_shot(tmp_path):
     """run_pipeline 经 Engine.run（surface.run）跑，回执含 run_output_required 键。"""
     _c, stack = _stack(tmp_path)
-    out = _call(stack["tools"], "run_pipeline", force=True)
+    stack["authority"].switch_mode(Mode.HUMAN, side="human")
+    out = _human(stack, "run_pipeline", force=True)
     assert out["ok"] and out["selected"] >= 1
     assert out["degraded"] == []
 
@@ -223,7 +234,7 @@ def test_run_pipeline_one_shot(tmp_path):
 def test_read_activity(tmp_path):
     _c, stack = _stack(tmp_path)
     tools = stack["tools"]
-    _call(tools, "run_pipeline", force=True)
+    _human(stack, "run_pipeline", force=True)
     out = _call(tools, "read_activity", days=7)
     assert out["ok"] and "counts_by_status" in out and "recent_briefings" in out
 
@@ -354,7 +365,7 @@ def test_write_commands_declare_what_governance_needs(tmp_path):
 def test_locked_denies_run(tmp_path):
     """洞2：LOCKED 态 AI 直跑每日流水线被拒，且不生成简报。"""
     _container, stack = _stack(tmp_path, open_ai=False)
-    out = _call(stack["tools"], "run_pipeline", force=True)
+    out = _human(stack, "run_pipeline", force=True)
     assert out["ok"] is False and out["error"]["kind"] == "authority_locked"
 
 
@@ -412,11 +423,13 @@ def test_gate_config_is_authoritative_over_run(tmp_path):
     用两个**独立栈**（各自新建容器/库）避开“同日连跑两次候选耗尽”的干扰。
     """
     _c1, s1 = _stack(tmp_path / "a")
-    default = _call(s1["tools"], "run_pipeline", force=True)
+    s1["authority"].switch_mode(Mode.HUMAN, side="human")
+    default = _human(s1, "run_pipeline", force=True)
     _c2, s2 = _stack(tmp_path / "b")
     _call(s2["tools"], "set_config", key="scoring.max_papers", value=1)
     assert s2["gate"].snapshot["scoring.max_papers"] == 1
-    capped = _call(s2["tools"], "run_pipeline", force=True)
+    s2["authority"].switch_mode(Mode.HUMAN, side="human")
+    capped = _human(s2, "run_pipeline", force=True)
     assert default["ok"] and capped["ok"]
     assert default["selected"] > capped["selected"]
     assert capped["selected"] == 1
@@ -490,7 +503,8 @@ def test_gate_config_override_does_not_mutate_shared_settings(tmp_path):
     original_max = container.settings.scoring.max_papers
     _call(tools, "set_config", key="scoring.max_papers", value=1)
     assert stack["gate"].snapshot["scoring.max_papers"] == 1
-    out = _call(tools, "run_pipeline", force=True)
+    stack["authority"].switch_mode(Mode.HUMAN, side="human")
+    out = _human(stack, "run_pipeline", force=True)
     assert out["ok"] and out["selected"] <= 1          # gate 配置对本次 run 生效
     # 共享 settings 未被就地改：并发的 Web/CLI 路径不会误读到 gate 值
     assert container.settings.scoring.max_papers == original_max
@@ -530,11 +544,13 @@ def test_write_attributed_to_ai_and_undoable(tmp_path):
 def test_undo_irreversible_is_teachable(tmp_path):
     """（迁自 test_journal）撤销不可逆操作（简报定稿）→ 可教学拒绝。"""
     _container, stack = _stack(tmp_path)
+    stack["authority"].switch_mode(Mode.HUMAN, side="human")
     tools = stack["tools"]
-    _call(tools, "run_pipeline", force=True, reason="AI 跑批")
+    _human(stack, "run_pipeline", force=True, reason="人类跑批")
     activity = _call(tools, "read_activity", op="save_briefing", limit=5)
     assert activity["events"], "定稿应落一条 save_briefing 事件"
     seq = activity["events"][0]["seq"]
+    stack["authority"].switch_mode(Mode.AI, side="human")
     out = _call(tools, "undo_change", seq=seq, reason="想撤")
     assert out["ok"] is False and out["error"]["kind"] == "irreversible"
     assert out["error"]["hint"]

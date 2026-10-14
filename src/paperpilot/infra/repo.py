@@ -20,6 +20,7 @@ from ..infra.ai.errors import AIError
 from .arxiv import NormalizedPaper
 from .fts import PaperIndex, PaperTextIndex
 from .ledger import SqlLedger, ledger_session
+from mecha.operations import current_operation
 from .orm import (
     AICall,
     Base,  # noqa: F401  （re-export 便于外部 import）
@@ -87,6 +88,8 @@ class PaperRepository:
                 "kind": "history", "op": op, "target": target, "actor": actor or "system",
                 "reason": reason or "", "before": before, "after": after,
                 "undoable": undoable,
+                "operation_id": (current_operation().id if current_operation() else ""),
+                "role": "mutation",
             })
 
     def events_since(

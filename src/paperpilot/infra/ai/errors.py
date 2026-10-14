@@ -1,5 +1,4 @@
 """AI 可教学错误体系（移植自 Energy Level `src/mecha/errors.py` 的模式）。
-
 设计依据（Energy Level docs/AI交互-架构设计.md，纲领 D2）：**错误消息是 LLM 的 UI**。
 一条能自己教调用方改对的错误，比十句散文都有用。因此所有 AI 侧错误都携带：
   kind    机器可读类别（rate_limit / auth / balance / context_length / parse / ...）
@@ -14,9 +13,6 @@ from __future__ import annotations
 __all__ = [
     "AIError",
     "AIParseError",
-    "LLMHTTPError",
-    "LLMTimeoutError",
-    "UnifiedAINotReady",
 ]
 
 
@@ -67,22 +63,3 @@ class AIParseError(AIError):
     kind = "parse"
 
 
-class LLMHTTPError(AIError):
-    """LLM 接口返回非 2xx。kind 由状态码映射（见 unified.py 的 _STATUS_KINDS）。"""
-
-    kind = "http_error"
-
-    def __init__(self, message: str, *, status: int, kind: str, hint: str | None = None, **extra) -> None:
-        super().__init__(message, hint=hint, status=status, **extra)
-        self.kind = kind
-        self.status = status
-
-
-class LLMTimeoutError(AIError):
-    kind = "timeout"
-
-
-class UnifiedAINotReady(AIError):
-    """未配置 API key，unified 档不可用。"""
-
-    kind = "not_ready"

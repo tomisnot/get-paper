@@ -1,9 +1,7 @@
-"""DI 容器：把配置 → 具体实现绑起来（换 AI 实现只改这里，见 DESIGN.md §4.4）。
+"""DI 容器：把配置与项目实现绑起来。
 
-AI 档位解析：
-- unified   ：统一框架可用 → LLMRanker/LLMSummarizer(UnifiedAIAdapter)
-- heuristic ：本地 Mock（默认 auto 的落点）
-- off       ：无 AI，pipeline 内部自动走关键词兜底 + 抽取式摘要
+内容型 AI 只从 DSH/MCP 的 review 命令进入；本地流水线保留确定性规则和抽取式
+摘要作为基线，不再在项目内部维护第二条模型调用通道。
 """
 
 from __future__ import annotations
@@ -15,15 +13,6 @@ from datetime import datetime
 from ..config import Settings, load_settings
 from ..domain.pipeline import DailyPipelineService
 from ..domain.services import RetrievalService
-from ..infra.ai import (
-    HeuristicRanker,
-    HeuristicSummarizer,
-    LLMRanker,
-    LLMSummarizer,
-    UnifiedAIAdapter,
-)
-from ..infra.ai.errors import AIError
-from ..infra.ai.unified import resolve_api_key
 from ..infra.db import init_db, make_engine, make_session_factory
 from ..infra.fts import PaperIndex, PaperTextIndex
 from ..infra.notify import NullNotifier, WebhookNotifier
@@ -80,47 +69,10 @@ def build_container(settings: Settings | None = None) -> Container:
         repo.record_op("sync_topic_pool_boot", target="profile", after=pool,
                        actor="system", reason="启动把主题包幂等注入画像池")
 
+    # 一键流水线只使用确定性基线；外部 AI 评审由 prepare/submit/finalize 命令完成。
     ranker = summarizer = None
     notes: list[str] = []
-    resolved = settings.ai.provider
-
-    # 程序化轨：unified 档直连 OpenAI 兼容接口（DeepSeek 默认）。
-    # 注意这只服务「无人对话时的定时任务」；AI 对话驱动走 DSH/MCP 轨（paperpilot ai）。
-    api_key = resolve_api_key(settings.ai.api_key)
-    if settings.ai.provider in ("auto", "unified") and api_key:
-        try:
-            llm = UnifiedAIAdapter(
-                api_key,
-                base_url=settings.ai.base_url,
-                model=settings.ai.model,
-                timeout=settings.ai.timeout_seconds,
-                max_retries=settings.ai.max_retries,
-            )
-            ranker = LLMRanker(
-                llm, max_abstract_chars=settings.ai.max_abstract_chars
-            )
-            summarizer = LLMSummarizer(
-                llm, max_abstract_chars=settings.ai.max_abstract_chars
-            )
-            resolved = "unified"
-        except AIError as exc:
-            notes.append(f"unified 初始化失败（{exc}），已降级 heuristic")
-        except Exception as exc:  # noqa: BLE001
-            notes.append(f"unified 初始化失败（{exc}），已降级 heuristic")
-    elif settings.ai.provider == "unified" and not api_key:
-        notes.append(
-            "unified 档未配 API key（ai.api_key 或 PAPERPILOT_API_KEY/DEEPSEEK_API_KEY），"
-            "已降级 heuristic"
-        )
-
-    if ranker is None and settings.ai.provider in ("auto", "heuristic"):
-        ranker = HeuristicRanker()
-        summarizer = HeuristicSummarizer()
-        resolved = "heuristic"
-
-    if ranker is None:
-        resolved = "off"
-        notes.append("AI 已关闭：简报仅做规则筛选 + 原文摘编")
+    resolved = "baseline"
 
     if settings.notify.enabled and settings.notify.webhook_url:
         notifier: object = WebhookNotifier(settings.notify.webhook_url)

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -96,26 +95,12 @@ class GraphCfg(BaseModel):
 
 
 class AICfg(BaseModel):
-    """AI 档位。
+    """AI 协作参数。
 
-    两轨（DESIGN.md §17）：
-    - **DSH/MCP 轨（主）**：`paperpilot ai` 起 MCP 语义通道，AI 在 DSH 里对话驱动，
-      不需要本段任何 key；
-    - **程序化轨（辅）**：定时任务无人对话时，unified 档直连 OpenAI 兼容接口
-      （DeepSeek 默认）跑打分/精读。key 从 ai.api_key 或环境变量
-      PAPERPILOT_API_KEY / DEEPSEEK_API_KEY 读取；没有 key 时 auto 自动落 heuristic。
+    内容判断只经 DSH/MCP 的分段评审流程；这里保留并发度供本地摘要组装使用，
+    不再保存模型、供应商、API key 或直连地址。
     """
-
-    provider: Literal["auto", "unified", "heuristic", "off"] = "auto"
-    model: str = "deepseek-chat"
-    temperature: float = 0.2
     max_concurrency: int = 2
-    max_abstract_chars: int = 1600
-    # 程序化轨连接参数（OpenAI 兼容；换后端只改这两项）
-    api_key: str = ""
-    base_url: str = "https://api.deepseek.com"
-    timeout_seconds: float = 60.0
-    max_retries: int = 3
 
 
 class NotifyCfg(BaseModel):

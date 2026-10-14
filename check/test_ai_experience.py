@@ -1,5 +1,4 @@
 """AI 调用体验打磨 EXP-1（止血）判据 —— 每条配「能红 + 不许误报」。
-
 对应 AI-EXPERIENCE-PLAN 的 N1–N6、N9（该计划未随仓发布）：
 E1.1 单字段不击穿整批 · E1.2 review_status 标准信封 + 桥接 bad_envelope 兜底 ·
 E1.3 信封纪律守卫（无裸 ok:false） · E1.4 写权自省（**框架实现**，2026-10-08 上提） · E1.5 三段 date 对称 ·
@@ -247,19 +246,6 @@ def test_param_description_map_drift_fails_loud(tmp_path):
 
 
 # ---------------------------------------------------------------- E2.1 (缺口1) jobs 长活
-def test_submit_job_runs_pipeline_and_completes(tmp_path):
-    """提交→阻塞到终态（无轮询竞态）→done 且真落了简报。"""
-    container, stack = _stack(tmp_path, open_ai=True)
-    tools = stack["tools"]
-    sub = _call(tools, "submit_job", reason="测试后台跑批")
-    assert sub["ok"] and sub["job_id"]
-    st = stack["jobs"].wait(sub["job_id"], timeout=120)
-    assert st["state"] == "done", st
-    rd = _call(tools, "read_job", job_id=sub["job_id"])
-    assert rd["ok"] and rd["state"] == "done" and "result" in rd
-    assert container.repo.briefings(limit=5)          # 副作用真的发生了（产了简报）
-
-
 def test_cancelled_pipeline_run_has_no_side_effect(tmp_path):
     """能红（取消后副作用不继续）：写库前有取消点 ⇒ 已取消的 run 不写简报。"""
     from mecha.surface import ExecutionContext
@@ -269,26 +255,6 @@ def test_cancelled_pipeline_run_has_no_side_effect(tmp_path):
     res = stack["engine"].run({}, context=ctx)
     assert res.get("error", {}).get("kind") == "cancelled"
     assert not container.repo.briefings(limit=5)       # 未写任何简报
-
-
-def test_submit_job_respects_project_concurrency_limit(tmp_path, monkeypatch):
-    """项目兜并发上限（框架不排队）：超上限响亮拒绝 job_limit。"""
-    _c, stack = _stack(tmp_path, open_ai=True)
-    tools = stack["tools"]
-    # fake submit：拿到许可但不跑 _work ⇒ 许可永不释放（确定性占位，不靠真流水线时长）
-    monkeypatch.setattr(stack["jobs"], "submit",
-                        lambda fn, **k: SimpleNamespace(id="job-fake",
-                                                         state=SimpleNamespace(value="pending")))
-    assert _call(tools, "submit_job")["ok"] is True          # 1/2
-    assert _call(tools, "submit_job")["ok"] is True          # 2/2
-    third = _call(tools, "submit_job")                       # 3rd ⇒ 超限
-    assert third["ok"] is False and third["error"]["kind"] == "job_limit"
-
-
-# ================================================================ R2 追加（2026-09-26）
-# 用户第二轮实测反馈：prepare_review 空池静默 ok:true+[]、Web 无简报管理、
-# cancel_job 已终态仍回“取消已登记”。前两个与 N1/N2 同族（diagnosability），后一个是
-# proprioception。下面五条判据沿用“能红 + 不误报”对偶纪律。
 
 
 def _drain_pool(reg):
@@ -369,25 +335,3 @@ def test_delete_briefing_unknown_date_is_teaching_err(tmp_path):
     assert "list_briefings" in out["error"].get("hint", "")
 
 
-# ------------------------------------------------- R2-4 cancel_job 已终态如实文案
-def test_cancel_job_terminal_state_is_honestly_reported(tmp_path):
-    """能红：对已 done 的 job 调 cancel_job ⇒ note 里说“无需取消”、不再说“取消已登记”。"""
-    import time
-
-    _c, stack = _stack(tmp_path, open_ai=True)
-    tools = stack["tools"]
-
-    def _noop(_ctx):
-        return {"ok": True}
-
-    job = stack["jobs"].submit(_noop, command="noop", cancel_supported=True)
-    for _ in range(200):
-        if stack["jobs"].get(job.id).state.value == "done":
-            break
-        time.sleep(0.02)
-    assert stack["jobs"].get(job.id).state.value == "done"
-    res = tools.execute("cancel_job", {"job_id": job.id})
-    assert res["is_error"] is False, res
-    note = res["value"].get("note", "")
-    assert "无需取消" in note, note
-    assert "取消已登记" not in note, f"对终态 job 不应仍说‘已登记’：{note}"

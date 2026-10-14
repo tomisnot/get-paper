@@ -11,13 +11,13 @@ def test_pipeline_end_to_end(pipeline, loaded_repo):
     assert result.error is None
     assert result.after_rules > 0
     assert 0 < result.selected <= pipeline.settings.scoring.max_papers
-    assert result.degraded == []  # heuristic 全程可用
+    assert result.degraded == []  # 确定性基线全程可用
 
     briefing = loaded_repo.briefing_for_date(date.today().isoformat())
     assert briefing is not None
     assert "arXiv 每日简报" in briefing.markdown
     assert "今日必读" in briefing.markdown or "值得一看" in briefing.markdown
-    assert briefing.stats["stats"]["ai_provider"] == "heuristic"
+    assert briefing.stats["stats"]["ai_provider"] == "baseline"
     assert len(briefing.stats["items"]) == result.selected
 
     # 状态机：入选进 in_briefing，其余**过规则者**进 archived。

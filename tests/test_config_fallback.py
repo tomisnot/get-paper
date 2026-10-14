@@ -27,7 +27,7 @@ def test_example_config_is_defaults_only_without_personal_data():
     settings = cfg.load_settings(example)
     assert settings.topics == [], "示例不给**私有**主题（留空，让使用者自己加）"
     assert (settings.lookback_days, settings.scoring.max_papers) == (7, 12)
-    assert settings.ai.api_key == "", "示例不该带任何 key"
+    assert settings.ai.max_concurrency == 2
 
 
 def test_missing_real_config_falls_back_to_example(tmp_path, monkeypatch):

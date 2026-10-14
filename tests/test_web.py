@@ -50,7 +50,7 @@ def test_pages_render(tmp_path):
     assert activity.status_code == 200 and "append-only" in activity.text
 
     health = client.get("/healthz")
-    assert health.status_code == 200 and health.json()["ai_provider"] == "heuristic"
+    assert health.status_code == 200 and health.json()["ai_provider"] == "baseline"
 
 
 def test_paper_actions_and_notes(tmp_path):

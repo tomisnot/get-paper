@@ -8,7 +8,7 @@ import pytest
 
 from paperpilot.config import AICfg, ScoringCfg, Settings, TopicCfg
 from paperpilot.domain.pipeline import DailyPipelineService
-from paperpilot.infra.ai import HeuristicRanker, HeuristicSummarizer
+from paperpilot.infra.ai import BaselineRanker, BaselineSummarizer
 from paperpilot.infra.arxiv import parse_atom
 from paperpilot.infra.db import init_db, make_engine, make_session_factory
 from paperpilot.infra.fts import PaperIndex
@@ -77,18 +77,11 @@ def make_settings(data_dir: Path) -> Settings:
             # W4 评审下限：基线套件不随新键漂移（floor 行为在 test_practical_w.py 专测）
             review_floor=0.0,
         ),
-        ai=AICfg(provider="heuristic"),
+        ai=AICfg(),
     )
     # 测试环境：配置写回临时目录，不碰真实 config/settings.yaml
     settings.config_path = data_dir.parent / "settings.yaml"
     return settings
-
-
-@pytest.fixture(autouse=True)
-def _no_llm_keys(monkeypatch):
-    """测试环境确定性：屏蔽真实 API key 环境变量（避免容器档位随环境漂移）。"""
-    monkeypatch.delenv("PAPERPILOT_API_KEY", raising=False)
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
 
 
 @pytest.fixture
@@ -115,10 +108,10 @@ def pipeline(settings, repo) -> DailyPipelineService:
     return DailyPipelineService(
         repo,
         settings=settings,
-        ranker=HeuristicRanker(),
-        summarizer=HeuristicSummarizer(),
+        ranker=BaselineRanker(),
+        summarizer=BaselineSummarizer(),
         renderer=MarkdownBriefRenderer(),
-        ai_provider="heuristic",
+        ai_provider="baseline",
     )
 
 
@@ -137,7 +130,7 @@ def _repo_db_dir(repo) -> Path:
 
 @pytest.fixture
 def container(settings):
-    """完整 DI 容器（heuristic 档、tmp 数据目录）——能力层/CLI/Web 测试用。"""
+    """完整 DI 容器（确定性基线、tmp 数据目录）——能力层/CLI/Web 测试用。"""
     from paperpilot.app.container import build_container
 
     return build_container(settings)

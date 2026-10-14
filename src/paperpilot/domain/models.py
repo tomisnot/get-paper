@@ -12,22 +12,6 @@ from pydantic import BaseModel, Field
 RelevanceLabel = str  # "must_read" | "worth" | "skip"，宽松类型便于 Mock/适配器实现
 
 
-# ---------------------------------------------------------------- AI 基础契约
-class Message(BaseModel):
-    role: str  # "system" | "user" | "assistant"
-    content: str
-
-
-class LLMResult(BaseModel):
-    """统一 AI 框架 complete() 的返回。"""
-
-    text: str
-    model: str = "unknown"
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    latency_ms: int = 0
-
-
 # ---------------------------------------------------------------- 上层能力 DTO
 class RelevanceScore(BaseModel):
     score: float = Field(ge=0.0, le=1.0)
@@ -94,7 +78,7 @@ class BriefingStats(BaseModel):
     after_rules: int = 0
     selected: int = 0
     ai_enabled: bool = True
-    ai_provider: str = "heuristic"
+    ai_provider: str = "baseline"
     ai_latency_ms: int = 0
     degraded: list[str] = Field(default_factory=list)
 
