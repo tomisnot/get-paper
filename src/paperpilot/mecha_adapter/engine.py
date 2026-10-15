@@ -1,20 +1,14 @@
-"""PaperPilotEngine：把 ``container.pipeline`` 包装成 mecha 的 4 必实现。
+"""PaperPilot 的本地流水线协调器。
 
-领域只出现在这里（接入指南第 1 步）：``run`` = 每日流水线一键跑；``schema``
-声明回执必填键与可写标量配置；``estimate`` 给受 arXiv 限速主导的粗估。
+领域只出现在这里：流水线执行和资源估算由 GP 自己决定；mecha 只接收其命令声明。
 
-配置态（评分阈值 / lookback 等标量）声明在 ``schema()['config']``，由
-``make_validator`` 做类型/值域校验——Phase 2 把它们迁进 Gate 时，校验口径不变。
+配置态（评分阈值 / lookback 等标量）声明在 ``CONFIG_SCHEMA``，由
+``make_validator`` 做类型/值域校验。
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-
 from mecha.errors import GateDenied, UnknownKey
-from mecha.surface import Engine, ExecutionContext
-
-from .. import capabilities
 from ..domain.pipeline import pipeline_config_override
 
 #: 可写标量配置键的类型/值域（Phase 2 迁入 Gate；单一来源在此声明）。
@@ -39,8 +33,8 @@ CONFIG_SCHEMA: dict[str, dict] = {
 def gate_scoring_override(container, gate):
     """从 gate 快照造本次调用的配置覆盖（ScoringCfg 副本 + lookback）；无 gate 则 (None, None)。
 
-    ⭐ N15：这是**命令面全路径**的配置权威接缝——不只 Engine.run（run_pipeline），
-    prepare/submit/finalize 这些不走 Engine.run 的段同样要吃到 set_config 的值，
+    ⭐ N15：这是**命令面全路径**的配置权威接缝——run_pipeline、
+    prepare/submit/finalize 各段都吃到 set_config 的值，
     否则 set_config 对 finalize 成静默 no-op（silent no-op 比响亮拒绝更坏）。
     **不改共享 settings**：返回副本，交 ``pipeline_config_override`` 做线程局部覆盖。
     """
@@ -61,90 +55,8 @@ def gate_scoring_override(container, gate):
     return scoring, lookback
 
 
-class PaperPilotEngine(Engine):
-    """4 必实现：每日流水线的运行面（领域实现仍住 capabilities/pipeline）。"""
 
-    def __init__(self, container, gate=None) -> None:
-        self._container = container
-        self._gate = gate          # 装配后由 hub 回填（engine 先于 gate 建成）
-
-    def attach_gate(self, gate) -> None:
-        """回填 Gate：让 ``run`` 把 gate 快照里的标量配置叠加到本次运行。
-
-        engine 是 ``assemble()`` 的入参、gate 是 ``assemble()`` 的产物 ⇒ 二者
-        构造有先后，故用回填而非构造注入（避免循环）。
-        """
-        self._gate = gate
-
-    # ---- 必实现 ①：一处声明的 schema ----
-
-    def schema(self) -> Mapping[str, object]:
-        return {
-            "run_output_required": ["ok", "date", "selected"],
-            "estimate_output_required": ["est_sec"],
-            "config": dict(CONFIG_SCHEMA),
-            "settable_keys": sorted(CONFIG_SCHEMA),
-        }
-
-    # ---- 必实现 ②：run = 一键每日流水线 ----
-
-    def run(self, spec: Mapping[str, object], *, context: ExecutionContext,
-            **opts: object) -> Mapping[str, object]:
-        # 长活（抓取受 arXiv 限速）：尽力而为地把取消透传给流水线目前无接缝，
-        # 这里只在跑前尊重取消请求（同进程无法强杀正在进行的网络调用）。
-        if context.cancel_event.is_set():
-            return {"ok": False, "date": str(spec.get("date") or ""),
-                    "selected": 0, "error": {"kind": "cancelled",
-                                             "message": "运行前已请求取消"}}
-        context.report_progress(0.1, "pipeline start")
-        # 配置态归 Gate（Scheme E）：把 gate 快照的标量作为**本次运行的线程局部
-        # 覆盖**传给流水线——线程隔离、**不改共享 settings**，故 Web「立即运行」/
-        # scheduler/CLI 并发运行不会误读到 AI 的 gate 配置（消除旧 mutate-restore 的竞争窗口）。
-        scoring, lookback = self._gate_config_override()
-        with pipeline_config_override(scoring=scoring, lookback_days=lookback):
-            res = capabilities.invoke(
-                self._container, "run_pipeline",
-                date=str(spec.get("date") or ""),
-                force=bool(spec.get("force", False)),
-                actor=str(spec.get("actor") or "ai"),
-                reason=str(spec.get("reason") or ""),
-            )
-        context.report_progress(1.0, "pipeline done")
-        # 回执必须含 run_output_required 键（失败信封也要补齐，surface.run 会校验）。
-        out = dict(res)
-        out.setdefault("date", str(spec.get("date") or ""))
-        out.setdefault("selected", 0)
-        return out
-
-    # ---- 配置叠加（run 的内部助手）----
-
-    def _gate_config_override(self):
-        """引擎侧薄包装：委托共享的 ``gate_scoring_override``（命令面 handler 同源同语义）。"""
-        return gate_scoring_override(self._container, self._gate)
-
-    # ---- 必实现 ③：summary ----
-
-    def summary(self) -> Mapping[str, object]:
-        settings = self._container.settings
-        return {
-            "engine": "paperpilot",
-            "ai_provider": self._container.ai_provider,
-            "topics": len(settings.topics),
-            "lookback_days": settings.lookback_days,
-        }
-
-    # ---- 必实现 ④：estimate（补框架必填 est_sec，粗估口径写进 est_note）----
-
-    def estimate(self, spec: Mapping[str, object]) -> Mapping[str, object]:
-        settings = self._container.settings
-        days = int(spec.get("lookback_days") or settings.lookback_days or 1)
-        # 粗估：抓取受 arXiv 3s 限速主导，按主题数与回溯天数线性外推。
-        est = round(5.0 + 3.0 * len(settings.topics) * max(1, days) / 3.0, 1)
-        return {"est_sec": est,
-                "est_note": "粗估：抓取受 arXiv 限速主导；打分/渲染按启发式档计"}
-
-
-def make_validator(engine: PaperPilotEngine):
+def make_validator():
     """Gate 的 validate：标量配置键的类型/值域校验，报错即教学（L4）。
 
     Phase 1 只在装配期挂上（尚未 seed/set）；Phase 2 把 settings.yaml 的标量迁入 Gate 时即用它守门。
@@ -154,7 +66,7 @@ def make_validator(engine: PaperPilotEngine):
     兜住它的判据：`tests/test_mecha_cockpit.py` 断言"域快照里没有 `command.*`、`n_keys == 6`"
     ——框架若回退（审计键又掺进快照）⇒ 那条立刻红（那时才需要把白名单加回来）。
     """
-    schema = dict(engine.schema()["config"])  # type: ignore[arg-type]
+    schema = dict(CONFIG_SCHEMA)  # type: ignore[arg-type]
     settable = set(schema)
 
     def validate(key: str, value: object) -> None:
@@ -185,3 +97,4 @@ def make_validator(engine: PaperPilotEngine):
                                  hint=f"{key} 合法区间 [{lo}, {hi}]")
 
     return validate
+

@@ -452,17 +452,17 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 
 核心基调：mecha 是「人机同门」（Gate/History/Surface/Monitor + providers），AI 与人是平级操作者过同一道写入门；**领域实现单一来源仍是 `capabilities/`，mecha 适配层只做薄投影，不复制业务逻辑**（信条 9）。
 
-状态归属（Scheme E）：配置态标量 → mecha `Gate`/`History`（KV）；论文库异构写 → mecha **命令**（`side_effect=True`，Phase 2）+ 域数据/undo 仍留 `repo.events`，两份 journal 靠命令审计的 `result_ref` 互引（非 split-brain）；读 → Surface QUERY + 只读工具；每日流水线 → `Engine.run`。
+状态归属（Scheme E）：配置态标量 → mecha `Gate`/`History`（KV）；论文库异构写 → mecha **命令**（`side_effect=True`，Phase 2）+ 域数据/undo 仍留 `repo.events`，两份 journal 靠命令审计的 `result_ref` 互引（非 split-brain）；读 → Surface QUERY + 只读工具；每日流水线 → GP 自己的命令实现。
 
 新增包 `src/paperpilot/mecha_adapter/`（仿 EL `mecha_v2/`，住本项目仓）：
 
-- `engine.py::PaperPilotEngine`：4 必实现。`run` = 一键每日流水线（桥 `capabilities.invoke('run_pipeline')`，回执补齐 `run_output_required=[ok,date,selected]`）；`schema` 声明可写标量配置（`lookback_days`/`scoring.*`）；`estimate` 给受 arXiv 限速主导的粗估。`make_validator` = Gate 的标量类型/值域校验（Phase 2 迁配置入门时用）。
+- `engine.py`：GP 的配置声明与 Gate 校验；命令声明负责公开参数和回执，`make_validator` 负责标量类型/值域校验。
 - `tools.py::build_tool_registry`：22 能力 → `define_tool`。`execute` 是 `capabilities.invoke` 的薄桥（信封失败转 `MechaError` 抛出，交 `ToolRegistry` 归一化）；参数从能力自描述 `params` **机械派生**（不手抄第二份）；写工具的 `actor` 由 `channel.actor` 钉死（模型不可见/不可改）。`PaperPilotRequiredSource` 注入权威必填项（`execute` 用 `**kwargs` 包装 ⇒ 签名推必填得空集，靠注入来源补回）。
 - `hub.py`：`build_stack` 经 `assemble()` 具名装配点建栈（出厂 `LOCKED`），`McpHost`/`make_host` 薄壳委托框架 `McpEndpoint`（streamable-http 挂 `/mcp`，端口文件默认 `<项目根>/.mcp-port`）。**不传空 `toolhost`**（否则「列得出调不动」）。
 
 **命名改造表**（mecha 禁 `get_`/`list_` 前缀、要 snake_case 动词_宾语**至少两段**）：`get_paper→read_paper`、`get_digest→read_digest`、`get_activity→read_activity`、`get_references→read_references`、`get_citations→read_citations`、`list_topics→query_topics`、**`undo→undo_change`**。
 
-### Phase 1 落地（Engine + 工具 + MCP 投影，已验证）
+### Phase 1 落地（命令、工具与 MCP 投影，已验证）
 
 - 验收（接入指南 Step 3 + R10）：`tests/test_mecha_adapter.py` 迁移旧 `test_mcp_server.py` 全流程覆盖（工具改名后）+ **真 MCP 客户端 e2e**：起 `McpEndpoint` → `streamable_http_client` 连上 → `list_tools` == 22 注册面 → `add_note` 的 `inputSchema.required=={arxiv_id,content}`（未被 `**kwargs` 掏空）、无 `outputSchema` → 真调 `add_note` 成功 → `repo.events` 落 `actor=ai/op=add_note` 事件。`pytest 109 绿`（96+13）、`ruff` 净。
 - 旧 `mcp_server.py` 暂并存（退役为 §11 待确认项）。
@@ -476,7 +476,7 @@ app 把语义面暴露成 MCP 工具，DSH（DeepSeek Harness）提供 AI 对话
 
 - `commands.py::build_commands`：13 个写能力 → `define_command(side_effect=True, scope=…)`。handler 调 `capabilities.invoke`（域写/undo 仍留 `repo.events`），命令面把 `command.<name>` + 不透明 `result_ref`（arxiv_id/note_id/date/run_id）审计进 mecha History——两份 journal 互引。
 - ⭐ **authority 写权闸前置——已由框架承担**（n=3 发现 7，框架 2026-09-26 落地）：`Gate.check` 与 `Gate.set` 共用同一份判定，`invoke` 在调 handler **之前**对 `side_effect` 命令先查 ⇒ 域写（本项目直写 SQLite）**根本不会发生**。⚠ **本项目原先那份手写前置闸已删**（留着就是同一事实两个守卫）；判据 `tests/test_web_mecha.py::test_locked_stops_both_sides` 未改松、仍绿（现在验的是框架行为；它同时承担 2026-10-01 删掉的 `test_locked_denies_write_and_no_domain_change`——两条同路径，前者是超集）。归因改用**声明式 opt-in**：命令声明 `wants_channel=True` ⇒ handler 收本次 `channel=`（不再用 contextvar 偷渡，见发现 9 的落地）。
-- 标量配置迁 Gate：`build_stack` 装配期 `gate.seed` 从 settings 种 6 个标量（`lookback_days`/`scoring.*`）；新增 `set_config`（经 `gate.set`，authority+validate 双闸）/`read_config` 两个工具；`Engine.run` 把 gate 快照作为**线程局部每调用覆盖**（`pipeline_config_override` + `ScoringCfg.model_copy`）作用于本次运行（故 gate 配置对流水线**权威**、非装饰，且**不改共享 settings**、并发安全）。工具面 22→24。
+- 标量配置迁 Gate：`build_stack` 装配期 `gate.seed` 从 settings 种 6 个标量（`lookback_days`/`scoring.*`）；新增 `set_config`（经 `gate.set`，authority+validate 双闸）/`read_config` 两个工具；命令处理器把 gate 快照作为**线程局部覆盖**（`pipeline_config_override` + `ScoringCfg.model_copy`）作用于本次运行（故 gate 配置对流水线**权威**、非装饰，且**不改共享 settings**、并发安全）。工具面 22→24。
 - authority 接线：出厂 `LOCKED`，人类侧 `switch_mode(Mode.AI,'human')` 开闸；AI 侧不能自解锁。Web=human / dsh·AI=ai（Web 写路径 **Phase 5 已改走命令面**，见下）。
 - 验收：`test_mecha_adapter.py` 添治理判据——LOCKED 直写/直跑被拒**且域写不发生**、AI 不能自解锁、开闸后审计落史 + `result_ref` 互引、set_config 受门 + gate 配置对 run 权威（`max_papers=1`→selected 真降）。
 - ⭐ **设计师复审修复（3 项，均已修 + 回归判据，详内部 n=3 报告 §3.5（**未随仓发布**，存档在仓外））**：① `reason` 声明进命令 `required` 才能透传给 handler（否则被 mecha `RESERVED_ARGS` 剥掉）→ 域 journal `repo.events.reason` 不再为空；② gate 配置叠加由 mutate-restore 共享 settings 改为**线程局部覆盖**（消除并发误读竞争）；③ `_REF_KEYS` 的 `undid_seq`→`undone_seq`（修 undo 的 result_ref 互引）。`pytest 129 绿`。

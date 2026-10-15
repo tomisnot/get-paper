@@ -30,7 +30,7 @@ from mecha.providers.mcp import build_mcp_server as _framework_build_mcp_server
 from mecha.site import initial_mode_from_env
 
 from .commands import build_commands, invoke_command
-from .engine import CONFIG_SCHEMA, PaperPilotEngine, make_validator
+from .engine import CONFIG_SCHEMA, make_validator
 from .monitor import paperpilot_summarizer, start_cockpit
 from .scopes import build_scope_policy
 from .tools import build_required_source, build_tool_registry
@@ -90,17 +90,15 @@ def build_stack(container, data_root: str | Path | None = None,
     ``data_root`` 缺省 = 项目数据目录（``settings.data_dir``）；journal 落
     ``<data_root>/<data_dir_name>/journal.jsonl``。
     """
-    engine = PaperPilotEngine(container)
     root = Path(data_root) if data_root is not None else Path(container.settings.data_dir)
-    sw = assemble(root=root, data_dir_name=data_dir_name, engine=engine,
-                  summarizer=paperpilot_summarizer, validate=make_validator(engine),
+    sw = assemble(root=root, data_dir_name=data_dir_name,
+                  summarizer=paperpilot_summarizer, validate=make_validator(),
                   mode=mode, project="paperpilot",
                   # ⭐ **账的落地点换成 GP 自己的库**（2026-09-30）：账必须住在**状态旁边**——
                   # GP 的域状态在 SQLite 里，只有同库同事务才能做到"状态变了、账不可能没记"。
                   # ⇒ "配置写 / 域写 / 命令审计"共用 `events` 表、**同一个序列**
                   # （实现：`infra/ledger.py::SqlLedger`；框架出厂默认是本机 JSONL）。
                   log_sink=container.repo.ledger)
-    engine.attach_gate(sw.gate)             # 让 Engine.run 叠加 gate 配置
     ai = sw.channels["ai"]
     command_names = build_commands(container, sw)
     # ⭐ **把 scope 声明的"插头"插上**（2026-09-26）：框架那段作用域过滤只在注入了
@@ -112,7 +110,7 @@ def build_stack(container, data_root: str | Path | None = None,
     _seed_config(sw.gate, container)
     tools = build_tool_registry(container, sw, ai)
     return {
-        "software": sw, "engine": engine, "container": container,
+        "software": sw, "container": container,
         "gate": sw.gate, "history": sw.history, "surface": sw.surface,
         "monitor": sw.monitor, "authority": sw.authority, "jobs": sw.jobs,
         "commands": sw.commands, "command_names": command_names,

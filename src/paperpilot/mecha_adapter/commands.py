@@ -386,8 +386,6 @@ def _make_handler(container, decl, surface, gate):
     不只 run_pipeline，prepare/submit/finalize 各段同样吃到，杜绝静默 no-op。
     """
     cap_name = decl.cap_name
-    via_surface = decl.via_surface
-
     def handler(context=None, channel=None, **args):
         args = dict(args)
         args.pop("actor", None)                 # actor 由通道钉死，绝不接受请求传入
@@ -396,11 +394,9 @@ def _make_handler(container, decl, surface, gate):
         # 嵌套无害：context manager 保存/恢复上一层）。
         scoring, lookback = gate_scoring_override(container, gate)
         with pipeline_config_override(scoring=scoring, lookback_days=lookback):
-            if via_surface:
-                ctx = context if isinstance(context, ExecutionContext) else ExecutionContext()
-                res = surface.run(args, context=ctx)
-            else:
-                res = capabilities.invoke(container, cap_name, **args)
+            # run_pipeline 也是 GP 自己的能力；mecha 只负责命令治理，
+            # 不再经一个通用 Engine 转发。
+            res = capabilities.invoke(container, cap_name, **args)
         if not res.get("ok"):
             # 失败经共享的 envelope_to_error（含 N2 的 bad_envelope 兜底，读写两路一致）。
             return CommandResult(ok=False, values={"ok": False}, error=envelope_to_error(res))
@@ -429,7 +425,7 @@ def build_commands(container, sw) -> list[str]:
             side_effect=True,
             scope=_scope_for(decl.mecha_name),
             estimate_sec=_estimate(decl.cap_name, container),
-            cancel_supported=decl.via_surface,
+            cancel_supported=decl.via_pipeline,
             # 归因靠**声明**（不靠 contextvar 偷渡、也不靠签名自省）：声明后 handler 收本次
             # `channel=`，于是"谁调的"不再靠装配期捕获的默认通道猜（发现 9）。
             wants_channel=True,

@@ -54,7 +54,7 @@ class ToolDecl:
     cap_name: str
     kind: str                       # "read" | "write"
     description: str
-    via_surface: bool = False        # True = 走 Engine.run（每日流水线）
+    via_pipeline: bool = False       # True = 走 GP 自己的每日流水线
     ai_visible: bool = True          # False = 仅保留项目内部/人类命令，不投给 AI
     omit: tuple[str, ...] = ()       # 不作为模型可见参数的能力入参
 
@@ -189,7 +189,7 @@ TOOL_DECLS: tuple[ToolDecl, ...] = (
              omit=("actor",)),
     ToolDecl("run_pipeline", "run_pipeline", "write",
              "一键全流程（人类/调度入口）：候选→规则筛选→抽取式摘要→简报。",
-             via_surface=True, ai_visible=False, omit=("actor",)),
+             via_pipeline=True, ai_visible=False, omit=("actor",)),
     ToolDecl("add_topic", "add_topic", "write",
              "新增研究主题（即时生效）。keywords/categories/exclude_keywords 用逗号分隔。",
              omit=("actor",)),

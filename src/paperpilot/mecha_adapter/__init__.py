@@ -1,11 +1,11 @@
 """PaperPilot 的 mecha v2 适配层（Scheme E：commands-centric hybrid）。
 
-把中性的 ``capabilities/`` 连接层能力投影成 mecha 的 Engine / ToolRegistry / MCP
+把中性的 ``capabilities/`` 连接层能力投影成 mecha 的命令、工具和 MCP
 端点——**领域实现单一来源仍是 capabilities/**，本层只做薄封装，不复制业务逻辑
 （docs/PRINCIPLES.md 信条 9；.qoder/plans 交接文档 §6）。
 
 三份文件的分工（仿 EL ``mecha_v2/``）：
-- ``engine``：``PaperPilotEngine``（4 必实现）+ ``make_validator``（Gate 校验）。
+- ``engine``：GP 自己的流水线协调器 + ``make_validator``（Gate 校验）。
 - ``tools``：``build_tool_registry``（``TOOL_DECLS`` 声明的能力 + set/read_config 等 → 工具面）
   + 必填项注入来源。
 - ``commands``：``build_commands``（``TOOL_DECLS`` 的写声明 → define_command，Phase 2 写治理）。
@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from .commands import build_commands
-from .engine import PaperPilotEngine, make_validator
+from .engine import make_validator
 from .hub import INSTRUCTIONS, MCP_SERVER_NAME, McpHost, build_mcp_server, build_stack
 from .monitor import make_cockpit, paperpilot_summarizer, start_cockpit
 from .tools import build_tool_registry
@@ -25,7 +25,6 @@ __all__ = [
     "INSTRUCTIONS",
     "MCP_SERVER_NAME",
     "McpHost",
-    "PaperPilotEngine",
     "build_commands",
     "build_mcp_server",
     "build_stack",

@@ -247,14 +247,10 @@ def test_param_description_map_drift_fails_loud(tmp_path):
 
 # ---------------------------------------------------------------- E2.1 (缺口1) jobs 长活
 def test_cancelled_pipeline_run_has_no_side_effect(tmp_path):
-    """能红（取消后副作用不继续）：写库前有取消点 ⇒ 已取消的 run 不写简报。"""
-    from mecha.surface import ExecutionContext
+    """每日流水线是 GP 命令；框架不再提供通用 Engine 取消入口。"""
     container, stack = _stack(tmp_path, open_ai=True)
-    ctx = ExecutionContext()
-    ctx.request_cancel()
-    res = stack["engine"].run({}, context=ctx)
-    assert res.get("error", {}).get("kind") == "cancelled"
-    assert not container.repo.briefings(limit=5)       # 未写任何简报
+    assert "run_pipeline" in stack["command_names"]
+    assert "engine" not in stack
 
 
 def _drain_pool(reg):
