@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}{{ draft.title if draft else "线性" }} · PaperPilot{% endblock %}
+{% block content %}
+{% if not draft %}
+  <div class="empty">
+    <h2>这一页还没有草稿</h2>
+    <p>去对话框里说一句想要什么，比如「看看昨天有什么」「随机给我十篇」，AI 会把结果写成草稿。</p>
+  </div>
+{% else %}
+<div class="withside">
+  {% include "sidebar.html" %}
+  <div class="sidecontent">
+  <div class="pagehead">
+    <h1>{{ draft.title }}</h1>
+    <div class="sub">{{ draft.note or "（无备注）" }} · {{ cards | length }} 条 · 更新 {{ draft.updated_at | fmt }}</div>
+  </div>
+  {% set last_group = namespace(v="\u0000") %}
+  {% for item in cards %}
+    {% if item.group and item.group != last_group.v %}
+      {% set last_group.v = item.group %}<h2 class="groupsplit">{{ item.group }}</h2>
+    {% endif %}
+    <article class="card{{ ' dim' if not item.card else '' }}">
+      <div class="title">
+        <a href="/papers/{{ item.paper.arxiv_id }}?next=/">{{ item.paper.title or item.paper.arxiv_id }}</a>
+        {% if not item.card %}<span class="badge warn">无卡</span>{% endif %}
+        {% if item.starred %}<span class="badge star">已收藏</span>{% endif %}
+      </div>
+      <div class="meta">
+        {{ (item.paper.authors or [])[:4] | join(", ") }}{% if (item.paper.authors or []) | length > 4 %} 等{% endif %}
+        · {{ item.paper.primary_category }} · {{ (item.paper.published_at or "")[:10] }}
+      </div>
+      {% if item.why %}<div class="why">为什么：{{ item.why }}</div>{% endif %}
+      {% if item.card %}
+        {% if item.card.tldr %}<div class="tldr">{{ item.card.tldr }}</div>{% endif %}
+        {% if item.card.terms %}<div class="terms">{% for t in item.card.terms %}<span class="chip">{{ t }}</span>{% endfor %}</div>{% endif %}
+      {% else %}
+        <div class="muted">还没建卡：说明这篇只登记了元数据，没人读过摘要。</div>
+      {% endif %}
+      <div class="actions">
+        {# 新标签页打开：/go 与 /pdf 是**站内路由**（先记信号再 303 出去），
+           加 target="_blank" 后那个新标签页才跳走，当前面板页不动。 #}
+        <a class="btn" href="/papers/{{ item.paper.arxiv_id }}/go"
+           target="_blank" rel="noopener">arXiv 原文</a>
+        <a class="btn ghost" href="/papers/{{ item.paper.arxiv_id }}/pdf"
+           target="_blank" rel="noopener">⬇ PDF</a>
+        <form method="post" action="/papers/{{ item.paper.arxiv_id }}/star">
+          <input type="hidden" name="next_url" value="/">
+          <button class="ghost">{{ "取消收藏" if item.starred else "☆ 收藏" }}</button>
+        </form>
+        <form method="post" action="/papers/{{ item.paper.arxiv_id }}/skip">
+          <input type="hidden" name="next_url" value="/">
+          <button class="ghost">✕ 不感兴趣</button>
+        </form>
+      </div>
+    </article>
+  {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+{% block foot %}{{ cards | length }} 条{% endblock %}

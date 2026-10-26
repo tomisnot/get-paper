@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}仪表盘 · PaperPilot{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <h1>仪表盘</h1>
+  <div class="sub">只读。事件流是唯一日志，库规模与扫描记录都从这里推。</div>
+</div>
+
+<div class="stats">
+  <div class="stat"><b>{{ counts.papers }}</b><span>库内论文</span></div>
+  <div class="stat"><b>{{ counts.cards }}</b><span>有卡</span></div>
+  <div class="stat"><b>{{ counts.starred }}</b><span>收藏</span></div>
+  <div class="stat"><b>{{ counts.drafts }}</b><span>草稿</span></div>
+  <div class="stat"><b>{{ counts.events }}</b><span>事件</span></div>
+  <div class="stat"><b>{{ counts.scanned }}</b><span>扫过天数</span></div>
+</div>
+
+<section class="card">
+  <h2>信号漏斗</h2>
+  {% if signals %}
+  <table>
+    {% for row in signals %}<tr><td>{{ row.op }}</td><td class="num">{{ row.count }}</td></tr>{% endfor %}
+  </table>
+  {% else %}<p class="muted">还没有信号。</p>{% endif %}
+</section>
+
+<section class="card">
+  <h2>事件流</h2>
+  <form method="get" action="/dashboard" class="filters">
+    <input name="op" placeholder="op 前缀，如 scan / signal:" value="{{ op }}">
+    <input name="actor" placeholder="ai / human / system" value="{{ actor }}">
+    <button class="ghost">筛</button>
+    <a class="btn ghost" href="/dashboard">清空</a>
+  </form>
+  <table>
+    <tr><th class="num">#</th><th>时间</th><th>谁</th><th>做了什么</th><th>对象</th><th>细节</th></tr>
+    {% for event in events %}
+    <tr>
+      <td class="num">{{ event.seq }}</td>
+      <td class="muted">{{ event.ts | fmt }}</td>
+      <td>{{ event.actor }}</td>
+      <td>{{ event.op }}</td>
+      <td>{{ event.target }}</td>
+      <td class="muted small">{{ event.payload }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}
+{% block foot %}{{ events | length }} 条事件{% endblock %}

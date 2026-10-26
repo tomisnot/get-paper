@@ -1,160 +1,112 @@
 # PaperPilot
 
-人机共用的文献研究工作台：收集 arXiv 论文，组织评审与简报，积累可检索的论文库、阅读笔记和引用图谱。
+本地论文台账 + 兴趣画像 + 能力层。**代码记账，AI 出结果，人提问。**
 
-软件保存材料、研究资产与操作记录，并提供确定性的检索和管理能力。AI 在外部宿主中执行评审、总结和研究判断，人通过本地 Web 工作台阅读、反馈与管理；两侧共享数据和写入治理。
+设计见 [docs/设计-总纲.md](docs/设计-总纲.md)——施工以它为准。
 
-## 主要能力
+它是一台 **mecha 软件**：状态、写权、审计、能力面、监控面由 mecha 承接，
+领域（论文、画像、草稿）由本项目实现。
 
-| 能力 | 内容 |
-|---|---|
-| 收集与简报 | 按研究主题抓取论文、规则过滤、分阶段评审、结构化论文卡和历史简报 |
-| 论文库 | 标题、摘要与总结检索；已读、收藏、跳过和笔记 |
-| 兴趣推荐 | 由主题和行为信号形成画像，生成带来源理由的推荐流 |
-| 引用图谱 | 上下游引用、共引相似、标签、可发布和复用的图视图 |
-| 正文精读 | arXiv HTML 章节与文本块、搜索、带原文锚点的批注和阅读记录 |
-| 记录与治理 | 操作者、理由、前后状态、可逆操作撤销和人类写权控制 |
-| 接入方式 | Web、CLI、自描述能力层与经 mecha 投影的 MCP 工具 |
-
-论文卡、笔记、标签和评审记录在后续工作中持续复用。项目定位见 [开发者指南](docs/开发者指南.md)。
-
-## 安装
-
-Python 3.10+。建议同时检出当前 mecha 源码：
+## 依赖
 
 ```bash
-git clone https://github.com/tomisnot/mecha.git
-git clone https://github.com/tomisnot/get-paper.git
-cd get-paper
 python -m venv .venv
+.venv\Scripts\pip install -e .
+.venv\Scripts\pip install -e "D:\code-nosync\mecha[mcp]"   # 框架（本地仓，含 MCP 传输）
+.venv\Scripts\pip install pytest
 ```
 
-激活环境：Windows PowerShell 使用 `.venv/Scripts/Activate.ps1`，Linux/macOS 使用 `source .venv/bin/activate`。随后执行：
+## 起法
+
+**由 mecha 拉起（正常路径）**
 
 ```bash
-python -m pip install -e "../mecha[mcp]"
-python -m pip install -e ".[dev]"
+python -m mecha --root "D:\code-nosync\Get Paper"
 ```
 
-目录布局不同，请替换 `../mecha`。`.[mecha]` extra 另提供基于框架 `v0.2.0` 的发布依赖；当前开发代码建议与框架源码配套使用。软件入口和受控服务需要 mecha。
+mecha 扫仓根的 `mecha_site.py`，按声明起本软件，然后起它自己的 dsh。
+本软件一个进程里同时是四个面：
 
-## 启动
-
-```bash
-# 本地工作台，同时提供 MCP 与只读监控
-paperpilot
-paperpilot --no-open
-
-# 整站 AI 使用：由 mecha 统一编排软件、dsh 与面板
-python -m mecha --all --root .
-
-# 本软件的服务形态，不启动 AI 宿主
-paperpilot mcp --with-web
-```
-
-Web 默认使用本机地址 `http://127.0.0.1:8080`；以启动输出和实际配置为准。MCP、监控与控制端点通过项目根的端口发现文件接入。
-
-整站 AI 界面需要 PATH 中的 dsh 可执行命令和本仓 `dsh/` 插件资产。插件通过本地 `file:` 引用共享面板；换目录布局时，先将 `dsh/package.json` 的 `@mecha/dsh-panel` 指向所用 mecha 仓的 `mecha/dsh-panel/`，再在 `dsh/` 执行 `npm install` 和 `npm run bundle`。工具聚合与重连由框架负责，项目插件提供研究和监控面板。
-
-## 日常使用
-
-```bash
-paperpilot demo                     # 离线样例，会写入当前数据目录
-paperpilot fetch --days 3            # 收集近期论文
-paperpilot run                      # 人类/调度入口：规则筛选 + 抽取式摘要生成简报
-paperpilot run --force               # 生成新的简报版本
-paperpilot topics                   # 查看研究主题
-paperpilot tools --json             # 查看能力与参数
-paperpilot call search_papers -p query=rydberg
-paperpilot backup                   # 备份数据
-```
-
-主要页面包括推荐流 `/feed`、今日与历史简报、论文库 `/papers`、论文详情、引用图谱 `/network`、操作记录 `/activity` 和设置 `/settings`。
-
-写权默认允许人机共同操作，可在人类设置页或统一启动面板切换。写权变化不要求重启服务；AI 工具面提供查询与业务操作，人类控制面负责切换写权。
-
-## AI 协作流程
-
-AI 可通过 MCP 或能力接口执行研究任务，典型简报流程为：
-
-| 阶段 | 工具 | 用途 |
+| 面 | 端点 | 谁用 |
 |---|---|---|
-| 收集与准备 | `fetch_papers`、`prepare_review` | 获取候选、主题画像和已有材料；支持先粗筛再精评 |
-| 评审 | `submit_review` | 提交逐篇分数、分类、理由与结构化总结 |
-| 定稿 | `finalize_briefing` | 按评审和配额生成并保存简报 |
+| AI 能力面 | MCP streamable HTTP `/mcp`，端口写 `.mcp-port` | dsh |
+| 监控面 | cockpit 只读，端口写 `.cockpit-port` | 面板 |
+| 控制面 | 写权 / 开手动面，端口写 `.control-port` | 框架、面板 |
+| 人面 | Web 工作台 `http://127.0.0.1:8090` | 人 |
 
-总结应与实际读到的材料对应：只有摘要时按摘要判断，取得正文后再做正文精读。正文读取通过章节和文本块定位，批注保留原文锚点。
-
-研究任务还可使用 `read_paper`、`write_summary`、引用同步、批量标签和图视图工具。参数以 `paperpilot tools --json` 或 AI 宿主提供的 schema 为准；[操作指南](.agents/skills/paperpilot/SKILL.md) 说明典型流程。
-
-读接口提供分页或体积说明；必要的评审候选有专门的返回策略。长任务由命令的操作范围统一关联，不另设一套 AI job 工具。
-
-## 配置与数据
-
-仓库提供 [配置示例](config/settings.example.yaml)。未创建 `config/settings.yaml` 时使用示例或代码默认值；个人配置和密钥不随仓发布。
-
-```yaml
-data_dir: data
-lookback_days: 7
-arxiv_categories: [cs.CL, cs.AI, cs.LG]
-
-topics:
-  - name: 大模型推理
-    categories: [cs.CL, cs.AI]
-    keywords: [reasoning, chain-of-thought]
-    exclude_keywords: [survey]
-    quota: 4
-    threshold: 0.6
-
-ai:
-  max_concurrency: 2  # 内容判断通过 DSH/MCP 评审流程进入
-```
-
-主题配置以 YAML 为来源，设置页与 CLI 的修改写回个人配置。论文、阅读态、简报和业务事件保存在本地 SQLite；默认数据目录为 `data/`，可在配置中调整。
-
-软件内部不保存模型客户端、供应商或 API key。确定性基线只负责规则筛选与抽取式摘要；内容判断统一经 mecha 的 MCP 能力面，由外部 AI 操作者完成。账本和能力边界见 [开发者指南](docs/开发者指南.md)。
-
-业务事件保留操作者、理由及前后状态，并与框架审计关联。可逆操作可用 `undo_change` 撤销；入库、引用同步和简报生成等操作的可逆性以实际接口说明为准。
-
-## 架构
-
-```text
-src/paperpilot/
-  capabilities/    协议无关的自描述能力与调用入口
-  domain/          评审、推荐、检索与业务策略
-  infra/           arXiv、SQLite、正文材料与确定性基线
-  mecha_adapter/   受控命令、工具投影、监控与服务接线
-  app/             Web 工作台与 CLI
-config/            配置示例
-dsh/               AI 宿主中的项目面板
-check/ + tests/    结构、业务结果与集成验证
-docs/              定位、规格和设计记录
-```
-
-业务语义留在 PaperPilot，通用治理与连接使用 [mecha](https://github.com/tomisnot/mecha)。同一框架也用于 [Energy Level](https://github.com/tomisnot/energy-level)、[ML Toolbox](https://github.com/tomisnot/ml-toolbox) 和 Tutor。
-
-## 开发与验证
+**手动起**
 
 ```bash
-python -m pytest
-python -m pytest -m integration
-python -m pytest -m ""
-python -m ruff check .
+python -m paperpilot --root "D:\code-nosync\Get Paper" serve
 ```
 
-默认执行离线契约和业务结果，真实 HTTP/MCP 与子进程场景单独选择。`check/` 与 `tests/` 都由 pytest 收集，按改动范围运行；不要求工具数量、技能文本或文档章节与手写名单同步。见 [验证说明](check/README.md)。
+被 mecha 拉起时，工作台会**自动在浏览器里打开**（`mecha_site.py` 的 argv 带 `--open`）：
+等 Web 端口真的在听才开，起不来就不开并出声，不给你一个"无法访问"的标签页。
+手动在终端跑默认**不**开（人就在终端里，复制 URL 即可）；想开加 `--open`，不想开加 `--no-open`。
+端口被占时**不半启动**：先报错退出，而不是工具面起来了、人面没有。
 
-修改项目面板时，在 `dsh/` 执行 `npm test`，检查 TypeScript 与浏览器构建。
+## 命令行
 
-## 当前边界
+```bash
+python -m paperpilot init                    # 装配一遍，打印库路径/写权/工具数
+python -m paperpilot tools                   # AI 能力面清单
+python -m paperpilot call read_status -p '{}'   # 与 AI 走同一条门调一个工具
+```
 
-正文精读目前主要依赖 arXiv HTML，部分论文没有可用正文。引用服务、在线抓取与外部 DSH/MCP 服务可用性会影响对应功能。通用研究问答、语义检索和 BibTeX 导出仍是规划方向；已有批注与正文搜索不等于通用问答系统。
+## 五个页面
 
-## 文档与许可
+| 页面 | 谁写 | 内容 |
+|---|---|---|
+| `/` 线性 | AI 的草稿 | 论文条目按顺序排列，每张卡带一句为什么 |
+| `/network` 网络 | AI 的草稿 | 条目间的关系图 |
+| `/profile` 画像池 | 只读 + 锚点增删 | 三维权重、衰减读数、熵 |
+| `/dashboard` 仪表盘 | 只读 | 事件流、库规模、信号漏斗 |
+| `/settings` 设置 | 人控 | 草稿管理、系统参数、写权 |
 
-- [使用指南](docs/使用指南.md)
-- [开发者指南](docs/开发者指南.md)
-- [历史文档](docs/history/)
-- [AI 操作指南](.agents/skills/paperpilot/SKILL.md)
+叶子页 `/papers/{arxiv_id}` 摊开一篇论文的全部状态。
+**页面上的每个写操作都经命令面**（`stack.invoke_human`），不直写数据库。
 
-许可：[MIT](LICENSE)。
+## 目录
+
+```
+mecha_site.py            站点声明：怎么被 mecha 起起来（数据，不是逻辑）
+src/paperpilot/
+  config.py              配置（默认值在代码里，JSON 只写覆盖）
+  db.py                  SQLite 底座（表、迁移、并发连接）
+  ledger.py              事件账（mecha LogSink 的实现，住在同一个库里）
+  ids.py                 arXiv 编号归一
+  arxiv_client.py        限速 / 重试 / 日历窗 / 翻页到饱和
+  scholar.py             引文（Semantic Scholar）
+  repo.py                数据访问（一处 SQL）
+  scoring.py             特征、权重、衰减、打分、重算
+  drafts.py              草稿校验 + 体检
+  context.py             领域装配
+  mecha_adapter/         mecha 接线层
+    config.py              可写配置 schema + 校验 + 种入 Gate
+    scope.py               作用域与写权
+    queries.py             只读查询（Surface.QUERY）
+    commands.py            有副作用的动作（CommandSpec）
+    tools.py               AI 能力面（读工具直定义，写工具由命令投影）
+    monitor.py             监控摘要 + cockpit
+    stack.py               装配点（assemble → 查询 → 命令 → 投影）
+    hub.py                 进程入口（四个面）
+  web/                   五页 + 叶子页
+scripts/import_legacy.py 一次性数据导入
+tests/                   69 个测试
+```
+
+## 三条硬规则
+
+1. **写必须过门。** 有副作用的动作都是命令，写权检查在任何副作用之前。
+2. **草稿里的每一篇都必须能查到、且写得出「为什么」。** 写不进去就是写不进去。
+3. **体检只报不拦。** `write_draft` 回执带 `no_card` / `recently_shown` / `top_share`，
+   界面上把「无卡」标出来——没读过摘要就推，让它自己露出来。
+
+## 从旧库搬数据
+
+```bash
+python scripts/import_legacy.py --source "D:\path\old.sqlite3" --data-dir data
+```
+
+搬论文、卡、人的状态、笔记、信号账本、引文边；**不搬权重表**——权重由信号重算，
+脚本最后打印新旧画像的 top-10 排序重合度。

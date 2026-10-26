@@ -1,36 +1,19 @@
-"""PaperPilot 的 mecha v2 适配层（Scheme E：commands-centric hybrid）。
+"""PaperPilot 的 mecha 接线层。
 
-把中性的 ``capabilities/`` 连接层能力投影成 mecha 的命令、工具和 MCP
-端点——**领域实现单一来源仍是 capabilities/**，本层只做薄封装，不复制业务逻辑
-（docs/PRINCIPLES.md 信条 9；.qoder/plans 交接文档 §6）。
-
-三份文件的分工（仿 EL ``mecha_v2/``）：
-- ``engine``：GP 自己的流水线协调器 + ``make_validator``（Gate 校验）。
-- ``tools``：``build_tool_registry``（``TOOL_DECLS`` 声明的能力 + set/read_config 等 → 工具面）
-  + 必填项注入来源。
-- ``commands``：``build_commands``（``TOOL_DECLS`` 的写声明 → define_command，Phase 2 写治理）。
-- ``monitor``：``paperpilot_summarizer``（Claim 对账）+ ``start_cockpit``（只读监控端点，Phase 3）。
-- ``hub``：``build_stack``（经 assemble 具名装配点）+ MCP 端点壳。
+分工：
+- ``config``   可写标量配置的单一来源（schema + 校验 + 种入 Gate）
+- ``scope``    作用域与写权
+- ``queries``  只读查询（Surface.QUERY）
+- ``commands`` 有副作用的动作（CommandSpec → CommandRegistry）
+- ``tools``    AI 能力面：读工具直定义，写工具由命令投影（不手抄第二份）
+- ``monitor``  只读监控摘要 + cockpit 端点
+- ``stack``    装配点：把上面这些接成一台 Software
+- ``hub``      进程入口：起 MCP / 监控 / 控制 / Web 四个面
 """
 
 from __future__ import annotations
 
-from .commands import build_commands
-from .engine import make_validator
-from .hub import INSTRUCTIONS, MCP_SERVER_NAME, McpHost, build_mcp_server, build_stack
-from .monitor import make_cockpit, paperpilot_summarizer, start_cockpit
-from .tools import build_tool_registry
+from .hub import main as hub_main
+from .stack import Stack, boot_mode, build_stack
 
-__all__ = [
-    "INSTRUCTIONS",
-    "MCP_SERVER_NAME",
-    "McpHost",
-    "build_commands",
-    "build_mcp_server",
-    "build_stack",
-    "build_tool_registry",
-    "make_cockpit",
-    "make_validator",
-    "paperpilot_summarizer",
-    "start_cockpit",
-]
+__all__ = ["Stack", "boot_mode", "build_stack", "hub_main"]

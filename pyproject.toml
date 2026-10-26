@@ -1,53 +1,19 @@
 [project]
 name = "paperpilot"
 version = "0.1.0"
-description = "arXiv 每日文献情报系统：抓取 → AI 筛选 → AI 结构化总结 → 每日简报（本地 Web）"
-readme = "README.md"
+description = "本地论文台账 + 兴趣画像 + 能力层"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110",
-    "uvicorn[standard]>=0.29",
+    "uvicorn>=0.27",
     "jinja2>=3.1",
-    "sqlalchemy>=2.0",
     "httpx>=0.27",
-    "feedparser>=6.0",
-    "pydantic>=2.6",
-    "pyyaml>=6.0",
-    "typer>=0.12",
     "python-multipart>=0.0.9",
-    "mcp>=2,<3",
-    # 精读体系（infra/paperhtml.py）：arXiv HTML 正文的解析与锚定。
-    # 为什么进**核心**而不是 extra：它是"精读"这条主线的地基（读块、算字符区间、消毒改写），
-    # 纯 wheel、4MB、无编译；与 mecha 那种"URL 解析不了、必须可选"的情形不同。
-    "lxml>=5.0",
+    "mcp>=2.3",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "ruff>=0.4",
-]
-# mecha v2 接入（src/paperpilot/mecha_adapter/）：**框架不进 PyPI** ⇒ 走直接 URL（钉 v0.2.0 tag）。
-# ⚠ 为什么放 extra 而不是核心 dependencies（**实测决定的**，不是偏好）：
-#   · 统一入口（`paperpilot` / `paperpilot ai`）**需要** mecha —— `cli.py` 在模块级 import 它；
-#     而**纯 Web 的 GUI 本体不依赖** mecha（`app.web` 能 import、无栈 `GET /` = 200、写路径 = 303）。
-#   · 但如果把 URL 写进**核心** dependencies：pip **不认为**本机那份 editable 满足该 URL 需求
-#     ⇒ `pip install -e .` 会**直接去 clone**（实测：今天该 URL 只能 clone 到**空仓**、找不到
-#     `v0.2.0` tag ⇒ exit 1）⇒ **会破坏本机开发**（本机开发走 editable 兄弟目录）。
-#   · 放 extra ⇒ 本机 `pip install -e .` / `.[dev]` **不解析它**（裸名需求是
-#     `Requirement already satisfied`、不触发 clone）⇒ 本机零影响；他机用 `.[dev,mecha]` 一条命令装全。
-#   ⇒ 等上游仓建好、tag 可解析后，把它提进 core 只是"删两行加一行"（**可逆**）。
-# 本机开发（两仓是同级目录，例如框架仓与本仓并排放）：editable 装一次即可，
-#   例：pip install -e "../mecha[mcp]"（**不要**把这个本机路径写进本文件：会污染发布物）。
-# ⚠ extra 只列 mecha 0.2.0 **实际提供**的 `mcp`（`mcp`/`uvicorn` 都挂在它下面）。
-#   `cockpit` 曾经写在这里，但它**不是** mecha 的 extra（pip 只警告 `does not provide the extra
-#   'cockpit'`）——`mecha.cockpit` 是**核心模块**、不是 extra ⇒ **已删**（"声明了却没人消费"正是本仓在治的病）。
-mecha = [
-    "mecha[mcp] @ git+https://github.com/tomisnot/mecha@v0.2.0",
-]
-
-[project.scripts]
-paperpilot = "paperpilot.main:app"
+dev = ["pytest>=8"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -57,22 +23,8 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-paperpilot = ["app/templates/*.html", "data/*.xml"]
+paperpilot = ["web/templates/*.html", "web/static/*"]
 
 [tool.pytest.ini_options]
-# check/ 与 tests/ 都按实际契约与结果运行，名称不赋予额外文档/红证义务。
-testpaths = ["check", "tests"]
-addopts = "-q -m 'not integration'"
-markers = ["integration: real subprocess or HTTP/MCP service lifecycle"]
-
-[tool.ruff]
-line-length = 100
-target-version = "py310"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
-ignore = ["E501"]
-
-[tool.ruff.lint.per-file-ignores]
-# typer/click 的 Option/Argument 本就要写在参数默认位上（B008 误报）
-"src/paperpilot/app/cli.py" = ["B008"]
+testpaths = ["tests"]
+addopts = "-q"

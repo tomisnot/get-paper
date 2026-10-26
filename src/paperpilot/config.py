@@ -1,238 +1,83 @@
-"""配置加载：YAML 为唯一事实源，支持环境变量覆盖少量键。
+"""全局配置：dataclass 给默认值，JSON 只写覆盖项。
 
-设计决策（见 DESIGN.md §9）：
-- topics 只存在于 config/settings.yaml，运行期同步进 SQLite topics 表仅用于打分外键，
-  避免「数据库一份配置、文件一份配置」漂移。
-- data_dir 相对路径基于配置文件所在项目根目录，保证从任何 cwd 启动都写到同一处。
+为什么不是 YAML/TOML：配置项很少且都需要类型，默认值住在代码里最不容易漂；
+JSON 是标准库能读的，覆盖文件可以只有三行。
 """
 
 from __future__ import annotations
 
-import os
+import json
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-import yaml
-from pydantic import BaseModel, Field
-
-# 包内回退配置（开发时从任意目录启动也能找到项目根）
-_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
-
-
-class TopicCfg(BaseModel):
-    """一个研究主题 = **往画像池注入的一组带权重词条**（不再是"规则表"）。
-
-    ⚠ 2026-09-30 语义转向（用户裁决）：主题曾经是一套规则（分类白名单 + 排除词 + 每主题
-    配额/阈值），配好后只**一次性播种**进画像 ⇒ 之后改主题画像不动，成了"填了没用"的死配置。
-    现在主题退化为**种子包**：它列出的 keywords/authors/categories 会被**幂等 upsert** 进
-    画像池（带上 `weight` 作为基线权重、带 `topic:<名>` 溯源），日报线与推荐流**都吃画像**。
-    ⇒ 改主题＝改池子里的权重，立刻生效；删主题＝按溯源精确撤权（学到的东西不误伤）。
-
-    ``quota`` / ``threshold`` **已弃用**：保留只为读得懂旧配置文件，不再参与任何选择。
-    """
-
-    name: str
-    description: str = ""
-    keywords: list[str] = Field(default_factory=list)
-    exclude_keywords: list[str] = Field(default_factory=list)
-    categories: list[str] = Field(default_factory=list)
-    authors: list[str] = Field(default_factory=list)
-    #: 注入画像池的基线权重（三条词条都按它给先验）。0.5 与旧 `seed` 系数同档。
-    weight: float = 0.5
-    #: @deprecated 不再参与候选/门/配额；见类文档。
-    quota: int = 4
-    #: @deprecated 同上。
-    threshold: float = 0.6
-    enabled: bool = True
+#: 信号权重：把一个动作折算成多少兴趣增量。可改，改完 recompute 即生效。
+#: 数值沿用这人多年的口味标定：下载 > 收藏 > 已读 > 出站 > 浏览。
+DEFAULT_SIGNAL_WEIGHTS: dict[str, float] = {
+    "view": 0.3,
+    "outbound": 0.5,
+    "download": 1.0,
+    "read": 0.6,
+    "star": 0.8,
+    "skip": -1.0,
+    "uninterested": -1.5,
+}
 
 
-class ScoringCfg(BaseModel):
-    """简报选择参数。
+@dataclass
+class Settings:
+    # 路径
+    data_dir: str = "data"
+    db_name: str = "paperpilot.sqlite3"
 
-    ⚠ 2026-09-30：打分尺度换成"**三维占比平均**"（画像池方案 C）后，绝对值整体变小
-    （实测最高 0.25、中位 0.07）⇒ **任何绝对阈值都会要么全收要么全丢**。所以：
+    # arXiv 客户端
+    arxiv_min_interval: float = 3.0
+    arxiv_timeout: float = 30.0
+    arxiv_retries: int = 3
+    page_size: int = 50
+    max_pages_per_day: int = 4
+    max_requests: int = 120
 
-    * `threshold` **已弃用**（默认 0）：选择改走**前 N 篇**（`max_papers` + `must_read_cap`
-      + `max_per_author`）。留着这个字段只为读得懂老配置。
-    * `review_floor` 同样归 0：评审包的"下限"由 `_MAX_REVIEW_CANDIDATES`（前 N）承担。
-    * `quota_per_topic`：主题池化后没有"每主题"了，内部借它当总配额。
-    """
+    # Semantic Scholar（引文唯一来源；无 key 时限速约 1 次/秒）
+    scholar_min_interval: float = 1.1
 
-    threshold: float = 0.0          # @deprecated 选择已改走"前 N"
-    quota_per_topic: int = 4        # @deprecated 语义已改为"总配额"
-    max_papers: int = 12
-    max_per_author: int = 1
-    must_read_cap: int = 3
-    review_floor: float = 0.0       # @deprecated 由"前 N"承担
+    # 兴趣
+    half_life_days: float = 30.0
+    signal_weights: dict = field(default_factory=lambda: dict(DEFAULT_SIGNAL_WEIGHTS))
 
+    # 排序与抽样
+    default_regions_n: int = 5
+    score_floor: float = 0.10
 
-class GraphCfg(BaseModel):
-    """图底座呈现参数：**视图未覆盖时**的缺省值（视图 spec 优先，见 GraphView）。
+    # 草稿体检
+    recent_draft_days: int = 7
 
-    分工：/settings 的表单改这里（人侧持久化）；AI 侧用 set_graph_view 发布视图
-    （落 graph_views 表，即时生效）——两条路互不覆盖，视图优先。
-    """
-
-    max_label_len: int = 18
-    layer_gap: int = 130
-    node_gap: int = 90
-    size_by: str = "degree"          # degree|weight|flat
-    color_by: str = "auto"           # auto|kind|in_lib|weight|tag|group
-    sort_within: str = "weight"      # weight|year（用户：不一定按时间）
-    max_nodes: int = 90
-    max_edges: int = 400             # 边按权重采样上限（实测 684 条全画=蜘蛛网）
-    focus_depth: int = 2             # 单根聚焦缺省深度（/network?root=…&depth= 可覆盖）
-    root_default: str = ""           # 无参数打开 /network 时的聚焦根（空＝全库视角）
-    layout: str = "layer"            # layer|timeline（年代编排）
-    sides: str = "both"              # both|upstream|downstream（有向分层：上游在上/下游在下）
-    in_lib_only: bool = False        # 图上只放库内论文（缺的用 materialize_view 入库）
-    group_by: str = "none"           # none|tag|group（泳道分组）
-    group_quota: int = 0             # 每组保底篇数（0=不保底）
-    label_mode: str = "auto"         # auto|always|hover（auto＝布点数少时常显）
-    label_style: str = "title"       # title|id
-    label_auto_max: int = 90         # auto 模式的"常显"阈值（布点数；默认视图 75 点即可见）
-    badge: bool = True               # 标签角标（文字表达，不只靠颜色）
-    arrow_size: int = 13             # 箭头像素尺寸（userSpaceOnUse，不随线宽缩）
-
-
-class AICfg(BaseModel):
-    """AI 协作参数。
-
-    内容判断只经 DSH/MCP 的分段评审流程；这里保留并发度供本地摘要组装使用，
-    不再保存模型、供应商、API key 或直连地址。
-    """
-    max_concurrency: int = 2
-
-
-class NotifyCfg(BaseModel):
-    enabled: bool = False
-    webhook_url: str = ""
-
-
-class WebCfg(BaseModel):
+    # 服务（8080 被另装的旧实例占着，这一版默认换端口，避免撞车）
     host: str = "127.0.0.1"
-    port: int = 8080
-
-
-class MCPCfg(BaseModel):
-    """MCP 语义通道（mecha 投影；DSH 等 harness 的接入点，仅 localhost）。
-
-    实际端口由 mecha ``McpEndpoint`` 自动选（port=0）并写 ``.mcp-port`` 供发现；
-    ``host`` 供绑定地址，``enabled`` 控制 AI 模式是否提醒。``port`` 为兼容保留（当前不钉端口）。
-    """
-
-    enabled: bool = True
-    host: str = "127.0.0.1"
-    port: int = 8780
-
-
-class Settings(BaseModel):
-    data_dir: Path = Path("data")
-    lookback_days: int = 7
-    arxiv_categories: list[str] = Field(default_factory=lambda: ["cs.CL", "cs.AI", "cs.LG"])
-    max_results_per_query: int = 50
-    # W6（抓取去噪）：全局兜底查询是否叠加"各主题关键词并集"过滤；
-    # 关掉（False）则退回"分类 OR 取最新"的宽进模式（也可靠 topic 查询兼容主题无 keywords）。
-    fetch_global_fallback: bool = True
-    scoring: ScoringCfg = Field(default_factory=ScoringCfg)
-    graph: GraphCfg = Field(default_factory=GraphCfg)
-    ai: AICfg = Field(default_factory=AICfg)
-    notify: NotifyCfg = Field(default_factory=NotifyCfg)
-    web: WebCfg = Field(default_factory=WebCfg)
-    mcp: MCPCfg = Field(default_factory=MCPCfg)
-    topics: list[TopicCfg] = Field(default_factory=list)
-    # 加载来源（不写入 yaml）
-    config_path: Path | None = None
+    port: int = 8090
 
     @property
     def db_path(self) -> Path:
-        return self.data_dir / "paperpilot.sqlite3"
+        return Path(self.data_dir) / self.db_name
 
-    @property
-    def cache_dir(self) -> Path:
-        return self.data_dir / "cache"
-
-    def ensure_dirs(self) -> None:
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        (self.data_dir / "logs").mkdir(parents=True, exist_ok=True)
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
-def discover_config() -> Path | None:
-    """按优先级找配置文件：--config 显式传入 > 环境变量 > cwd > 包所在项目根。"""
-    env = os.environ.get("PAPERPILOT_CONFIG")
-    if env:
-        return Path(env)
-    for candidate in (Path("config/settings.yaml"), _PACKAGE_ROOT / "config/settings.yaml"):
-        if candidate.exists():
-            return candidate
-    return None
-
-
-def discover_example() -> Path | None:
-    """找**发布版示例配置** `config/settings.example.yaml`（真配置缺失时的回落）。
-
-    ⚠ 为什么要有这个：`settings.yaml` **不进仓**（开源发布的是示例；见 `.gitignore`）
-    ⇒ 陌生人 clone 下来必须**仍有可用配置**，否则"能跑"就成了空话。
-    """
-    for candidate in (Path("config/settings.example.yaml"),
-                      _PACKAGE_ROOT / "config/settings.example.yaml"):
-        if candidate.exists():
-            return candidate
-    return None
-
-
-def load_settings(path: Path | str | None = None) -> Settings:
-    """读配置。**回落链**：显式 `path` > 环境变量 > cwd/项目根 `settings.yaml` > 示例 > 代码内默认值。
-
-    ⚠ 两条不变量：
-    * **示例不是真配置**：回落到示例时 `config_path` 记 **None** ⇒ 设置页保存时**不会写回示例**
-      （否则 `save_settings` 会改掉发布物），而是按默认目标写我们自己的 `config/settings.yaml`；
-    * **显式给的路径不被示例顶替**（显式说去哪儿就去哪儿，哪怕那文件还不存在）。
-    """
-    explicit = Path(path) if path else None
-    cfg_path = explicit or discover_config()
-    real_path = cfg_path                     # 真配置（显式给的 / 发现到的）就是写回目标
-    if explicit is None and (cfg_path is None or not cfg_path.exists()):
-        example = discover_example()
-        if example is not None:
-            cfg_path = example
-        real_path = None                     # 示例不是真配置 ⇒ 不往它里面写回
-        # ⚠ 这里**只**在"回落示例"时把 real_path 清成 None：正常发现到真配置时必须保持
-        # `cfg_path`（我第一版写成 `real_path = explicit` ⇒ 正常路径也变 None ⇒ 保存会按
-        # cwd 相对默认目标写、而非发现到的那个文件；判据
-        # `test_discovered_real_config_is_recorded_as_config_path` 钉住这一点）。
-
-    data: dict = {}
-    if cfg_path and cfg_path.exists():
-        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    if "PAPERPILOT_DATA_DIR" in os.environ:
-        data.setdefault("data_dir", os.environ["PAPERPILOT_DATA_DIR"])
-
-    settings = Settings(**data)
-    settings.config_path = real_path
-    _resolve_data_dir(settings, cfg_path)
-    settings.ensure_dirs()
+def load_settings(path: str | Path | None = None) -> Settings:
+    """读 settings.json（若有），只覆盖认识的键。"""
+    settings = Settings()
+    if path is None:
+        return settings
+    path = Path(path)
+    if not path.exists():
+        return settings
+    raw = json.loads(path.read_text(encoding="utf-8") or "{}")
+    known = {f.name for f in fields(Settings)}
+    for key, value in raw.items():
+        if key in known:
+            setattr(settings, key, value)
     return settings
 
 
-def _resolve_data_dir(settings: Settings, cfg_path: Path | None) -> None:
-    """相对 data_dir 基于项目根（配置文件所在目录的上一级）。"""
-    if not settings.data_dir.is_absolute():
-        root = cfg_path.parent.parent if cfg_path else Path.cwd()
-        settings.data_dir = (root / settings.data_dir).resolve()
-
-
 def dump_settings(settings: Settings) -> str:
-    """把配置写回 YAML（设置页保存用）。"""
-    payload = settings.model_dump(
-        exclude={"config_path", "data_dir"}, exclude_none=True
-    )
-    payload["data_dir"] = str(settings.data_dir)
-    return yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
-
-
-def save_settings(settings: Settings, path: Path | str | None = None) -> Path:
-    target = Path(path) if path else (settings.config_path or Path("config/settings.yaml"))
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(dump_settings(settings), encoding="utf-8")
-    return target
+    return json.dumps(settings.to_dict(), ensure_ascii=False, indent=2)

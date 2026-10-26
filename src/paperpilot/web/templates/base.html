@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}PaperPilot{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css?v=20261025a">
+</head>
+<body>
+<header>
+  <a class="brand" href="/">PaperPilot</a>
+  <nav>
+    {% for item in nav %}<a class="{{ 'on' if item.active else '' }}" href="{{ item.href }}">{{ item.label }}</a>{% endfor %}
+  </nav>
+</header>
+<main>
+{% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
+{% block content %}{% endblock %}
+</main>
+<footer>库 {% block foot %}{% endblock %}</footer>
+</body>
+</html>

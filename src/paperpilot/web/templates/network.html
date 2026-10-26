@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}{{ draft.title if draft else "网络" }} · PaperPilot{% endblock %}
+{% block content %}
+{% if not draft %}
+  <div class="empty">
+    <h2>这一页还没有草稿</h2>
+    <p>在对话框里说一句，比如「这篇的后续工作」「这个方向的谱系」，AI 会把它画成网络草稿。</p>
+  </div>
+{% elif graph.error %}
+  <div class="empty">
+    <h2>画不出来</h2>
+    <p>{{ graph.error }}</p>
+    <p>布局引擎在仓内 <code>vendor/graphviz/</code>：跑一次 <code>scripts/fetch_graphviz.ps1</code> 就有了。</p>
+  </div>
+{% else %}
+<div class="withside">
+  {% include "sidebar.html" %}
+  <div class="sidecontent">
+    <div class="pagehead">
+      <h1>{{ draft.title }}</h1>
+      <div class="sub">{{ draft.note or "（无备注）" }} · {{ graph.nodes | length }} 元素 · {{ graph.edges | length }} 条连线 · 更新 {{ draft.updated_at | fmt }}</div>
+    </div>
+    <div class="canvas">
+      <svg viewBox="0 0 {{ graph.width }} {{ graph.height }}" width="{{ graph.width }}" height="{{ graph.height }}">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                  markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8" />
+          </marker>
+        </defs>
+        {% for frame in graph.frames %}
+          <g class="frame">
+            <rect x="{{ frame.x0 }}" y="{{ frame.y0 }}" width="{{ frame.x1 - frame.x0 }}"
+                  height="{{ frame.y1 - frame.y0 }}" rx="10"
+                  style="{% if frame.fill %}fill:{{ frame.fill }};{% endif %}{% if frame.color %}stroke:{{ frame.color }};{% endif %}" />
+            <text class="framelabel" x="{{ frame.x0 + 12 }}" y="{{ frame.y0 + 17 }}">{{ frame.label }}</text>
+          </g>
+        {% endfor %}
+        {% for edge in graph.edges %}
+          <path d="{{ edge.d }}" class="edge" marker-end="url(#arrow)" />
+          {% if edge.label %}<text class="edgelabel" x="{{ edge.lx }}" y="{{ edge.ly }}">{{ edge.label }}</text>{% endif %}
+        {% endfor %}
+        {% for node in graph.nodes %}
+          {% if node.link %}<a href="{{ node.link }}?next=/network">{% else %}<g>{% endif %}
+            {% if node.shape in ["plaintext", "none"] %}
+            {% elif node.shape in ["ellipse", "circle", "oval"] %}
+              <ellipse cx="{{ node.x }}" cy="{{ node.y }}" rx="{{ node.w / 2 }}" ry="{{ node.h / 2 }}"
+                       class="shape" style="fill:{{ node.fill or '#ffffff' }};{% if node.color %}stroke:{{ node.color }};{% endif %}" />
+            {% else %}
+              <rect x="{{ node.x - node.w / 2 }}" y="{{ node.y - node.h / 2 }}"
+                    width="{{ node.w }}" height="{{ node.h }}" rx="7"
+                    class="shape{% if node.kind == 'note' %} note{% endif %}{% if node.kind == 'group' %} group{% endif %}"
+                    style="{% if node.fill %}fill:{{ node.fill }};{% endif %}{% if node.color %}stroke:{{ node.color }};{% endif %}" />
+            {% endif %}
+            {% for line in node.lines %}
+              <text x="{{ node.x }}"
+                    y="{{ node.y + loop.index0 * 16 - (node.lines | length - 1) * 8 + 4 }}"
+                    class="nodelabel{% if node.kind == 'group' %} group{% endif %}">{{ line }}</text>
+            {% endfor %}
+          {% if node.link %}</a>{% else %}</g>{% endif %}
+        {% endfor %}
+      </svg>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+{% block foot %}{{ graph.edges | length }} 条关系{% endblock %}

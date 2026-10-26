@@ -1,136 +1,47 @@
-"""pytest 公共 fixtures。"""
-
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 
-from paperpilot.config import AICfg, ScoringCfg, Settings, TopicCfg
-from paperpilot.domain.pipeline import DailyPipelineService
-from paperpilot.infra.ai import BaselineRanker, BaselineSummarizer
-from paperpilot.infra.arxiv import parse_atom
-from paperpilot.infra.db import init_db, make_engine, make_session_factory
-from paperpilot.infra.fts import PaperIndex
-from paperpilot.infra.render import MarkdownBriefRenderer
-from paperpilot.infra.repo import PaperRepository
-
-SAMPLE_XML = (
-    Path(__file__).resolve().parents[1]
-    / "src"
-    / "paperpilot"
-    / "data"
-    / "sample_arxiv.xml"
-)
-
-
-def make_settings(data_dir: Path) -> Settings:
-    settings = Settings(
-        data_dir=data_dir,
-        lookback_days=30,
-        topics=[
-            TopicCfg(
-                name="推理与 Test-Time Compute",
-                categories=["cs.CL", "cs.AI"],
-                keywords=[
-                    "reasoning",
-                    "chain-of-thought",
-                    "test-time compute",
-                    "process reward",
-                    "inference-time scaling",
-                    "self-consistency",
-                ],
-                exclude_keywords=["survey"],
-                quota=2,
-                threshold=0.5,
-            ),
-            TopicCfg(
-                name="RAG 与长上下文",
-                categories=["cs.CL", "cs.IR"],
-                keywords=[
-                    "retrieval-augmented",
-                    "dense retrieval",
-                    "knowledge base",
-                    "long context",
-                ],
-                exclude_keywords=["survey"],
-                quota=2,
-                threshold=0.5,
-            ),
-            TopicCfg(
-                name="高效微调与推理",
-                categories=["cs.LG", "cs.CL"],
-                keywords=[
-                    "LoRA",
-                    "quantization",
-                    "KV cache",
-                    "efficient inference",
-                    "speculative decoding",
-                ],
-                exclude_keywords=["workshop"],
-                quota=2,
-                threshold=0.5,
-            ),
-        ],
-        scoring=ScoringCfg(
-            threshold=0.5, quota_per_topic=2, max_papers=8, max_per_author=1, must_read_cap=3,
-            # W4 评审下限：基线套件不随新键漂移（floor 行为在 test_practical_w.py 专测）
-            review_floor=0.0,
-        ),
-        ai=AICfg(),
-    )
-    # 测试环境：配置写回临时目录，不碰真实 config/settings.yaml
-    settings.config_path = data_dir.parent / "settings.yaml"
-    return settings
+from paperpilot.config import Settings
+from paperpilot.context import build_context
+from paperpilot.mecha_adapter.stack import build_stack
 
 
 @pytest.fixture
-def sample_papers():
-    """内置样例 Atom 解析结果（不联网）。"""
-    return parse_atom(SAMPLE_XML.read_text(encoding="utf-8"))
+def ctx(tmp_path):
+    settings = Settings(data_dir=str(tmp_path))
+    context = build_context(settings=settings)
+    yield context
+    context.close()
 
 
 @pytest.fixture
-def settings(tmp_path) -> Settings:
-    return make_settings(tmp_path / "data")
+def stack(ctx, tmp_path):
+    value = build_stack(ctx, root=tmp_path / "root")
+    yield value
+    value.close()
+
+
+def seed_paper(repo, arxiv_id: str, *, title: str = "", categories=None, authors=None,
+               published: str = "2026-10-01 00:00:00", found_by: str = "test") -> str:
+    categories = categories or ["quant-ph"]
+    repo.upsert_papers([{
+        "arxiv_id": arxiv_id,
+        "title": title or f"Paper {arxiv_id}",
+        "abstract": "abstract text",
+        "authors": authors or ["Alice"],
+        "categories": categories,
+        "primary_category": categories[0],
+        "published_at": published,
+        "updated_at": published,
+        "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}",
+        "abs_url": f"https://arxiv.org/abs/{arxiv_id}",
+    }], found_by=found_by)
+    return arxiv_id
 
 
 @pytest.fixture
-def repo(tmp_path):
-    engine = make_engine(tmp_path / "test.sqlite3")
-    init_db(engine)
-    index = PaperIndex(engine)
-    return PaperRepository(make_session_factory(engine), index=index)
-
-
-@pytest.fixture
-def pipeline(settings, repo) -> DailyPipelineService:
-    return DailyPipelineService(
-        repo,
-        settings=settings,
-        ranker=BaselineRanker(),
-        summarizer=BaselineSummarizer(),
-        renderer=MarkdownBriefRenderer(),
-        ai_provider="baseline",
-    )
-
-
-@pytest.fixture
-def loaded_repo(repo, sample_papers):
-    repo.sync_topics(make_settings(_repo_db_dir(repo)).topics)
-    repo.upsert_papers(sample_papers)
-    return repo
-
-
-def _repo_db_dir(repo) -> Path:
-    """从 repo 反推 sqlite 所在目录（仅测试辅助）。"""
-    url = str(repo.sf.kw["bind"].url)
-    return Path(url.replace("sqlite:///", "")).parent
-
-
-@pytest.fixture
-def container(settings):
-    """完整 DI 容器（确定性基线、tmp 数据目录）——能力层/CLI/Web 测试用。"""
-    from paperpilot.app.container import build_container
-
-    return build_container(settings)
+def paper(ctx):
+    def _make(arxiv_id: str = "2610.00001", **kwargs):
+        return seed_paper(ctx.repo, arxiv_id, **kwargs)
+    return _make

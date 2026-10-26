@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}{{ paper.title or paper.arxiv_id }} · PaperPilot{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <h1>{{ paper.title or paper.arxiv_id }}</h1>
+  <div class="sub">
+    {{ paper.arxiv_id }}{% if paper.version %} (v{{ paper.version }}){% endif %}
+    · {{ (paper.authors or []) | join(", ") if paper.authors else "未知作者" }}
+    · 发布 {{ (paper.published_at or "")[:10] }}
+    {% for category in paper.categories %}<span class="chip">{{ category }}</span>{% endfor %}
+  </div>
+</div>
+
+<div class="actions">
+  {# 与卡片一致：新标签页打开，当前页不动 #}
+  <a class="btn" href="/papers/{{ paper.arxiv_id }}/go"
+     target="_blank" rel="noopener">arXiv 原文</a>
+  <a class="btn ghost" href="/papers/{{ paper.arxiv_id }}/pdf"
+     target="_blank" rel="noopener">⬇ PDF</a>
+  <form method="post" action="/papers/{{ paper.arxiv_id }}/star">
+    <input type="hidden" name="next_url" value="/papers/{{ paper.arxiv_id }}">
+    <button class="ghost">{{ "取消收藏" if paper.reading.starred else "☆ 收藏" }}</button>
+  </form>
+  <form method="post" action="/papers/{{ paper.arxiv_id }}/skip">
+    <input type="hidden" name="next_url" value="/papers/{{ paper.arxiv_id }}">
+    <button class="ghost">不感兴趣</button>
+  </form>
+</div>
+
+<div class="grid">
+  <section class="card">
+    <h2>AI 卡{% if not paper.has_card %}<span class="badge warn">无卡</span>{% endif %}</h2>
+    {% if paper.card %}
+      {% if paper.card.tldr %}<div class="tldr">{{ paper.card.tldr }}</div>{% endif %}
+      {% for label, key in [("问题", "problem"), ("方法", "method"), ("结论", "results"), ("贡献", "novelty")] %}
+        {% if paper.card[key] %}<div class="kv"><b>{{ label }}</b>{{ paper.card[key] }}</div>{% endif %}
+      {% endfor %}
+      {% if paper.card.terms %}<div class="terms">{% for term in paper.card.terms %}<span class="chip">{{ term }}</span>{% endfor %}</div>{% endif %}
+      <div class="muted small">写于 {{ paper.card.written_at | fmt }} · {{ paper.card.model }}</div>
+    {% else %}
+      <p class="muted">这篇还没建卡。在对话框里说「给 {{ paper.arxiv_id }} 建卡」，AI 读完摘要会写一份。</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>状态</h2>
+    <table>
+      <tr><th>发现方式</th><td>{{ paper.found_by or "-" }}</td></tr>
+      <tr><th>首次进库</th><td>{{ paper.first_seen_at | fmt }}</td></tr>
+      <tr><th>收藏</th><td>{{ "是" if paper.reading.starred else "否" }}</td></tr>
+      <tr><th>跳过</th><td>{{ "是" if paper.reading.skipped else "否" }}</td></tr>
+      <tr><th>笔记</th><td>{{ paper.notes_count }} 条</td></tr>
+      <tr><th>批注</th><td>{{ paper.marks_count }} 条</td></tr>
+      <tr><th>进过草稿</th><td>
+        {% if paper.in_drafts %}
+          {% for draft in paper.in_drafts %}<span class="chip">{{ draft.title }}</span>{% endfor %}
+        {% else %}-{% endif %}
+      </td></tr>
+    </table>
+  </section>
+</div>
+
+<section class="card">
+  <h2>摘要</h2>
+  <p class="abstract">{{ paper.abstract }}</p>
+</section>
+
+{% if notes %}
+<section class="card">
+  <h2>笔记</h2>
+  {% for note in notes %}
+    <div class="kv"><div class="muted small">{{ note.created_at | fmt }}</div>{{ note.content }}</div>
+  {% endfor %}
+</section>
+{% endif %}
+{% endblock %}
+{% block foot %}{{ paper.arxiv_id }}{% endblock %}

@@ -1,542 +1,630 @@
-"""PaperPilot 的写治理命令面（Phase 2）：论文库异构写 → mecha 命令。
+"""有副作用的动作：每条一个 `CommandSpec`，经 CommandRegistry 统一执行。
 
-Scheme E 的核心（交接文档 §6）：关系型论文库的异构写塞不进 mecha 的 KV History，
-但它们仍可被**门治理 + cockpit 看见**——办法是把每个写能力注册成
-``define_command(side_effect=True)``：
-
-- handler 调 ``capabilities.invoke``（写 repo + repo.events 供 undo，域数据/undo 仍留 repo）；
-- 命令面把 ``command.<name>`` + 不透明 ``result_ref`` 审计进 mecha History（操作者审计面）；
-- 两份 journal 靠 ``result_ref``（arxiv_id/note_id/date/run_id…）互引，非 split-brain。
-
-⭐ **写权前置检查现在由框架做（2026-09-26 起）**：本条曾是 n=3 报告的**发现 7**——
-``CommandRegistry.invoke`` 原先**跑完 handler 才**做 gate 审计，而 PaperPilot 的域写发生在
-handler 内（``capabilities.invoke`` 直写 SQLite）⇒ LOCKED 态下**域写先落地、审计才失败**。
-当时项目在 handler 第一步手写 ``authority.gate(channel.side)`` 自救；**框架已把检查前置**
-（`Gate.check` 与 `Gate.set` 共用同一份判定，``invoke`` 在调 handler 之前就查）⇒
-**那份手写闸已删**（留着就是"同一事实两个守卫"）。归因也改成**声明式**：命令声明
-``wants_channel=True`` ⇒ handler 直接收本次的 ``channel=``（不再用 contextvar 偷渡）。
-
-⭐ **读侧的声明也住本模块**（2026-09-30）：`build_read_command` 把一条只读能力声明变成一条
-**只读命令声明**（`CommandSpec`），但**只当投影源、不进 `sw.commands`**。原因见该函数的
-docstring：本模块这个面是**写治理面**，"**每一条都是写命令**"（要通道 / 要 reason / 要非零
-预估）是它的不变式、且被两条冻结判据逐条钉着；读命令进那个面**只为投影**、却会让那两条
-不变式变成假的 ⇒ 与其改判据，不如让读声明**诚实地不进这个面**。
+为什么写在这里而不是工具里：命令是**受治理的动作**（写权、作用域、参数校验、
+operation_id、审计），工具只是它的投影。写权检查发生在任何副作用之前，
+所以域写（SQLite）根本不会在无权时发生。
 """
 
 from __future__ import annotations
 
-from mecha.authority import READ_AUTHORITY_TOOL
-from mecha.commands import CommandResult, CommandSpec, define_command
-from mecha.surface import ExecutionContext
+import json
+from datetime import datetime, timedelta
 
-from .. import capabilities
-from ..domain.pipeline import pipeline_config_override
-from .engine import gate_scoring_override
-from .tools import TOOL_DECLS, ToolDecl, _cap_params, envelope_to_error
+from mecha.commands import CommandResult, define_command
+from mecha.errors import MechaError
+from mecha.operations import current_operation
 
-#: 写权被拒的失败档（框架 ``Authority.gate`` 的两个 kind）。
-_WRITE_DENIED_KINDS = ("authority_locked", "authority_mode_mismatch")
+from .. import drafts as draft_lib
+from .. import scoring
+from ..arxiv_client import ArxivError
+from ..context import Context
+from ..ids import base_id
+from . import config as config_mod
+from .args import command_handler as _handler_adapter
+from .params import describe
 
 
-def _point_denial_to_read_authority(res: dict) -> dict:
-    """写权被拒时，把 hint/suggest 指到那个**只读自省工具**（现在是框架的 `read_write_authority`）。
+def _actor() -> str:
+    """这次调用的操作者（来自框架的操作范围，不靠参数、不靠猜）。"""
+    op = current_operation()
+    return op.actor if op is not None and op.actor else "ai"
 
-    为什么这**不是**"手写闸"：**判定完全是框架的**（``invoke`` 在调 handler 之前
-    ``gate.check(channel)``），本项目只补一件框架不知道的事——**人从哪个入口开闸**
-    （N5 的"先查后写"：被拒时告诉 AI 去哪儿看当前写权模式与 how_to_open）。
-    这段文字原先写在 **13 个 handler** 的 ``try/except`` 里，跟着手写前置闸一起收进
-    **唯一入口**（13 份变 1 份；框架的原始 ``suggest`` 也折进 hint，不丢信息）。
 
-    ⚠ 名字来自框架的 ``READ_AUTHORITY_TOOL``（**不手抄**）：那个工具的实现已上提进框架，
-    项目侧再写一遍字符串就是"同一个名字两处真值"。
+def _ok(**values) -> CommandResult:
+    return CommandResult(ok=True, values=values)
+
+
+def _out(props: dict, required: list[str]) -> dict:
+    """回执 schema：只声明形状，不做参数描述兜底。"""
+    return {"type": "object", "properties": props, "required": list(required)}
+
+
+def _schema(props: dict, required: list[str], *, owner: str = "") -> dict:
+    """入参 schema：参数描述兜底（手写优先，没写从常用表补，补不出来构建期就炸）。"""
+    return {"type": "object", "properties": describe(props, owner=owner),
+            "required": list(required)}
+
+
+_ID = {"type": "string", "description": "arXiv 编号，如 2610.25020"}
+_DAYS = {"type": "integer", "description": "回溯天数"}
+_WINDOWS = {"type": "string", "description": "日期段，如 2026-03-01~2026-03-07"}
+
+
+def _network_errors(fn):
+    """把"外部服务连不上"翻译成可教学错误。
+
+    否则 `ArxivError` 会穿透到工具层被归一成 `internal_error`——模型看到"内部错误"
+    只会重试，而真正该说的是"arXiv 连不上，稍后再试或先用库里的数据"。
     """
-    if not res.get("is_error"):
-        return res
-    info = (res.get("error") or {}).get("info") or {}
-    if info.get("kind") not in _WRITE_DENIED_KINDS:
-        return res
-    hint = str(info.get("hint") or "")
-    if READ_AUTHORITY_TOOL in hint:       # 幂等：框架自己也会叠同一句（用它自己的名字判）
-        return res
-    framework_suggest = str(info.get("suggest") or "")
-    info["hint"] = (f"{hint} 先在 AI 侧用只读工具 {READ_AUTHORITY_TOOL} 查当前写权模式"
-                    f"（它的 how_to_open 说怎么开；人类侧：{framework_suggest}）。").strip()
-    info["suggest"] = READ_AUTHORITY_TOOL
-    return res
 
+    def wrapper(**kwargs):
+        try:
+            return fn(**kwargs)
+        except ArxivError as exc:
+            raise MechaError(f"arXiv 连不上：{exc}", kind="arxiv_unavailable",
+                             hint="网络或限速问题：过一会儿重试；"
+                                  "也可以先用库里已经抓到的论文出稿") from exc
 
-def invoke_command(commands, gate, channel, cmd_name: str, args: dict,
-                   context=None, approval=None) -> dict:
-    """统一命令调用口：AI 工具桥（ai 通道）与 Web 人类面（human 通道）都走这里。
+    wrapper.__name__ = getattr(fn, "__name__", "command")
+    return wrapper
 
-    两条纪律都在**框架侧**，本口只做透传 + 一件项目专有的补白：
-    * **写权检查前置**：框架在调 handler 之前 ``gate.check(channel)`` ⇒ 域写（本项目 SQLite）
-      根本不会发生（发现 7 的治本修法，见模块 docstring）；
-    * **归因不靠猜**：命令声明 ``wants_channel=True`` ⇒ handler 收到本次 ``channel=``；
-    * ⭐ ``approval=`` 透传给框架的**审批闸**（声明了 ``approval_required`` 的命令由框架
-      fail-closed 拦；本项目**当前没有命令声明它**，故这一路今天不触发——但接线先做对，
-      将来某条命令写上声明即生效，不用再改调用面）。
-      调用方注入 ``sw.approval``（框架"不自动接线"是刻意的：自动接会让没声明审批的命令
-      也走一遍审批通道 = 扩大行为面）。
-    """
-    ctx = context if isinstance(context, ExecutionContext) else ExecutionContext()
-    return _point_denial_to_read_authority(
-        commands.invoke(cmd_name, args, context=ctx, gate=gate, channel=channel,
-                        approval=approval))
 
-
-#: 命令 scope（声明字段）。⚠ **过滤靠它 + 装配期绑定的 `ScopePolicy`**（见 `.scopes` 模块）：
-#: 只声明不绑 = 声明是装饰（框架 `commands.py:432` 那段只在注入后才生效）。
-#: ⚠ **没写进本表的命令会回落到 `("library",)`**（`_scope_for` 的默认）——
-#: `update_topic` 从前就吃这个默认 ⇒ 与同族的 `add_topic`/`set_topic_enabled`（`topics`）
-#: **口径不一致**；2026-09-26 显式补上。新增命令时**别依赖默认**。
-_SCOPES: dict[str, tuple[str, ...]] = {
-    "mark_read": ("library",),
-    "star_paper": ("library",), "skip_paper": ("library",), "add_note": ("library",),
-    "add_topic": ("topics",), "set_topic_enabled": ("topics",), "update_topic": ("topics",),
-    "prepare_review": ("review",), "submit_review": ("review",),
-    "finalize_briefing": ("review",),
-    "run_pipeline": ("pipeline",), "fetch_papers": ("pipeline",),
-    "undo_change": ("undo",),
-}
-
-#: result_ref 抽取的实体标识键（不透明引用，供两份 journal 互引；不放结果体）。
-#: 注：repo.undo 回的键是 ``undone_seq``（非 undid_seq）——写错会让最该被追溯的
-#: 撤销操作 result_ref=None、互引断裂（设计师复审发现③）。
-_REF_KEYS = ("arxiv_id", "note_id", "topic", "added", "date", "run_id",
-             "briefing_id", "seq", "undone_seq", "path")
-
-
-def _scope_for(name: str) -> tuple[str, ...]:
-    return _SCOPES.get(name, ("library",))
-
-
-def _command_params(cap_params: dict, omit: tuple[str, ...]) -> dict:
-    """从能力自描述派生命令的 JSON-schema 参数（properties/required）。
-
-    ⭐ **reason 显式声明为必填**（设计师复审发现①）：mecha 把 ``reason``/``call_id``
-    当 ``RESERVED_ARGS``，**不在 required 里就会在进 handler 前被剥掉**（只进审计 meta）。
-    若不声明，handler 收不到 reason → ``capabilities.invoke(reason="")`` → 域 journal
-    （repo.events）的 reason 永远为空，/activity 与 undo 归因丢了“为什么”。故把 reason
-    加进 required（框架的 ``declared_set`` 才会把它透传给 handler）——工具层对模型仍
-    可选，桥接填默认空串。
-
-    连带好处：required 恒非空。⚠ **注意语义已翻转（2026-09-26，ADR「命令面治理闸前置与
-    声明式 opt-in」）**：框架现在把 ``required`` 的**缺失与空都当"无必填"**（对齐 JSON
-    Schema）；老语义是"缺失 ⇒ 全 properties 必填"。本函数**显式列出** required，故两种语义
-    下行为一致（要必填就列出来）；而**空 required 不再需要宽松形兜底**——原来那支
-    ``additionalProperties: True``（且**丢掉 properties**）在新语义下是**有害的**：
-    它会让"无必填"的命令**连参数清单都投影不出去**。故删除该分支，恒回带 properties 的完整形状。
-    """
-    props: dict[str, dict] = {}
-    required: list[str] = []
-    for pname, info in cap_params.items():
-        if pname in omit:
-            continue
-        entry: dict[str, object] = {}
-        if info.get("type"):
-            entry["type"] = info["type"]
-        props[pname] = entry
-        if info.get("required"):
-            required.append(pname)
-    if "reason" in props and "reason" not in required:
-        required.append("reason")        # 让 handler 收到操作者的“为什么”（写进域 journal）
-    # ⚠ 即使 `required` 为空也要带上 `properties`（新语义下空 = 无必填，正是我们想要的；
-    #   旧写法在这里回退成"只有 additionalProperties、没有 properties"的宽松形——
-    #   那会让 AI **看不到任何参数**，是潜伏的真缺陷）。
-    return {"type": "object", "properties": props, "required": required}
-
-
-def build_read_command(container, decl: ToolDecl) -> CommandSpec:
-    """一条**只读能力声明** → 一条**只读命令声明**（`CommandSpec`）；**刻意不 register**。
-
-    ⭐ 读侧为什么也要"命令声明"：工具面的**声明源就是命令声明**——`.tools.build_tool_registry`
-    用 `mecha.projection.project()` 从它一次派生名字/文案/参数/档位/可见性。读工具从前是**手写**
-    `define_tool(...)`；现在与写侧走**同一条**投影缝（重构目标：工具面从声明生成）。
-
-    ⛔ **为什么不进 `sw.commands`（与写命令分家的那条线）**：命令面是**写治理面**，它的不变式是
-    "**命令面里每一条都是写命令**"——要本次通道（归因）、要 `reason`（域 journal 的"为什么"）、
-    要非零预估（AI 据此决定要不要 job 化）。**两条冻结判据逐条遍历整个命令集合钉着它**：
-    `tests/test_mecha_adapter.py::test_write_commands_declare_what_governance_needs`、
-    `check/test_ai_experience.py::test_every_write_command_has_nonzero_estimate`。
-    而读命令：没有写权、没有审计、`scope` 也没有运行时语义 ⇒ 进那个面**只为投影**，
-    代价却是把那两条不变式变成假的 ⇒ 读声明**只当投影源**（本函数只构造、不注册）。
-
-    ⚠ 这不是"把代码换个地方放"：**实测**（探针）`side_effect=False` 的命令经命令面调用
-    **既不过 Gate、也不写任何痕**（账本前后差集为空）⇒ "进命令面"与"不进"在**行为上等价**，
-    差别只在那两条不变式**是否说谎** ⇒ 选不说谎的那边。
-
-    ⚠ 声明里**只写有消费者的字段**：`name`/`description`/`parameters`/`output_schema` 与
-    `side_effect`（`project()` 用它翻出工具面的 read 档）、`scope`（投影期的可见性过滤）。
-    `estimate_sec`/`cancel_supported`/`wants_channel`/`approval_required` **刻意不写**：本 spec
-    不进命令面 ⇒ 那几个字段**没有消费者**（写了就是本项目在治的"不干活的声明"）。
-    """
-    return define_command(
-        name=decl.mecha_name,
-        description=decl.description,
-        parameters=_command_params(_cap_params(container, decl.cap_name), decl.omit),
-        output_schema={"type": "object", "required": ["ok"]},
-        side_effect=False,
-        # `scope` 走 `_scope_for`：读命令都属 `library` 块（缺省值）——**刻意不为它们往 `_SCOPES`
-        # 抄一份同值清单**（那正是"手抄第二份"；默认值就是为这种统一情形留的）。
-        scope=_scope_for(decl.mecha_name),
-    )
-
-
-#: `set_config` 命令的参数契约（手写：它不对应任何能力自描述）。
-#: ⚠ **形状必须是 JSON-schema 形**（`{type, properties, required}`）——与 `_command_params`
-#: 的返回值同一形状；写成扁平的 `{name: {...}}` 会被框架判成"参数未声明"（我第一版就踩了）。
-#: ⚠ `reason` **必须列进 `required`**：框架把 `reason`/`call_id` 当 `RESERVED_ARGS`，
-#: **不声明就会在进 handler 之前被剥掉**（只进审计 meta）——与 18 条写命令同一纪律
-#: （工具面对模型仍可选，由桥接填默认串）。
-_CONFIG_PARAMS: dict[str, object] = {
-    "type": "object",
-    "properties": {
-        "key": {"type": "string", "description": "可写配置键（见 read_config 的清单）"},
-        "value": {"description": "新值，类型须匹配该键（见 read_config）"},
-        "reason": {"type": "string", "description": "一句话中文说明本次改动目的"},
-    },
-    "required": ["key", "value", "reason"],
-}
-
-
-def _make_config_handler(gate):
-    """`set_config` 的命令体：**复用** `tools._set_config`（不复制第二份收编/校验/回执）。
-
-    失败（`authority_locked` / `unknown_key` / `bad_value` …）**原样抛出** ⇒ 由框架转成
-    **同一 kind** 的 failure，与它直写 `gate.set` 时的档位一致
-    （判据 `test_set_config_gated` / `test_unknown_config_key_is_teachable` **未改仍绿**）。
-    """
-    from .tools import _set_config  # 延迟导入：commands ↔ tools 的既有依赖方向
-
-    def handler(context=None, channel=None, **args):
-        return CommandResult(
-            ok=True,
-            values=_set_config(gate, channel, args["key"], args["value"],
-                               str(args.get("reason") or "")))
-
-    return handler
-
-
-#: `reset_profile` 命令的参数契约（手写）。`kind` 可省（=重置全部）；`reason` 必须进 required。
-_PROFILE_PARAMS: dict[str, object] = {
-    "type": "object",
-    "properties": {
-        "kind": {"type": "string",
-                 "description": "重置范围：category | term | author；省略或空 = 全部"},
-        "reason": {"type": "string", "description": "一句话中文说明本次重置目的"},
-    },
-    "required": ["reason"],
-}
-
-
-def _make_profile_handler(container):
-    """`reset_profile` 的命令体：**复用能力层**（`capabilities.invoke`），不复制第二份逻辑。
-
-    ⚠ 这条命令**只给人**：它**不在 `TOOL_DECLS` 里** ⇒ AI 工具面没有它
-    （`reset_profile` 是"改自己的标尺"那类动作，原设计刻意不给 AI）。
-    命令面的价值在于：人类入口也走**同一道门**（写权 + `command.reset_profile` 审计）。
-    """
-    from .. import capabilities
-
-    def handler(context=None, channel=None, **args):
-        res = capabilities.invoke(container, "reset_profile",
-                                  kind=str(args.get("kind") or ""),
-                                  actor=channel.actor,
-                                  reason=str(args.get("reason") or ""))
-        if not res.get("ok"):
-            return CommandResult(ok=False, values={"ok": False},
-                                 error=envelope_to_error(res))
-        return CommandResult(ok=True, values=dict(res))
-
-    return handler
-
-
-#: `delete_note` 的参数契约（手写）。人类专属（不进 `TOOL_DECLS`）。
-_NOTE_DELETE_PARAMS: dict[str, object] = {
-    "type": "object",
-    "properties": {
-        "note_id": {"type": "integer", "description": "要删除的笔记 id"},
-        "reason": {"type": "string", "description": "一句话中文说明本次删除目的"},
-    },
-    "required": ["note_id", "reason"],
-}
-
-
-def _make_note_delete_handler(container):
-    """`delete_note` 的命令体：复用 domain 服务（`container.retrieval.delete_note`）。
-
-    ⚠ **人类专属**：本命令**不进 `TOOL_DECLS`** ⇒ AI 工具面里没有它（原设计意图：
-    "删笔记是人类独有的管理操作、不与 AI 争写"）。命令面的价值是让**人**的删除也走门 + 留审计。
-    """
-    def handler(context=None, channel=None, **args):
-        note_id = int(args["note_id"])
-        container.retrieval.delete_note(
-            note_id, actor=channel.actor,
-            reason=str(args.get("reason") or "Web 面板删笔记"))
-        return CommandResult(ok=True, values={"ok": True, "note_id": note_id})
-
-    return handler
-
-
-#: `delete_graph_view` 命令的参数契约（手写）。人类专属（不进 `TOOL_DECLS`）。
-#: 注：`set_default_view` 无需手写契约——它在 `TOOL_DECLS` 里，参数由能力声明机械派生。
-_VIEW_DELETE_PARAMS: dict[str, object] = {
-    "type": "object",
-    "properties": {
-        "name": {"type": "string", "description": "要删除的视图名"},
-        "reason": {"type": "string", "description": "一句话中文说明为什么删"},
-    },
-    "required": ["name", "reason"],
-}
-
-#: `delete_mark` 命令的参数契约（手写）。人类专属（不进 `TOOL_DECLS`）。
-_MARK_DELETE_PARAMS: dict[str, object] = {
-    "type": "object",
-    "properties": {
-        "mark_id": {"type": "integer", "description": "要删除的批注 id"},
-        "reason": {"type": "string", "description": "一句话中文说明为什么删"},
-    },
-    "required": ["mark_id", "reason"],
-}
-
-
-def _make_cap_handler(container, cap_name: str, fields: tuple[str, ...]):
-    """通用命令体：按字段名**转调能力层**（不复制第二份逻辑）。
-
-    与 `_make_profile_handler` 同款，只是字段可变——省得每条"人类入口"再抄一遍 handler。
-    `actor` 由**通道**钉死（human 侧恒 human），命令自身不改归因。
-    """
-    from .. import capabilities
-
-    def handler(context=None, channel=None, **args):
-        kw = {f: args.get(f) for f in fields if f != "reason"}
-        kw["actor"] = channel.actor
-        kw["reason"] = str(args.get("reason") or "")
-        res = capabilities.invoke(container, cap_name, **kw)
-        if not res.get("ok"):
-            return CommandResult(ok=False, values={"ok": False},
-                                 error=envelope_to_error(res))
-        return CommandResult(ok=True, values=dict(res))
-
-    return handler
-
-
-#: `set_config_batch` 的参数契约（手写）。`items` = {键: 值}；`reason` 必须进 required。
-_CONFIG_BATCH_PARAMS: dict[str, object] = {
-    "type": "object",
-    "properties": {
-        "items": {"type": "object", "description": "{可写配置键: 新值}（整批原子）"},
-        "reason": {"type": "string", "description": "一句话中文说明本次批量改动目的"},
-    },
-    "required": ["items", "reason"],
-}
-
-
-def _make_config_batch_handler(gate):
-    """`set_config_batch` 的命令体：整批一次 `gate.set_batch`（**原子**）。
-
-    ⚠ 值的收编（表单来的都是字符串 ⇒ 数值键要转回数值）**复用 `tools._coerce_config`**，
-    不复制第二份。失败（未知键 / 越界 / 写权）**原样抛出** ⇒ 框架转成同一档失败，
-    且因为 `set_batch` 是"先全校验再全落地"⇒ **一个键非法，整批一个都不落地**。
-    """
-    from .tools import CURRENT_CALL_ID, _coerce_config
-
-    def handler(context=None, channel=None, **args):
-        items = dict(args.get("items") or {})
-        coerced = {k: _coerce_config(k, v) for k, v in items.items()}
-        events = gate.set_batch(channel, coerced, str(args.get("reason") or ""),
-                                call_id=CURRENT_CALL_ID.get())
-        return CommandResult(ok=True, values={"ok": True, "count": len(events),
-                                              "keys": sorted(coerced)})
-
-    return handler
-
-
-def _result_ref(res: dict) -> dict | None:
-    ref = {k: res[k] for k in _REF_KEYS if k in res and res[k] is not None}
-    return ref or None
-
-
-def _estimate(cap_name: str, container):
-    """每条写命令的耗时预估（E2.2 / 缺口2）：**非零**，让 AI 能据此判断要不要 job 化。
-
-    网络/重计算类（run_pipeline/fetch_papers）给 **callable**（按参数现算：启用主题数
-    × 回溯天数 × arXiv ~3s 限速）；本地快写（写库/文件）给小常量。不再一律 0.0。
-    """
-    st = container.settings
-    n_topics = sum(1 for t in st.topics if t.enabled) or 1
-    lookback = max(1, int(st.lookback_days))
-    if cap_name == "run_pipeline":
-        return lambda _args: float(n_topics * lookback * 3 + 5)
-    if cap_name == "fetch_papers":
-        return lambda args: float(max(1, int(args.get("days") or lookback)) * n_topics * 3)
-    return 1.0                            # 本地写（评审/笔记/主题…）：小而非零
-
-
-def _make_handler(container, decl, surface, gate):
-    """命令体：① gate 配置覆盖下调能力/Engine.run → ② 归一化回执。
-
-    通道由**框架声明式注入**（命令声明 ``wants_channel=True`` ⇒ handler 收 ``channel=``）：
-    写权闸看正确的 side（框架前置检查）、归因用正确的 actor（人类写不再被误记成 ai——发现 9）。
-    ⚠ **不设回落通道**：拿不到 channel 宁可**响亮地崩**，也不要静默回落成 ai 通道——
-    那正是发现 9 的病（人类写被误归因）。本函数不再需要 ``authority``/``default_channel``。
-
-    ⭐ N15：配置态在**这道边界**注入线程局部覆盖（set_config 写 gate 快照）——
-    不只 run_pipeline，prepare/submit/finalize 各段同样吃到，杜绝静默 no-op。
-    """
-    cap_name = decl.cap_name
-    def handler(context=None, channel=None, **args):
-        args = dict(args)
-        args.pop("actor", None)                 # actor 由通道钉死，绝不接受请求传入
-        args["actor"] = channel.actor           # channel=None ⇒ 这里就炸（契约破了要响，不静默）
-        # ⭐ N15：gate 快照作为本次调用的线程局部配置覆盖（与 Engine.run 同源函数，
-        # 嵌套无害：context manager 保存/恢复上一层）。
-        scoring, lookback = gate_scoring_override(container, gate)
-        with pipeline_config_override(scoring=scoring, lookback_days=lookback):
-            # run_pipeline 也是 GP 自己的能力；mecha 只负责命令治理，
-            # 不再经一个通用 Engine 转发。
-            res = capabilities.invoke(container, cap_name, **args)
-        if not res.get("ok"):
-            # 失败经共享的 envelope_to_error（含 N2 的 bad_envelope 兜底，读写两路一致）。
-            return CommandResult(ok=False, values={"ok": False}, error=envelope_to_error(res))
-        return CommandResult(ok=True, values=dict(res), result_ref=_result_ref(dict(res)))
-
-    return handler
-
-
-def build_commands(container, sw) -> list[str]:
-    """把写能力注册成命令（进 ``sw.commands``）。返回注册的命令名清单。
-
-    ⚠ **不再传通道**：命令声明 ``wants_channel=True``，由框架在每次调用时注入**本次**的
-    通道（这才是正确归因——装配期捕获一个默认通道正是发现 9 的成因）。
-    """
-    commands = sw.commands
+def build_commands(ctx: Context, software) -> list[str]:
+    repo, settings = ctx.repo, ctx.settings
     names: list[str] = []
-    for decl in TOOL_DECLS:
-        if decl.kind != "write":
-            continue
-        cap_params = _cap_params(container, decl.cap_name)
-        spec = define_command(
-            name=decl.mecha_name,
-            description=decl.description,
-            parameters=_command_params(cap_params, decl.omit),
-            output_schema={"type": "object", "required": ["ok"]},
-            side_effect=True,
-            scope=_scope_for(decl.mecha_name),
-            estimate_sec=_estimate(decl.cap_name, container),
-            cancel_supported=decl.via_pipeline,
-            # 归因靠**声明**（不靠 contextvar 偷渡、也不靠签名自省）：声明后 handler 收本次
-            # `channel=`，于是"谁调的"不再靠装配期捕获的默认通道猜（发现 9）。
-            wants_channel=True,
-            # ⚠ 刻意**不写** `approval_required`：它是"要不要人工批准"的**声明**，本项目
-            # 没有需要审批的命令 ⇒ 按 ADR"其实不需要审批的命令请去掉这个声明（别留一个
-            # 不干活的声明）"，连 `=False` 也不留（那是默认值，写了就是装饰）。
-        )
-        commands.register(spec, _make_handler(
-            container, decl, sw.surface, sw.gate))
-        names.append(decl.mecha_name)
 
-    # ⭐ **配置写也进命令面**（2026-09-26）：`set_config` 曾是**唯一直写 `gate.set` 的写工具**
-    # （见 `tools.py::_register_config_tools`）⇒ 框架账上只有"某个配置键变了"这条**键事件**，
-    # **没有"谁执行了一次 set_config"这条操作记录**。这里补一条命令，把那一半补上。
-    # ⚠ handler **直接复用 `tools._set_config`**（收编 `_coerce_config` + 校验 `gate.set` +
-    # 回执 `ok/key/before/resolved/readback`，**一行都不复制**）；失败原样抛出 ⇒ 档位不变。
-    commands.register(define_command(
-        name="set_config",
-        description="写一个可写标量配置键（类型/值域由 Gate 校验）；改动会留操作审计。",
-        parameters=dict(_CONFIG_PARAMS),
-        output_schema={"type": "object", "required": ["ok"]},
-        side_effect=True,
-        scope=("config",),
-        estimate_sec=0.5,              # 本地单键写：小而非零（与写能力同一纪律）
-        cancel_supported=False,
-        wants_channel=True,            # handler 要 channel：`gate.set` 的写权看 side
-    ), _make_config_handler(sw.gate))
-    names.append("set_config")
+    def register(spec, handler) -> None:
+        software.commands.register(spec, _network_errors(_handler_adapter(handler)))
+        names.append(spec.name)
 
-    # ⭐ **删视图的命令**（2026-09-29）：画出来的图是"作品"，要能像简报一样随时拉出来看、改、删。
-    #  注：`set_default_view`（切首屏渲染哪张）**不需要在这里登记**——它是投影过的写工具，
-    #  上面的 `for decl in TOOL_DECLS` 已经自动给它注册了命令（scope 落到缺省的 `library`，两侧放行）。
-    #  而 `delete_graph_view` **不在 TOOL_DECLS 里**（AI 工具面没有它）⇒ 必须手写一条命令，
-    #  让人的按钮也走同一道门，并用 `scope=views`（只授予 human）把"删除归人"落成规则。
-    commands.register(define_command(
-        name="delete_graph_view",
-        description="删除一张已发布的图视图（人类专属：作品的处置权归人；可 undo 撤销）。",
-        parameters=dict(_VIEW_DELETE_PARAMS),
-        output_schema={"type": "object", "required": ["ok"]},
-        side_effect=True,
-        scope=("views",),
-        estimate_sec=0.3,
-        cancel_supported=False,
-        wants_channel=True,
-    ), _make_cap_handler(container, "delete_graph_view", ("name", "reason")))
-    names.append("delete_graph_view")
+    # ------------------------------------------------------------------ 抓取
+    def _window(days: int, windows: str) -> tuple[datetime, datetime]:
+        text = (windows or "").strip()
+        if not text:
+            until = datetime.utcnow()
+            return until - timedelta(days=max(1, int(days))), until
+        lo = hi = None
+        for segment in text.replace("，", ",").split(","):
+            segment = segment.strip()
+            if not segment:
+                continue
+            if "~" not in segment:
+                raise MechaError(f"窗口 {segment!r} 缺 `~`", kind="bad_window",
+                                 hint="格式：2026-03-01~2026-03-07（to 含当天整天）")
+            left, right = (part.strip() for part in segment.split("~", 1))
+            try:
+                start = datetime.fromisoformat(left) if left else datetime.utcnow()
+                end = datetime.fromisoformat(right) if right else datetime.utcnow()
+            except ValueError as exc:
+                raise MechaError(f"窗口 {segment!r} 不是合法日期", kind="bad_window",
+                                 hint="用 YYYY-MM-DD") from exc
+            if end.hour == 0 and end.minute == 0:
+                end = end + timedelta(days=1) - timedelta(microseconds=1)
+            lo = start if lo is None else min(lo, start)
+            hi = end if hi is None else max(hi, end)
+        return lo, hi
 
-    # ⭐ **删批注的命令**（2026-09-29）：批注是精读痕迹，**处置权归人**。它同样不在
-    # `TOOL_DECLS` 里（AI 工具面没有它），这里再补 `scope=marks`（只授予 human）第二道锁；
-    # AI 想撤掉自己刚写的那条批注，走 `undo_change` 而不是删。
-    commands.register(define_command(
-        name="delete_mark",
-        description="删除一条精读批注（人类专属：精读痕迹的处置权归人；可 undo 撤销）。",
-        parameters=dict(_MARK_DELETE_PARAMS),
-        output_schema={"type": "object", "required": ["ok"]},
-        side_effect=True,
-        scope=("marks",),
-        estimate_sec=0.3,
-        cancel_supported=False,
-        wants_channel=True,
-    ), _make_cap_handler(container, "delete_mark", ("mark_id", "reason")))
-    names.append("delete_mark")
+    def _regions(explicit: str) -> list[str]:
+        if explicit.strip():
+            return [part.strip() for part in explicit.replace("，", ",").split(",")
+                    if part.strip()]
+        snapshot = scoring.profile_snapshot(repo, settings.half_life_days)
+        ranked = sorted(((k, v["w"]) for k, v in snapshot["category"].items() if v["w"] > 0),
+                        key=lambda kv: -kv[1])
+        return [k for k, _ in ranked[:max(1, settings.default_regions_n)]]
 
-    # ⚠ **`reset_profile` 是"人类专属"，这条命令只为给人一个入口**（2026-09-26）：
-    # 它是"重置兴趣画像锚点"——让 AI 自助改锚点等于让它改自己的标尺 ⇒ 本仓**刻意不把它
-    # 登记进 `TOOL_DECLS`**（AI 工具面里没有它，见 `tools.py` 的原注释）。但从前**人也没有入口**
-    # ⇒ 这里补一条命令，让 Web 的按钮能走**同一道门**（写权 + `command.reset_profile` 审计）。
-    commands.register(define_command(
-        name="reset_profile",
-        description="重置兴趣画像（人类专属：清掉行为学出来的锚点，回到出厂先验）。",
-        parameters=dict(_PROFILE_PARAMS),
-        output_schema={"type": "object", "required": ["ok"]},
-        side_effect=True,
-        scope=("profile",),
-        estimate_sec=0.5,
-        cancel_supported=False,
-        wants_channel=True,
-    ), _make_profile_handler(container))
-    names.append("reset_profile")
+    def fetch_papers(days: int = 3, windows: str = "", regions: str = "") -> CommandResult:
+        since, until = _window(days, windows)
+        group = _regions(regions)
+        if not group:
+            raise MechaError("画像里没有正权重分类，也没有显式给 regions",
+                             kind="empty_regions",
+                             hint="传 regions=quant-ph,physics.atom-ph，或先 record_signal 喂兴趣")
+        client = ctx.client()
+        try:
+            papers, stats = client.fetch_regions(
+                group, since, until, max_pages_per_day=settings.max_pages_per_day,
+                max_requests=settings.max_requests)
+        finally:
+            client.close()
+        found_by = f"region:{','.join(group)}@{since.date().isoformat()}"
+        result = repo.upsert_papers(papers, found_by=found_by)
+        repo.log_scan(actor=_actor(), payload={
+            "source": "region", "regions": group, "days": stats["days"],
+            "requests": stats["requests"], "hits": len(papers), "new": result["new"]})
+        return _ok(new=result["new"], updated=result["updated"], regions=group,
+                   range=f"{since.date()}~{until.date()}", stats=stats)
 
-    # ⭐ **批量配置写（第 5 件：修"两个真相源"）**：`/settings/general` 的 6 个标量键
-    # **本来就是 Gate 状态**（`CONFIG_SCHEMA` ⇒ `gate.seed` 种进快照、`gate_scoring_override`
-    # 让流水线以**快照**为准），而 Web 从前**直写 YAML+内存** ⇒ **绕过了它们自己的权威**
-    # （面板 `/config`、`set_config`、流水线看快照；Web 改的是 YAML ⇒ 两个真相源）。
-    # 这里补一条**批量命令**（内部 `gate.set_batch`）⇒ 保住"整表单一次提交"的 UX，
-    # 且拿到 `set_batch` 的**原子语义**（任一键非法 ⇒ 一个都不落地）+ `command.set_config_batch` 审计。
-    commands.register(define_command(
-        name="set_config_batch",
-        description="批量写可写标量配置键（整批原子：任一键非法则一个都不落地）。",
-        parameters=dict(_CONFIG_BATCH_PARAMS),
-        output_schema={"type": "object", "required": ["ok"]},
-        side_effect=True,
-        scope=("config_batch",),
-        estimate_sec=0.5,
-        cancel_supported=False,
-        wants_channel=True,
-    ), _make_config_batch_handler(sw.gate))
-    names.append("set_config_batch")
+    register(define_command(
+        name="fetch_papers", scope=("fetch",), side_effect=True,
+        description="按分类 × 日历扫 arXiv 并落库；regions 省略时用画像分类 top-N。",
+        parameters=_schema({"days": _DAYS, "windows": _WINDOWS,
+                            "regions": {"type": "string",
+                                        "description": "分类，逗号分隔；省略=画像 top-N"}},
+                           ["days"]),
+        output_schema=_out({"new": {"type": "integer"},
+                               "updated": {"type": "integer"},
+                               "regions": {"type": "array"},
+                               "range": {"type": "string"},
+                               "stats": {"type": "object"}},
+                              ["new", "updated", "regions", "range", "stats"]),
+    ), fetch_papers)
 
-    # ⚠ **`delete_note` 同款：人类专属**（原注释："删笔记是人类独有的管理操作、不与 AI 争写"）
-    # ⇒ 命令做了、**不进 `TOOL_DECLS`** ⇒ AI 侧仍然没有它；补的是"人的删除也走门 + 留审计"。
-    commands.register(define_command(
-        name="delete_note",
-        description="删除一条笔记（人类专属：管理动作，不与 AI 争写）。",
-        parameters=dict(_NOTE_DELETE_PARAMS),
-        output_schema={"type": "object", "required": ["ok"]},
-        side_effect=True,
-        scope=("library_admin",),
-        estimate_sec=0.5,
-        cancel_supported=False,
-        wants_channel=True,
-    ), _make_note_delete_handler(container))
-    names.append("delete_note")
+    def fetch_query(queries: str, days: int = 30, windows: str = "",
+                    limit: int = 200) -> CommandResult:
+        phrases = [part.strip().strip('"')
+                   for part in (queries or "").replace("，", ",").split(",") if part.strip()]
+        if not phrases:
+            raise MechaError("queries 不能为空", kind="bad_params",
+                             hint="例：queries=neutral atom,optical tweezer")
+        since, until = _window(days, windows)
+        client = ctx.client()
+        try:
+            papers, stats = client.fetch_phrases(phrases, since, until, limit=int(limit))
+        finally:
+            client.close()
+        result = repo.upsert_papers(
+            papers, found_by=f'query:"{phrases[0]}"@{since.date().isoformat()}')
+        repo.log_scan(actor=_actor(), payload={
+            "source": "query", "queries": phrases, "requests": stats["requests"],
+            "hits": len(papers), "new": result["new"],
+            "range": f"{since.date()}~{until.date()}"})
+        return _ok(new=result["new"], updated=result["updated"], queries=phrases,
+                   range=f"{since.date()}~{until.date()}", stats=stats)
+
+    register(define_command(
+        name="fetch_query", scope=("fetch",), side_effect=True,
+        description="按检索式短语扫 arXiv 并落库（短语之间是 OR）。",
+        parameters=_schema({"queries": {"type": "string", "description": "短语，逗号分隔"},
+                            "days": _DAYS, "windows": _WINDOWS,
+                            "limit": {"type": "integer", "description": "最多落多少篇"}},
+                           ["queries"]),
+        output_schema=_out({"new": {"type": "integer"}, "updated": {"type": "integer"},
+                               "queries": {"type": "array"}, "range": {"type": "string"},
+                               "stats": {"type": "object"}},
+                              ["new", "updated", "queries", "range", "stats"]),
+    ), fetch_query)
+
+    def fetch_paper(arxiv_id: str) -> CommandResult:
+        aid = base_id(arxiv_id)
+        if not aid:
+            raise MechaError("arxiv_id 为空", kind="bad_params", hint="形如 2610.25020")
+        client = ctx.client()
+        try:
+            paper = client.get(aid)
+        finally:
+            client.close()
+        if paper is None:
+            raise MechaError(f"arXiv 上找不到 {aid}", kind="not_found",
+                             hint="检查编号；带版本号也可以")
+        result = repo.upsert_papers([paper], found_by=f"id:{aid}")
+        return _ok(arxiv_id=aid, new=result["new"], title=paper["title"],
+                       hint="下一步 read_paper 看摘要，再 write_card 建卡")
+
+    register(define_command(
+        name="fetch_paper", scope=("fetch",), side_effect=True,
+        description="按 arXiv 编号把单篇拉进库（幂等）。",
+        parameters=_schema({"arxiv_id": _ID}, ["arxiv_id"]),
+        output_schema=_out({"arxiv_id": {"type": "string"}, "new": {"type": "integer"},
+                               "title": {"type": "string"}},
+                              ["arxiv_id", "new", "title"]),
+    ), fetch_paper)
+
+    # ------------------------------------------------------------------ 读过的凭证
+    def write_card(arxiv_id: str, tldr: str = "", problem: str = "", method: str = "",
+                   results: str = "", novelty: str = "", terms: str = "") -> CommandResult:
+        aid = base_id(arxiv_id)
+        term_list = [t.strip() for t in (terms or "").replace("，", ",").split(",")
+                     if t.strip()]
+        if not repo.write_card(aid, {"tldr": tldr, "problem": problem, "method": method,
+                                     "results": results, "novelty": novelty,
+                                     "terms": term_list}, model="dsh"):
+            raise MechaError(f"库里没有 {aid}", kind="not_found",
+                             hint="先 fetch_paper 再写卡")
+        repo.record(op="write_card", target=aid, actor=_actor(),
+                    after={"has_tldr": bool(tldr), "terms": len(term_list)})
+        return _ok(arxiv_id=aid, terms=term_list, has_card=True,
+                   hint="有卡就能进稿：write_linear(title=…, "
+                        "entries=[{'arxiv_id': …, 'why': …}])")
+
+    register(define_command(
+        name="write_card", scope=("library",), side_effect=True,
+        description="给一篇论文写卡：五段摘要 + 关键词。卡是「读过摘要」的物证。",
+        parameters=_schema({"arxiv_id": _ID,
+                            "tldr": {"type": "string", "description": "一句话总括"},
+                            "problem": {"type": "string"}, "method": {"type": "string"},
+                            "results": {"type": "string"}, "novelty": {"type": "string"},
+                            "terms": {"type": "string",
+                                      "description": "语义关键词，逗号分隔"}},
+                           ["arxiv_id"]),
+        output_schema=_out({"arxiv_id": {"type": "string"}, "terms": {"type": "array"},
+                               "has_card": {"type": "boolean"}},
+                              ["arxiv_id", "terms", "has_card"]),
+    ), write_card)
+
+    # ------------------------------------------------------------------ 人的动作
+    def record_signal(arxiv_id: str, signal: str, source: str = "measured") -> CommandResult:
+        """`source` 区分**实测**（面板埋点）与**声明**（AI 转述"用户喜欢这篇"）。
+
+        两者同表同权参与画像，但审计里要分得清——"用户真点了"和"AI 说用户喜欢"
+        可信度不同，将来要分档加权时这是唯一的依据。
+        """
+        aid = base_id(arxiv_id)
+        if signal not in settings.signal_weights:
+            raise MechaError(f"未知信号 {signal!r}", kind="bad_signal",
+                             hint="可写：/".join(settings.signal_weights))
+        if source not in ("measured", "declared"):
+            raise MechaError(f"source 只能是 measured / declared，收到 {source!r}",
+                             kind="bad_params")
+        if repo.paper(aid) is None:
+            raise MechaError(f"库里没有 {aid}", kind="not_found", hint="先 fetch_paper")
+        repo.record(op=f"signal:{signal}", target=aid, actor=_actor(),
+                    after={"weight": settings.signal_weights[signal], "source": source})
+        return _ok(arxiv_id=aid, signal=signal, source=source,
+                   hint="信号已记账；权重在下次 recompute_weights 或读画像时体现")
+
+    register(define_command(
+        name="record_signal", scope=("library",), side_effect=True,
+        description="记一个兴趣信号（view/outbound/download/read/star/skip/uninterested）。"
+                    "source=measured 表示面板实测，declared 表示你代用户声明。",
+        parameters=_schema({"arxiv_id": _ID,
+                            "signal": {"type": "string", "description": "信号名"},
+                            "source": {"type": "string",
+                                       "description": "measured（实测）/ declared（声明）"}},
+                           ["arxiv_id", "signal"]),
+        output_schema=_out({"arxiv_id": {"type": "string"}, "signal": {"type": "string"},
+                            "source": {"type": "string"}},
+                           ["arxiv_id", "signal", "source"]),
+    ), record_signal)
+
+    def _state(arxiv_id: str, field: str, value: bool, op: str) -> CommandResult:
+        aid = base_id(arxiv_id)
+        if repo.set_state(aid, field, value) is None:
+            raise MechaError(f"库里没有 {aid}", kind="not_found", hint="先 fetch_paper")
+        repo.record(op=op, target=aid, actor=_actor(), after={field: value})
+        return _ok(arxiv_id=aid, **{field: value})
+
+    def star_paper(arxiv_id: str, starred: bool = True) -> CommandResult:
+        return _state(arxiv_id, "starred", starred, "star_paper")
+
+    def mark_read(arxiv_id: str, read: bool = True) -> CommandResult:
+        return _state(arxiv_id, "read", read, "mark_read")
+
+    def skip_paper(arxiv_id: str) -> CommandResult:
+        result = _state(arxiv_id, "skipped", True, "skip_paper")
+        repo.record(op="signal:uninterested", target=base_id(arxiv_id), actor=_actor(),
+                    after={"weight": settings.signal_weights["uninterested"]})
+        return result
+
+    register(define_command(
+        name="star_paper", scope=("library",), side_effect=True,
+        description="收藏 / 取消收藏（收藏也算一个正向信号）。",
+        parameters=_schema({"arxiv_id": _ID, "starred": {"type": "boolean"}},
+                           ["arxiv_id"]),
+        output_schema=_out({"arxiv_id": {"type": "string"}, "starred": {"type": "boolean"}},
+                              ["arxiv_id", "starred"]),
+    ), star_paper)
+
+    register(define_command(
+        name="mark_read", scope=("library",), side_effect=True,
+        description="标记已读 / 未读。",
+        parameters=_schema({"arxiv_id": _ID, "read": {"type": "boolean"}}, ["arxiv_id"]),
+        output_schema=_out({"arxiv_id": {"type": "string"}, "read": {"type": "boolean"}},
+                              ["arxiv_id", "read"]),
+    ), mark_read)
+
+    register(define_command(
+        name="skip_paper", scope=("library",), side_effect=True,
+        description="标记不感兴趣（同时记一条负向信号）。",
+        parameters=_schema({"arxiv_id": _ID}, ["arxiv_id"]),
+        output_schema=_out({"arxiv_id": {"type": "string"}, "skipped": {"type": "boolean"}},
+                              ["arxiv_id", "skipped"]),
+    ), skip_paper)
+
+    def add_note(arxiv_id: str, content: str) -> CommandResult:
+        aid = base_id(arxiv_id)
+        note_id = repo.add_note(aid, content)
+        if note_id is None:
+            raise MechaError(f"库里没有 {aid}", kind="not_found", hint="先 fetch_paper")
+        repo.record(op="add_note", target=aid, actor=_actor(), after={"note_id": note_id})
+        return _ok(arxiv_id=aid, note_id=note_id)
+
+    register(define_command(
+        name="add_note", scope=("library",), side_effect=True,
+        description="给论文加一条笔记。",
+        parameters=_schema({"arxiv_id": _ID, "content": {"type": "string"}},
+                           ["arxiv_id", "content"]),
+        output_schema=_out({"arxiv_id": {"type": "string"}, "note_id": {"type": "integer"}},
+                              ["arxiv_id", "note_id"]),
+    ), add_note)
+
+    # ------------------------------------------------------------------ 兴趣
+    def recompute_weights() -> CommandResult:
+        stats = scoring.recompute_profile(repo, settings.signal_weights)
+        repo.record(op="recompute_weights", actor=_actor(), after=stats)
+        return _ok(**stats)
+
+    register(define_command(
+        name="recompute_weights", scope=("profile",), side_effect=True,
+        description="从信号账本全量重建画像权重（锚点不动）。",
+        parameters=_schema({}, []),
+        output_schema=_out({"signals": {"type": "integer"}, "keys": {"type": "integer"},
+                               "missing_papers": {"type": "array"}},
+                              ["signals", "keys"]),
+    ), recompute_weights)
+
+    def add_anchor(dimension: str, key: str, weight: float = 1.0) -> CommandResult:
+        try:
+            scoring.set_anchor(repo, dimension=dimension, key=key, weight=float(weight))
+        except ValueError as exc:
+            raise MechaError(str(exc), kind="bad_dimension",
+                             hint="dimension 只能是 category / term / author") from exc
+        repo.record(op="add_anchor", actor=_actor(),
+                    after={"dimension": dimension, "key": key, "weight": float(weight)})
+        return _ok(dimension=dimension, key=key, weight=float(weight))
+
+    register(define_command(
+        name="add_anchor", scope=("profile",), side_effect=True,
+        description="钉一个人工权重（不衰减、不参与重算）。",
+        parameters=_schema({"dimension": {"type": "string",
+                                         "description": "category / term / author"},
+                            "key": {"type": "string"}, "weight": {"type": "number"}},
+                           ["dimension", "key"]),
+        output_schema=_out({"dimension": {"type": "string"}, "key": {"type": "string"},
+                               "weight": {"type": "number"}},
+                              ["dimension", "key", "weight"]),
+    ), add_anchor)
+
+    def remove_anchor(dimension: str, key: str) -> CommandResult:
+        removed = scoring.remove_anchor(repo, dimension=dimension, key=key)
+        repo.record(op="remove_anchor", actor=_actor(),
+                    after={"dimension": dimension, "key": key, "removed": removed})
+        return _ok(dimension=dimension, key=key, removed=removed)
+
+    register(define_command(
+        name="remove_anchor", scope=("profile",), side_effect=True,
+        description="删掉一个人工权重。",
+        parameters=_schema({"dimension": {"type": "string"}, "key": {"type": "string"}},
+                           ["dimension", "key"]),
+        output_schema=_out({"dimension": {"type": "string"}, "key": {"type": "string"},
+                               "removed": {"type": "boolean"}},
+                              ["dimension", "key", "removed"]),
+    ), remove_anchor)
+
+    # ------------------------------------------------------------------ 草稿
+    #
+    # 为什么拆成两条命令（而不是一条 `write_draft(kind=…, payload=…)`）：
+    # `payload` 是个"按 kind 变形的袋子"，schema 管不了，AI 只能靠描述猜键名。
+    # 拆开后每条命令的参数就是真 schema：数组、对象各归各位，校验与教学都在位。
+    # 又为什么都要 `mode`：整份替换意味着**改一个字也要把整张图重说一遍**，
+    # 而且几十个元素一次生成、中途截断就整份失败。增量只发这一批，断了丢一批。
+    def _save_draft(kind: str, title: str, incoming: dict, note: str, draft_id: int,
+                    mode: str, remove: list, op: str) -> CommandResult:
+        title = (title or "").strip()
+        if not title:
+            raise MechaError("title 不能为空", kind="bad_params",
+                             hint="草稿名就是情景，如「光镊搬运近三个月」")
+        mode = (mode or "merge").strip().lower()
+        if mode not in ("merge", "replace"):
+            raise MechaError(f"mode 只能是 merge / replace，收到 {mode!r}",
+                             kind="bad_params",
+                             hint="merge=只发这一批（默认）；replace=整份替换")
+        if isinstance(incoming, str):                 # 另一侧可能把 JSON 当字符串送来
+            try:
+                incoming = json.loads(incoming) if incoming.strip() else {}
+            except ValueError as exc:
+                raise MechaError(f"载荷不是合法 JSON：{exc}", kind="bad_params") from exc
+        incoming = incoming if isinstance(incoming, dict) else {}
+        ident = int(draft_id or 0)
+        # 按 id 就只按 id；不给 id 就只按标题找——**纯数字标题（「1024」）不能被当成 id**
+        found = repo.draft(ident) if ident else repo.draft_by_title(title)
+        if found is not None and found["kind"] != kind:
+            raise MechaError(f"「{found['title']}」是 {found['kind']} 草稿，不能写成 {kind}",
+                             kind="bad_params",
+                             hint="换个 title，或先 rename_draft 腾出这个名字")
+        existing = (found["payload"] or {}) if (mode == "merge" and found) else None
+        ident = ident or (int(found["id"]) if found else 0)
+        merged = (draft_lib.apply_merge(kind, existing, incoming, remove)
+                  if mode == "merge" else incoming)
+        try:
+            clean = draft_lib.normalize(kind, merged, repo)
+        except draft_lib.DraftError as exc:
+            hint = ("merge 时只发新增/改动的；要删必须写进 remove（没提到≠删掉）"
+                    if mode == "merge" else "先 read_draft 看已有形状，按回执改")
+            raise MechaError(str(exc), kind="bad_draft", hint=hint) from exc
+        checks = draft_lib.checkup(repo, kind, clean,
+                                   recent_days=settings.recent_draft_days,
+                                   exclude_draft_id=ident or None)
+        ident = repo.save_draft(kind=kind, title=title, note=note or "", payload=clean,
+                                author=_actor(), draft_id=ident or None)
+        repo.record(op=op, target=str(ident), actor=_actor(),
+                    after={"kind": kind, "title": title, "mode": mode,
+                           "count": checks["total"], "elements": checks["elements"],
+                           "removed": len(remove or [])})
+        return _ok(draft_id=ident, kind=kind, title=title, mode=mode, checkup=checks)
+
+    def write_linear(title: str = "", entries: list | None = None, note: str = "",
+                     draft_id: int = 0, mode: str = "merge",
+                     remove: list | None = None) -> CommandResult:
+        return _save_draft("linear", title, {"entries": entries or []}, note,
+                           draft_id, mode, list(remove or []), "write_linear")
+
+    register(define_command(
+        name="write_linear", scope=("drafts",), side_effect=True,
+        description="写线性草稿（条目 + 一句 why）。**支持增量**：默认 mode=merge，"
+                    "只发新增或改动的条目，按 arxiv_id 认人（重复=就地更新，新的追加到末尾，"
+                    "数组顺序就是页面顺序）；要删必须写进 remove。mode=replace 才整份替换。",
+        parameters=_schema({"title": {"type": "string", "description": "草稿名=情景"},
+                            "entries": {"type": "array",
+                                        "description": "[{arxiv_id, why, group?}]；"
+                                                       "merge 时只发这一批"},
+                            "note": {"type": "string"},
+                            "draft_id": {"type": "integer",
+                                         "description": "指定那一份；省略=按 title 找同名"},
+                            "mode": {"type": "string",
+                                     "description": "merge（默认，增量）/ replace（整份替换）"},
+                            "remove": {"type": "array",
+                                       "description": "要删掉的 arxiv_id 列表"}},
+                           ["title"]),
+        output_schema=_out({"draft_id": {"type": "integer"}, "kind": {"type": "string"},
+                               "title": {"type": "string"}, "mode": {"type": "string"},
+                               "checkup": {"type": "object"}},
+                              ["draft_id", "kind", "title", "mode", "checkup"]),
+    ), write_linear)
+
+    def write_network(title: str = "", nodes: list | None = None, edges: list | None = None,
+                      layout: dict | None = None, note: str = "", draft_id: int = 0,
+                      mode: str = "merge", remove: list | None = None) -> CommandResult:
+        return _save_draft("network", title,
+                           {"nodes": nodes or [], "edges": edges or [],
+                            "layout": layout or {}},
+                           note, draft_id, mode, list(remove or []), "write_network")
+
+    register(define_command(
+        name="write_network", scope=("drafts",), side_effect=True,
+        description="写网络草稿（自由画布：论文/文字/便签/框混排，坐标由 Graphviz 算）。"
+                    "**支持增量**：默认 mode=merge，只发新增或改动的节点与边，节点按 id、"
+                    "边按 (src,dst) 认人；要删必须写进 remove。论文节点只写 {id, arxiv_id} "
+                    "即可，label 省略时从库里补标题（必须在库，点开进详情页）。"
+                    "kind 只决定缺省样式：paper / text / note / group（用 parent 框住别人）/ badge，"
+                    "形状可另给 shape（Graphviz 任意 shape 名）。",
+        parameters=_schema({"title": {"type": "string", "description": "草稿名=情景"},
+                            "nodes": {"type": "array",
+                                      "description": "[{id, kind, label?, arxiv_id?, parent?, "
+                                                     "shape?, rank?}]；merge 时只发这一批"},
+                            "edges": {"type": "array",
+                                      "description": "[{src, dst, label?, style?, arrow?}]；"
+                                                     "style: solid|dashed|dotted，arrow: normal|none"},
+                            "layout": {"type": "object",
+                                       "description": "{rankdir: 'TB'|'LR'}"},
+                            "note": {"type": "string"},
+                            "draft_id": {"type": "integer",
+                                         "description": "指定那一份；省略=按 title 找同名"},
+                            "mode": {"type": "string",
+                                     "description": "merge（默认，增量）/ replace（整份替换）"},
+                            "remove": {"type": "array",
+                                       "description": "要删掉的节点 id 列表"}},
+                           ["title"]),
+        output_schema=_out({"draft_id": {"type": "integer"}, "kind": {"type": "string"},
+                               "title": {"type": "string"}, "mode": {"type": "string"},
+                               "checkup": {"type": "object"}},
+                              ["draft_id", "kind", "title", "mode", "checkup"]),
+    ), write_network)
+
+    def rename_draft(draft_id: int, title: str) -> CommandResult:
+        if not repo.rename_draft(int(draft_id), title.strip()):
+            raise MechaError("改名失败：可能已有同名草稿", kind="bad_params",
+                             hint="先 query_drafts 看现有名字")
+        repo.record(op="rename_draft", actor=_actor(),
+                    after={"id": int(draft_id), "title": title})
+        return _ok(draft_id=int(draft_id), title=title.strip())
+
+    register(define_command(
+        name="rename_draft", scope=("drafts",), side_effect=True,
+        description="给草稿改名。",
+        parameters=_schema({"draft_id": {"type": "integer"}, "title": {"type": "string"}},
+                           ["draft_id", "title"]),
+        output_schema=_out({"draft_id": {"type": "integer"}, "title": {"type": "string"}},
+                              ["draft_id", "title"]),
+    ), rename_draft)
+
+    def delete_draft(draft_id: int) -> CommandResult:
+        removed = repo.delete_draft(int(draft_id))
+        repo.record(op="delete_draft", actor=_actor(),
+                    after={"id": int(draft_id), "removed": removed})
+        return _ok(draft_id=int(draft_id), removed=removed)
+
+    register(define_command(
+        name="delete_draft", scope=("drafts",), side_effect=True,
+        description="删除草稿。",
+        parameters=_schema({"draft_id": {"type": "integer"}}, ["draft_id"]),
+        output_schema=_out({"draft_id": {"type": "integer"},
+                               "removed": {"type": "boolean"}},
+                              ["draft_id", "removed"]),
+    ), delete_draft)
+
+    # ------------------------------------------------------------------ 引文
+    def _sync(arxiv_id: str, limit: int, *, incoming: bool) -> CommandResult:
+        from ..scholar import ScholarError
+        aid = base_id(arxiv_id)
+        client = ctx.scholar()
+        try:
+            rows = (client.citations(aid, limit=int(limit)) if incoming
+                    else client.references(aid, limit=int(limit)))
+        except ScholarError as exc:
+            raise MechaError(str(exc), kind="scholar_unavailable",
+                             hint="Semantic Scholar 限速或没这篇；稍后重试或调小 limit") from exc
+        finally:
+            client.close()
+        stats = (repo.merge_incoming(aid, rows) if incoming
+                 else repo.replace_edges(aid, rows))
+        repo.record(op="sync_cited_by" if incoming else "sync_citations",
+                    target=aid, actor=_actor(), after=stats)
+        return _ok(**stats)
+
+    def sync_citations(arxiv_id: str, limit: int = 40) -> CommandResult:
+        return _sync(arxiv_id, limit, incoming=False)
+
+    def sync_cited_by(arxiv_id: str, limit: int = 40) -> CommandResult:
+        return _sync(arxiv_id, limit, incoming=True)
+
+    register(define_command(
+        name="sync_citations", scope=("citations",), side_effect=True,
+        description="把这一篇的参考文献拉进图（幂等，重跑覆盖它自己的边）。",
+        parameters=_schema({"arxiv_id": _ID, "limit": {"type": "integer"}}, ["arxiv_id"]),
+        output_schema=_out({"src": {"type": "string"}, "kind": {"type": "string"},
+                               "removed": {"type": "integer"}, "added": {"type": "integer"}},
+                              ["src", "kind", "added"]),
+    ), sync_citations)
+
+    register(define_command(
+        name="sync_cited_by", scope=("citations",), side_effect=True,
+        description="把「谁引用了这一篇」拉进图（增量，不删引用者自己的边）。",
+        parameters=_schema({"arxiv_id": _ID, "limit": {"type": "integer"}}, ["arxiv_id"]),
+        output_schema=_out({"dst": {"type": "string"}, "kind": {"type": "string"},
+                               "added": {"type": "integer"}},
+                              ["dst", "kind", "added"]),
+    ), sync_cited_by)
+
+    # ------------------------------------------------------------------ 页面偏好
+    def set_default_draft(kind: str, draft_id: int = 0) -> CommandResult:
+        if kind not in ("linear", "network"):
+            raise MechaError(f"kind 只能是 linear / network，收到 {kind!r}",
+                             kind="bad_params")
+        repo.set_setting(f"page.{kind}.default", str(int(draft_id)) if int(draft_id) else "")
+        repo.record(op="set_default_draft", actor=_actor(),
+                    after={"kind": kind, "draft_id": int(draft_id)})
+        return _ok(kind=kind, draft_id=int(draft_id))
+
+    register(define_command(
+        name="set_default_draft", scope=("drafts",), side_effect=True,
+        description="指定某个展示页默认显示哪一份草稿（0 = 自动取最近一份）。",
+        parameters=_schema({"kind": {"type": "string", "description": "linear / network"},
+                            "draft_id": {"type": "integer"}},
+                           ["kind"]),
+        output_schema=_out({"kind": {"type": "string"}, "draft_id": {"type": "integer"}},
+                              ["kind", "draft_id"]),
+    ), set_default_draft)
+
+    # ------------------------------------------------------------------ 配置
+    def set_config(key: str, value: float, channel=None) -> CommandResult:
+        """配置也要过 Gate：先校验、再落史、再装回进程。"""
+        if key not in config_mod.CONFIG_SCHEMA:
+            raise MechaError(f"{key!r} 不是可写配置", kind="unknown_key",
+                             hint="可写键见 read_config")
+        cast = config_mod.coerce(key, value)
+        software.gate.set(channel, key, cast, reason="set_config")
+        config_mod.apply_snapshot(settings, {key: cast})
+        return _ok(key=key, value=cast, hint="立即生效；read_config 可回读")
+
+    register(define_command(
+        name="set_config", scope=("config",), side_effect=True, wants_channel=True,
+        description="改一个标量配置（立即生效，并作为域状态留史）。",
+        parameters=_schema({"key": {"type": "string", "description": "配置键"},
+                            "value": {"type": "number", "description": "新值"}},
+                           ["key", "value"]),
+        output_schema=_out({"key": {"type": "string"}, "value": {"type": "number"}},
+                              ["key", "value"]),
+    ), set_config)
+
     return names

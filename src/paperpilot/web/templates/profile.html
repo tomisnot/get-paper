@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}画像池 · PaperPilot{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <h1>画像池</h1>
+  <div class="sub">只读。半衰期 {{ view.half_life_days }} 天；权重能随时从信号重算，所以这里显示的是<b>读数</b>，不是账本。
+    条形长度是<b>该维内</b>的相对强弱（跨维比长度没意义：作者维的总量天然比分类维大）。</div>
+</div>
+
+<div class="pool-cards">
+  <div class="stat"><b>{{ view.keys_sum }}</b><span>池中键总数</span></div>
+  <div class="stat"><b>{{ view.keys_total.category }} / {{ view.keys_total.term }} / {{ view.keys_total.author }}</b><span>分类 / 词面 / 作者</span></div>
+  <div class="stat"><b>{{ view.entropy.category }}</b><span>分类熵（茧房哨兵）</span></div>
+  <div class="stat"><b>{{ view.anchors | length }}</b><span>锚点</span></div>
+  <div class="stat"><b>{{ view.signals.get("behavior", 0) }}</b><span>信号学出来的键</span></div>
+</div>
+
+{% for dim in ["category", "term", "author"] %}
+  {% set rows = view.dimensions[dim] %}
+  <h2>{{ lane_label[dim] }}
+    <span class="muted" style="font-weight:400; font-size:12px;">
+      熵 {{ view.entropy[dim] }} · 共 {{ view.keys_total[dim] }} 个键{% if rows | length < view.keys_total[dim] %} · 只显示前 {{ rows | length }}{% endif %}
+    </span>
+  </h2>
+  <div class="card pool">
+    {% if not rows %}
+      <p class="muted" style="margin:0;">这一维还没有权重。</p>
+    {% endif %}
+    {% for row in rows %}
+    <div class="prow">
+      <div class="pkey" title="{{ row.key }}">{{ row.key }}</div>
+      <div class="ptrack"><div class="pfill" style="width:{{ row.pct }}%"></div></div>
+      <div class="pval">{{ row.w }}</div>
+      <div class="praw">原始 {{ row.w_raw }}</div>
+      <div class="phits">{{ row.hits }} 次</div>
+      <div class="psrc">{% if row.source == "anchor" %}<span class="tag anchor">锚点</span>{% else %}<span class="tag signal">信号</span>{% endif %}</div>
+    </div>
+    {% endfor %}
+  </div>
+{% endfor %}
+
+<h2>锚点 <span class="muted" style="font-weight:400; font-size:12px;">不衰减、不参与重算</span></h2>
+<div class="card">
+  {% if view.anchors %}
+  <div class="anchors">
+    {% for anchor in view.anchors %}
+    <form method="post" action="/profile/anchor/delete" class="inline">
+      <input type="hidden" name="dimension" value="{{ anchor.dimension }}">
+      <input type="hidden" name="key" value="{{ anchor.key }}">
+      <button class="ghost small danger">{{ lane_label[anchor.dimension] }} · {{ anchor.key }}（{{ anchor.w }}）✕</button>
+    </form>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted" style="margin:0 0 8px;">还没有锚点。</p>
+  {% endif %}
+  <form method="post" action="/profile/anchor" class="row">
+    <select name="dimension">
+      <option value="category">分类</option>
+      <option value="term">词面</option>
+      <option value="author">作者</option>
+    </select>
+    <input name="key" placeholder="键，如 quant-ph / rydberg / 作者全名">
+    <input name="weight" type="number" step="0.1" value="1.0">
+    <button class="ghost">钉住</button>
+  </form>
+</div>
+
+<h2>信号账本</h2>
+<div class="card">
+  {% if view.signal_counts %}
+  <table>
+    <tr><th>信号</th><th class="num">次数</th></tr>
+    {% for key, count in view.signal_counts.items() %}
+    <tr><td>{{ key }}</td><td class="num">{{ count }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted" style="margin:0;">还没有任何信号。</p>
+  {% endif %}
+</div>
+{% endblock %}
+{% block foot %}{{ view.keys_sum }} 个键 · 写权 {{ mode }}{% endblock %}

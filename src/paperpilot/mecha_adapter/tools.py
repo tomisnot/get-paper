@@ -1,604 +1,338 @@
-"""PaperPilot 的 AI 工具面：把 `TOOL_DECLS` 的**声明**（55 条：30 写 + 25 读）经
-`mecha.projection.project()` 投影成 mecha 工具（不再手写 `define_tool`）。
+"""AI 能力面：读工具直接定义，写工具由命令投影。
 
-三条纪律（接入指南第 2/3 步 + 交接文档 §7/§8）：
-
-1. **单一来源**：领域实现仍住 ``capabilities/``——工具的 ``execute`` 只是
-   ``capabilities.invoke`` 的薄桥；参数声明从能力的自描述 ``params`` **机械派生**
-   （不手抄第二份参数表，消 D4）。信封失败（``ok=False``）转成 ``MechaError``
-   抛出，让 ``ToolRegistry`` 归一化。
-2. **命名改造**：mecha 禁 ``get_``/``list_`` 前缀、要 snake_case 动词_宾语**至少两段**
-   （``_NAME_RE``）。据此 ``get_*→read_*``、``list_topics→query_topics``。
-   ⚠ ``undo`` 是**单段**、不合命名律（交接文档 §7 误判为"已合规"）⇒ 改 ``undo_change``
-   ——记进 n=3 报告。
-3. **R5 三分法**：``defaulted`` 的唯一权威来源是声明里的 ``default`` 键。凡能力的
-   真默认**非 None** 的可选参数（本项目全部如此：``""``/``True``/``0``/…）都在声明里
-   写出 ``default``；必填参数不写。``execute`` 用 ``**kwargs`` 包装 ⇒ 签名推必填得空集，
-   故另由 ``PaperPilotRequiredSource`` 注入权威必填项（MCP 投影消费）。
-
-写工具的 ``actor`` **不作为模型可见参数**：由 ``channel.actor`` 钉死注入（AI 侧恒 'ai'，
-改不了）——与 mecha「通道钉死 actor」一致。``read_activity`` 的 ``actor`` 是**过滤条件**
-（不是归因），故保留。
+**不手抄第二份清单**：写工具的 name/parameters/output 全从 `CommandSpec` 投影，
+声明的 scope 若没授予，`project()` 会直接不投影（看不见，省得 AI 去试）。
 """
 
 from __future__ import annotations
 
-import json
-from collections.abc import Mapping
-from dataclasses import dataclass
+import random
 
-from mecha.authority import register_authority_read
 from mecha.errors import MechaError
-from mecha.gate import Channel
-from mecha.tools import CURRENT_CALL_ID, ToolRegistry, define_tool
+from mecha.projection import project
+from mecha.tools import ToolRegistry, define_tool
 
-from .. import capabilities
-from .engine import CONFIG_SCHEMA
+from .. import drafts as draft_lib
+from .. import scoring
+from ..context import Context
+from . import config as config_mod
+from .args import with_defaults
+from .limits import KEEP, cap, with_cap
+from .params import describe
 
-#: description 只准含任务概念，禁实现词汇（define_tool 的 banned_words 守卫）。
-_BANNED_WORDS = (
-    "fts5", "mcp", "sqlalchemy", "sqlite", "settings.yaml",
-    "append-only", "yaml", "journal", "container", "repo",
+INSTRUCTIONS = (
+    "PaperPilot 论文台账。代码只记账（论文、兴趣画像、扫描账），结果由你写成草稿。\n"
+    "\n"
+    "## 怎么干\n"
+    "1. 人说要什么 → 挑能力：fetch_papers（分类×日历全量扫）/ fetch_query（短语扫）/ "
+    "sample（抽样，可 far 打破茧房）/ score_papers（按画像排序）。\n"
+    "2. 进稿的每篇先 read_paper 读摘要，再 write_card 写卡——卡是「读过」的物证。\n"
+    "3. write_linear / write_network 落成一份草稿：linear=条目+一句 why；"
+    "network=节点+边（论文/文字/便签/框混排，坐标由 Graphviz 算）。"
+    "**两者都默认增量**（mode=merge）：只发这一批，按 arxiv_id / 节点 id 认人；"
+    "要删必须写进 remove（没提到≠删掉）。整份重来才用 mode=replace。"
+    "回执里的 checkup 会告诉你哪些还没卡、哪些近期出现过。\n"
+    "4. 草稿名就是情景（「1024」「随手十篇」），人靠名字回想当时要什么。\n"
+    "\n"
+    "## 纪律\n"
+    "- 进稿必须有卡；同一篇别连着端；每条线性条目都要写得出为什么。\n"
+    "- 没有「日报/推荐流」这种预设流程——想要什么就说。\n"
+    "## 常见下一步\n"
+    "- 库里没货：fetch_papers 或 fetch_query；换口味：sample(mode='far')。\n"
+    "- 想追脉络：sync_citations / sync_cited_by 之后 read_references / related_papers / "
+    "upstream_clusters。\n"
+    "- 工具报 unknown_key / bad_config_value：先 read_config 看可写键。"
 )
 
-
-@dataclass(frozen=True)
-class ToolDecl:
-    """一条工具声明（mecha 名 → 能力名 + 工具级文案 + 参数处置）。
-
-    参数描述**不在这里**（N8）：住能力层 ``ToolSpec.params[..]["description"]``，
-    由 ``_derive_parameters`` 从 ``_cap_params`` 透传——避免第二份手抄漂移。
-    """
-
-    mecha_name: str
-    cap_name: str
-    kind: str                       # "read" | "write"
-    description: str
-    via_pipeline: bool = False       # True = 走 GP 自己的每日流水线
-    ai_visible: bool = True          # False = 仅保留项目内部/人类命令，不投给 AI
-    omit: tuple[str, ...] = ()       # 不作为模型可见参数的能力入参
+_OBJ = {"type": "object"}
 
 
-#: 55 条能力声明的投影表（单一来源：命令面/工具面/参数派生/必填注入都由它驱动）。
-#: 参数描述不在此（N8）——由 ``_derive_parameters`` 从能力 ``ToolSpec.params`` 透传。
-TOOL_DECLS: tuple[ToolDecl, ...] = (
-
-    # ⚠ 本表**一份声明驱动两面**：写条目 → **命令面**（build_commands 也遍历本表）**+ 工具面**；
-    # 读条目 → **只有工具面**（只读命令**不进**命令面，见 commands.build_read_command）。两面都不手写。
-    ToolDecl("mark_read", "mark_read", "write",
-             "标记论文为已读或未读。",
-             omit=("actor",)),
-    ToolDecl("star_paper", "star_paper", "write",
-             "收藏或取消收藏论文。",
-             omit=("actor",)),
-    ToolDecl("skip_paper", "skip_paper", "write",
-             "标记论文为不感兴趣（同类下次过滤）。",
-             omit=("actor",)),
-    ToolDecl("add_note", "add_note", "write",
-             "给论文添加笔记（调研沉淀）。",
-             omit=("actor",)),
-    ToolDecl("delete_briefing", "delete_briefing", "write",
-             "删除指定日期的简报（同日多版本一并删）。可撤销——事件里存了 markdown+stats 快照，"
-             "undo_change(seq=0) 一键重建。Web 设置页的「删简报」按钮与此同源。",
-             omit=("actor",)),
-    # ------------------------------------------------------------ 只读面（10）
-    ToolDecl("query_topics", "list_topics", "read",
-             "列出研究主题：名称、关键词、分类白名单、关注作者、配额、评分阈值、启用状态。"),
-    ToolDecl("read_digest", "get_digest", "read",
-             "读取某日简报全文（Markdown）与统计。date 省略=今天；full=False 只回统计与条目。"),
-    ToolDecl("search_papers", "search_papers", "read",
-             "在论文库中检索（标题/摘要/要点全文匹配）。query 省略则按时间倒序列出近期论文。"
-             "分页：offset 从 0 起，回程带 next_offset（非空则可继续取）。"),
-    ToolDecl("read_paper", "get_paper", "read",
-             "论文详情：原文摘要、最新 AI 总结、打分历史、笔记、阅读态、本地 PDF 路径。"),
-    ToolDecl("read_activity", "get_activity", "read",
-             "归因面：①操作事件流（可按操作者/操作类型/序号过滤）②近期运行、AI 调用与简报统计。"),
-    ToolDecl("review_status", "review_status", "read",
-             "查看某天评审进度：候选数、已评审数、状态。"),
-    ToolDecl("sync_citations", "sync_citations", "write",
-             "把一篇在库论文的引用边落库成本地图谱（重跑幂等）；之后上游簇/共引相似本地免费查。",
-             omit=("actor",)),
-    ToolDecl("sync_cited_by", "sync_cited_by", "write",
-             "反查'谁引用了这篇'入图（下游扩散独立成层）；引用者可未入库，增量幂等不可 undo。",
-             omit=("actor",)),
-    ToolDecl("tag_paper", "tag_paper", "write",
-             "给在库论文钉图论标签（平台源头/理论源头/综述枢纽/实验谱系/下游扩散/动机），"
-             "一论文一枚；/network 图例着色靠它；可撤销。",
-             omit=("actor",)),
-    ToolDecl("tag_papers", "tag_papers", "write",
-             "批量钉标签（items='arxiv:标签' 逗号分隔，一次事件可整批撤销）——几十篇别一篇一个调用。",
-             omit=("actor",)),
-    ToolDecl("query_tags", "query_tags", "read",
-             "读回已钉标签（篇目→标签 + 各标签计数）：审计与二次编排用。"),
-    ToolDecl("set_graph_view", "set_graph_view", "write",
-             "发布一张图视图——/network 无参数打开即渲染它（AI 画什么，页面显示什么）："
-             "根/深度/布局/分组/着色/标签/预算/锚点一次定完，即时生效、可撤销。",
-             omit=("actor",)),
-    ToolDecl("query_graph_views", "query_graph_views", "read",
-             "列出已发布的图视图（名字/默认/spec 摘要）：切默认或复用前先看这里。"),
-    ToolDecl("set_default_view", "set_default_view", "write",
-             "把某张已发布视图设为默认（/network 无参数渲染它）。",
-             omit=("actor",)),
-    ToolDecl("materialize_view", "materialize_view", "write",
-             "把视图里还没入库的点全部入库（幂等，可反复调用直到 remaining=0）——"
-             "图上的每篇论文都应是库内论文，才能点进管理页/补卡/喂画像。",
-             omit=("actor",)),
-    ToolDecl("upstream_clusters", "upstream_clusters", "read",
-             "关键上游簇：库内多篇反复引同一文献⇒领域思想源头；按入组数降序。"),
-    ToolDecl("related_papers", "related_papers", "read",
-             "共引相似：与指定论文引用集交集最大的库内论文。"),
-    ToolDecl("coverage_report", "coverage_report", "read",
-             "调研资产覆盖率：有卡/读过/收藏统计 + 最新缺卡清单（write_summary 的工单）。"),
-    ToolDecl("stats_timeseries", "stats_timeseries", "read",
-             "趋势聚合：每日入库/信号漏斗/简报节奏/AI 成本按用途（近 N 天）。"),
-    ToolDecl("watch_authors", "watch_authors", "read",
-             "作者监控：主题关注+画像正权作者的近 N 天新提交（只读报告；要入库逐篇 fetch_paper_by_id，"
-             "不自动写库）。"),
-    ToolDecl("paper_metrics", "paper_metrics", "read",
-             "一篇论文的影响力指标：被引数、参考数、高影响引用数、年份、发表场所、要点摘要。"
-             "用于判断分量与质量信号。"),
-    ToolDecl("read_references", "get_references", "read",
-             "取一篇论文引用的文献（往前追溯技术起源）。默认按被引论文引用数降序——排最前的"
-             "即起源/奠基候选；含引用意图（background/method/result）与是否高影响引用。"
-             "可对结果递归再查以继续往前追溯。"),
-    ToolDecl("read_citations", "get_citations", "read",
-             "取引用了这篇论文的文献（往后看影响力扩散与后续工作）。可按引用数降序。"),
-    ToolDecl("query_briefings", "list_briefings", "read",
-             "列出已归档的简报（日期、run_id、入选篇数、是否 AI、状态），按日期倒序。"
-             "与 read_digest 分工：本工具给管理面（有哪些简报可删）；read_digest 给阅读面。"),
-    ToolDecl("query_profile", "get_profile", "read",
-             "读兴趣画像：arXiv 分类/词/作者三维权重 top + 分类熵（防茧房哨兵）。"
-             "行为信号驱动，主题只是先验种子。"),
-    ToolDecl("record_signal", "record_signal", "write",
-             "记一个兴趣信号（view/outbound/download/star/read/skip/uninterested）；"
-             "用户口头说'我下了/看了/不感兴趣'时用它声明，与站内实测信号同权。",
-             omit=("actor",)),
-    ToolDecl("feed_generate", "feed_generate", "read",
-             "生成兴趣推荐流（四道召回：主兴趣/邻接桥/热点作者/探索，带道属与 why，确定性可复算）。"
-             "只读预览用；要上面板/换页用 publish_feed。刷新由你定：换口味改 mix/quotas，换窗口改 days/seen_days，"
-             "接着往下端用上次回执的 meta.next_offset；池子浅了就 fetch_papers 补货。用户说'想看点野的'⇒mix=explorer。"),
-    ToolDecl("publish_feed", "publish_feed", "write",
-             "发布 feed 一期（写库+审计）：/feed 面板即显示这期、不自行重算。"
-             "用户说'20条60天/换一页/野一点'都再调一次本工具，参数全显式；"
-             "换页 offset 续用上次回执 meta.next_offset（零重叠零空洞）。",
-             omit=("actor",)),
-    ToolDecl("write_summary", "write_summary", "write",
-             "单篇补卡：对已入库论文直接写日报级卡（总结五段+可选 score/label 成对），"
-             "feed 卡与详情页自动复用；写错可撤销。",
-             omit=("actor",)),
-    # ------------------------------------------------------------ 写入 / 运行面（14）
-    ToolDecl("undo_change", "undo", "write",
-             "撤销一条可逆的写入（seq=0=最近一条可逆操作）。入库与定稿不可逆，会明确说明。",
-             omit=("actor",)),
-    ToolDecl("fetch_papers", "fetch_papers", "write",
-             "按主题抓取 arXiv 最近 N 天提交的新论文入库（遵守 arXiv 限速，可能较慢）。",
-             omit=("actor",)),
-    ToolDecl("fetch_paper_by_id", "fetch_paper_by_id", "write",
-             "按 arXiv id 把单篇拉进入库（对话里‘这篇加进来’）；幂等，已在库回 cached。",
-             omit=("actor",)),
-    ToolDecl("prepare_review", "prepare_review", "write",
-             "评审阶段1：取过规则后的候选清单（含主题画像、摘要截断、基线分），等待评审。"
-             "两阶段（W5 省 token）：stage=brief 只看标题+短摘粗筛，再 stage=full+arxiv_ids "
-             "拉 shortlist 全文精评；池子空时 requeue=True 可原班人马再审。",
-             omit=("actor",)),
-    ToolDecl("submit_review", "submit_review", "write",
-             "评审阶段2：提交对候选的评审。reviews=[{arxiv_id,score,label,reason,tags?,summary?}]。",
-             omit=("actor",)),
-    ToolDecl("finalize_briefing", "finalize_briefing", "write",
-             "评审阶段3：用已提交评审（缺的用基线分）筛选、精读、生成简报并落库。",
-             omit=("actor",)),
-    ToolDecl("run_pipeline", "run_pipeline", "write",
-             "一键全流程（人类/调度入口）：候选→规则筛选→抽取式摘要→简报。",
-             via_pipeline=True, ai_visible=False, omit=("actor",)),
-    ToolDecl("add_topic", "add_topic", "write",
-             "新增研究主题（即时生效）。keywords/categories/exclude_keywords 用逗号分隔。",
-             omit=("actor",)),
-    ToolDecl("update_topic", "update_topic", "write",
-             "更新既有主题：只改传入的字段（列表逗号分隔、替换语义，省略=不动；"
-             "quota/threshold 负数=不动）。启用/停用请用 set_topic_enabled。",
-             omit=("actor",)),
-    ToolDecl("set_topic_enabled", "set_topic_enabled", "write",
-             "启用或停用某个研究主题。",
-             omit=("actor",)),
-    # ------------------------------------------------------------ 精读面（10）
-    # arXiv HTML 正文 + 带位置的批注。分工：判断归 AI（读哪节、标哪句、批注写什么），
-    # 几何归代码（原句→精确字符区间、资源离线化、页面渲染、无头截图）。
-    # ⚠ `delete_mark` **不在这里**——批注是精读痕迹，处置权归人（与 delete_graph_view 同款）。
-    ToolDecl("fetch_paper_html", "fetch_paper_html", "write",
-             "下载并归档一篇论文的 HTML 正文（剥脚本、全量离线抓下样式与图片）："
-             "精读体系的地基。arXiv 未提供 HTML 的论文如实报 no_html。",
-             omit=("actor",)),
-    ToolDecl("read_paper_outline", "read_paper_outline", "read",
-             "一篇论文的章节树 + 锚点地图：每节的块数与类型分布、块 id 样例。"
-             "进正文前先看它——后面的读/检索/批注都吃这些块 id。"),
-    ToolDecl("search_library_text", "search_library_text", "read",
-             "在已归档正文里跨篇检索（块级）：命中回论文 + 块 + 高亮片段，可一步跳到原文那一段。"
-             "与 search_papers 互补——那个答「哪篇相关」，这个答「原文在哪说」。"),
-    ToolDecl("read_paper_text", "read_paper_text", "read",
-             "读论文正文（分块、带块 id）：可按章节/块取，也可从头顺读；截断时回 next_offset。"),
-    ToolDecl("search_paper_text", "search_paper_text", "read",
-             "在单篇论文正文里检索：命中带块 id 与前后文——用它定位'这句话在哪一块'。"),
-    ToolDecl("annotate_paper", "annotate_paper", "write",
-             "在论文原文上加带位置的批注：给原句（quote）或块 id，由后端解析成精确区间再落库"
-             "（段落/句子/公式/图表都能标）。回执 snippet 就是'标在哪'的证据。",
-             omit=("actor",)),
-    ToolDecl("update_mark", "update_mark", "write",
-             "改一条批注（正文/状态/颜色）。",
-             omit=("actor",)),
-    ToolDecl("resolve_mark", "resolve_mark", "write",
-             "把一条批注标为已解决（痕迹留着，问题算处理完）。",
-             omit=("actor",)),
-    ToolDecl("verify_marks", "verify_marks", "read",
-             "批注回执：逐条报「重锚结果 + 命中的原句 + 前后文」——标完先看它，"
-             "位置错了一眼看得出来，不必等人截图。"),
-    ToolDecl("capture_paper_shot", "capture_paper_shot", "write",
-             "服务端无头截图：把真实阅读页拍成 PNG 存本地并回文件路径——"
-             "用 read_image 打开就能看见批注长什么样、挡没挡住正文。",
-             omit=("actor",)),
-    ToolDecl("read_paper_shots", "read_paper_shots", "read",
-             "列出这篇论文已拍过的截图（最近优先），回本地路径交给 read_image。"),
-)
-
-#: mecha 名 → 能力名（判据/宿主自省用的单一来源投影）。
-TOOL_TO_CAPABILITY: dict[str, str] = {
-    d.mecha_name: d.cap_name for d in TOOL_DECLS if d.ai_visible
-}
+def _window_bounds(text: str) -> tuple[str, str]:
+    """把 `from~to` 解析成两个日期串（`score_papers` 的窗口参数用）。"""
+    first = (text or "").replace("，", ",").split(",")[0].strip()
+    if "~" not in first:
+        raise MechaError(f"窗口 {first!r} 缺 `~`", kind="bad_window",
+                         hint="格式：2026-01-01~2026-01-31")
+    lo, hi = (part.strip() for part in first.split("~", 1))
+    if not lo or not hi:
+        raise MechaError(f"窗口 {first!r} 两端都要写", kind="bad_window",
+                         hint="格式：2026-01-01~2026-01-31")
+    return lo, hi
 
 
-def _suggest_text(suggest: object) -> str:
-    """能力信封的 suggest（可能是 list）→ MechaError.suggest（str）。"""
-    if isinstance(suggest, (list, tuple)):
-        return "、".join(str(x) for x in suggest)
-    return str(suggest or "")
+def build_tools(ctx: Context, software, *, policy=None, side: str = "ai") -> ToolRegistry:
+    repo, settings = ctx.repo, ctx.settings
+    registry = ToolRegistry()
 
+    def read_tool(*, name: str, description: str, parameters: dict, required: list[str],
+                  execute) -> None:
+        registry.register(define_tool(name=name, description=description,
+                                      parameters=describe(parameters, owner=name),
+                                      output_schema={"type": "object", "required": required},
+                                      # 省略的可选参数会以 None 到达（MCP 签名是合成的）；
+                                      # 长列表过体积闸，截断时说清截了多少、去哪看全量。
+                                      execute=with_cap(with_defaults(execute),
+                                                       where=f"{name} 的结果")))
 
-def _cap_params(container, cap_name: str) -> dict:
-    spec = capabilities.registry_for(container).get(cap_name)
-    if spec is None:                       # 声明表与能力层脱节：fail loud（不静默漏工具）
-        raise MechaError(f"能力 {cap_name!r} 不在能力层", kind="capability_missing",
-                         hint="工具声明表引用了不存在的能力；核对 capabilities/tools.py")
-    return dict(spec.params)
+    def _require_paper(arxiv_id: str) -> dict:
+        view = repo.paper_view(arxiv_id)
+        if view is None:
+            raise MechaError(f"库里没有 {arxiv_id}", kind="not_found",
+                             hint="先 fetch_paper(arxiv_id=…)")
+        return view
 
+    # ------------------------------------------------------------------ 读
+    def _query(limit: int = 20, offset: int = 0) -> dict:
+        # 页大小就锁在体积闸的 KEEP 上：这样 `next_offset` 与真正返回的条数**永远一致**，
+        # 不会出现"我回了 20 条却让你从 100 续读"的错位。
+        limit = max(1, min(KEEP, int(limit)))
+        offset = max(0, int(offset))
+        rows = repo.list_papers(limit=limit, offset=offset)
+        total = repo.count_papers()
+        out = {"total": total, "offset": offset, "papers": [_brief(p) for p in rows]}
+        if offset + len(rows) < total:
+            out["next_offset"] = offset + len(rows)
+            out["where"] = f"还有 {total - offset - len(rows)} 篇没回；再调 offset=… 续读"
+        return out
 
-def _derive_parameters(cap_params: Mapping[str, dict], decl: ToolDecl) -> dict:
-    """从能力自描述 params 机械派生 mecha 参数声明（R5 三分法）。"""
-    out: dict[str, dict] = {}
-    for pname, info in cap_params.items():
-        if pname in decl.omit:
-            continue
-        entry: dict[str, object] = {}
-        jtype = info.get("type")
-        if jtype:
-            entry["type"] = jtype
-        # 可选项且真默认非 None ⇒ 必须声明 default（框架 null 垫片只读声明）。
-        if not info.get("required") and info.get("default") is not None:
-            entry["default"] = info["default"]
-        desc = info.get("description")        # N8：描述从能力 spec 透传（单一来源，不再手抄）
-        if desc:
-            entry["description"] = desc
-        out[pname] = entry
-    return out
+    read_tool(
+        name="query_papers", description="按发布日期倒序列出库内论文（分页：每页最多 20，续读用 next_offset）。",
+        parameters={"limit": {"type": "integer", "description": "每页条数（默认 20，上限 20）"},
+                    "offset": {"type": "integer", "description": "从第几条开始（续读用上次的 next_offset）"}},
+        required=["papers", "total"], execute=_query)
 
+    def _search(query: str = "", limit: int = 30) -> dict:
+        papers = repo.search(query, limit=int(limit))
+        return {"count": len(papers), "papers": [_brief(p) for p in papers]}
 
-def _required_names(cap_params: Mapping[str, dict], decl: ToolDecl) -> list[str]:
-    return [p for p, i in cap_params.items()
-            if i.get("required") and p not in decl.omit]
+    read_tool(
+        name="search_papers", description="库内检索（标题 / 摘要 / 编号）。",
+        parameters={"query": {"type": "string"}, "limit": {"type": "integer"}},
+        required=["papers", "count"], execute=_search)
 
+    def _read_paper(arxiv_id: str) -> dict:
+        view = _require_paper(arxiv_id)
+        view["notes"] = repo.notes(view["arxiv_id"])
+        return {"paper": view}
 
-def envelope_to_error(res: Mapping[str, object]) -> MechaError:
-    """能力失败信封 → MechaError（读/写两路共用，单一来源）。
+    read_tool(
+        name="read_paper", description="一篇论文的全部状态：元数据、卡、人的状态、笔记、进过哪些草稿。",
+        parameters={"arxiv_id": {"type": "string"}}, required=["paper"],
+        execute=_read_paper)
 
-    ⚠ 非标准信封兜底（N2）：能力返 `ok:false` 却**不带 `error`** 时，绝不吞成
-    一口“调用失败”——用 `bad_envelope` + 截断透传原始 JSON，让模型看得见到底返了
-    什么。根子（“允许裸 ok:false”）已回馈框架（见内部 n=3 报告，未随仓发布）。
+    read_tool(
+        name="read_profile", description="读兴趣画像：三维 top、衰减后读数、熵、锚点、信号计数。",
+        parameters={"top": {"type": "integer"}}, required=["profile"],
+        execute=lambda top=12: {"profile": scoring.profile_view(repo, settings,
+                                                                top=int(top))})
 
-    ⚠ **与框架那条 `bad_envelope` 的关系：纵深，不是重复**（2026-09-26 框架第 3 批）。
-    框架在**投影层**也做了同款（`mecha/providers/mcp.py`），它覆盖的是
-    "**宿主自己没转换**"的通用情形；本仓在**适配层先转换**（这里就能看到原文，并把它透传给模型）
-    ⇒ 框架那条对我们是**够不到的 backstop**（我们交出去的已是标准错误）。**故意保留**：
-    删掉它，非标信封会退化成框架"回执 ok=False 却没给 error"那种**看不到原文**的失败，对模型更差。
-    """
-    e = res.get("error")
-    if not isinstance(e, Mapping) or not e:
-        raw = json.dumps(res, ensure_ascii=False, default=str)[:500]
-        return MechaError(
-            f"能力返回了非标准失败信封（ok:false 却无 error）：{raw}",
-            kind="bad_envelope",
-            hint="能力层失败须返回 {ok:false, error:{kind,message,hint}}；这是能力层的信封 bug。",
-        )
-    return MechaError(
-        str(e.get("message") or "调用失败"),
-        kind=str(e.get("kind") or "error"),
-        hint=str(e.get("hint") or ""),
-        suggest=_suggest_text(e.get("suggest")),
-    )
+    read_tool(
+        name="query_drafts", description="列出草稿（可按 kind 过滤），带每页当前的默认草稿。",
+        parameters={"kind": {"type": "string"}}, required=["drafts", "count"],
+        execute=lambda kind="": {
+            "count": len(repo.drafts(kind=kind)),
+            "drafts": [draft_lib.describe(d) for d in repo.drafts(kind=kind)],
+            "defaults": {"linear": repo.setting("page.linear.default", ""),
+                         "network": repo.setting("page.network.default", "")}})
 
+    def _read_draft(ident: str = "") -> dict:
+        draft = repo.draft(ident.strip() or None)
+        if draft is None:
+            raise MechaError(f"没有草稿 {ident!r}", kind="not_found",
+                             hint="先 query_drafts 看有哪些")
+        ids = draft_lib.entry_ids(draft["kind"], draft["payload"])
+        papers = repo.papers_by_ids(ids)
+        cards = repo.cards_of(ids)
+        stars = repo.star_map(ids)
+        entries = []
+        for aid in ids:
+            brief = _brief(papers.get(aid) or {"arxiv_id": aid})
+            brief["card"] = cards.get(aid)
+            brief["starred"] = bool(stars.get(aid))
+            entries.append(brief)
+        return {"draft": {"id": draft["id"], "kind": draft["kind"], "title": draft["title"],
+                          "note": draft["note"], "created_at": draft["created_at"],
+                          "updated_at": draft["updated_at"]},
+                "entries": entries}
 
-def _raise_from_envelope(res: Mapping[str, object]) -> None:
-    """把能力失败信封转成 MechaError 抛出（ToolRegistry.execute 会归一化）。"""
-    raise envelope_to_error(res)
+    read_tool(
+        name="read_draft", description="读一份草稿（省略 ident 取最近修改的），带论文卡与收藏态。",
+        parameters={"ident": {"type": "string"}}, required=["draft", "entries"],
+        execute=_read_draft)
 
+    #: 窗口内最多评多少篇。**与 limit 无关**：候选面由时间窗决定，不由"要几条"决定。
+    #: 旧写法用 `limit*4` 取最新的一小撮 ⇒ `days=6, limit=10` 只看 40 篇、
+    #: 全是最后一天的，窗口里更早的好论文根本没进候选（静默截断，实测踩到）。
+    _SCORE_POOL_CAP = 2000
 
-#: 命令面上存在、但**声明不住 `TOOL_DECLS`** 的两条**人类专属**手写命令（删笔记 / 批量配置写）。
-#: 它们也要过一遍 `project()`：这样"看不见"是 **policy 派生**的（`project()` 返回 `None`），
-#: 而不是靠"没人把它写进工具面"（一个事实一个家，见 d64f35b）。
-#: ⚠ 这**不是迁移开关**（那类开关随迁移做完就该退场）：这是**语义**——"谁的声明不在声明表里"，
-#: 不会因为读侧/写侧切完而消失。
-#: ⚠ `set_config` 同样"不在 `TOOL_DECLS`"，但它**有工具面**（手写在 `_register_config_tools`，
-#: 与 `read_config` 配对）⇒ **不在此列**（它进投影会与那份手写注册重复）。
-_ADMIN_ONLY_COMMANDS: tuple[str, ...] = ("delete_note", "set_config_batch")
-
-
-def _params_for_model(decl, cap_params) -> dict:
-    """**投影产物 + 本仓的"模型面参数口径"** ⇒ 给模型的参数 schema（在本侧合并）。
-
-    ⚠ 为什么在本侧合并（n=1，R1）：`project()` 搬的是**命令面** schema，而
-    ① "给模型的参数说明"住**能力层**（N8 单一事实源）；
-    ② "对模型是否必填"是**工具面口径**（今天：全部可选 —— 命令面必填 ≠ 对模型必填）；
-    这两样都是**项目口径**，框架不知道也不该知道 ⇒ 由本函数并回去（框架只搬不解释）。
-    ⚠ `actor` 在这里显式去掉：投影产物自带框架的自动剔除，但**本函数覆盖了参数**
-    ⇒ 被覆盖的那份由本函数负责（不是"两处表达同一件事"：框架那份已被丢弃）。
-    """
-    params = _derive_parameters(cap_params, decl)
-    params.pop("actor", None)
-    return params
-
-
-def build_tool_registry(container, sw, channel: Channel | None = None) -> ToolRegistry:
-    """装配 PaperPilot 的工具面（61 = `TOOL_DECLS` 的 55 条声明 + 6 条非能力面）。
-
-    **声明面全部**由 `mecha.projection.project()` 生成（见下面的循环）；本函数只接**两样**项目口径：
-
-    - **只读能力**：``execute`` 桥到 ``capabilities.invoke``（不经门、不留痕，D-4）。
-    - **写入能力**：``execute`` 桥到**命令面**（``invoke_command``）——写权（authority）与审计
-      （``command.<name>`` 落 History）由命令面治理（Phase 2）。
-
-    另有三块**不从声明来**的面（各自手写注册）：``set_config`` / ``read_config``（配置标量，
-    Scheme E）、``read_write_authority``（写权自省，**框架的唯一实现**）
-    （长活 job 化）。
-
-    ``channel`` 缺省 = ``sw.channels['ai']``（AI 侧，actor 钉死 'ai'）。
-    """
-    channel = channel or sw.channels["ai"]
-    reg = ToolRegistry()
-    # ⭐ **工具面 = 全部声明经 `mecha.projection.project()` 生成**（迁移完成 ⇒ 这里**没有**手写注册
-    #   循环了）：投影给 名字（惯例/改名 + 形状律）、描述（透传；有 overrides 就用它）、
-    #   **scope 不被 policy 允许 ⇒ None**（"看不见"）、kind（由 side_effect **翻译**）、reversible；
-    #   参数面由本侧按**写/读两套口径**并回去（见下面的注释）；`actor` 框架自动剔除。
-    #   ⚠ 投影只给**声明面**：`execute` 必须由本侧接上（写 = 命令桥、读 = 能力桥），
-    #   否则"列得出调不动"。
-    from mecha.projection import ProjectionOverrides, project
-
-    specs_by_name = {s.name: s for s in sw.commands.specs()}
-    cap_rev = {c["name"]: bool(c["reversible"]) for c in capabilities.specs(container)}
-    policy = getattr(sw.commands, "_scope_policy", None)
-    decls_by_name = {d.mecha_name: d for d in TOOL_DECLS if d.ai_visible}
-    # 全部声明（30 写 + 25 读，按声明序）+ 两条人类专属手写命令（见 `_ADMIN_ONLY_COMMANDS`）。
-    for mecha_name in (*decls_by_name, *_ADMIN_ONLY_COMMANDS):
-        decl = decls_by_name.get(mecha_name)
-        is_read = decl is not None and decl.kind == "read"
-        if is_read:
-            # ⭐ **读侧**：声明就住**同一张** `TOOL_DECLS`（一个事实一个家），但它的**命令声明不进
-            #   命令面**——命令面是写治理面，不变式是"每一条都是写命令"（要通道 / 要 reason /
-            #   要非零预估，两条冻结判据逐条钉着），而读命令进那个面**只为投影**、却会让那两条
-            #   不变式变成假的。理由与实测见 `commands.build_read_command`。
-            # 延迟导入：commands 依赖 tools（避免模块级循环）。
-            from .commands import build_read_command
-
-            projected = project(
-                build_read_command(container, decl),
-                execute=_make_capability_bridge(container, decl.cap_name),
-                policy=policy, side="ai",
-                overrides=ProjectionOverrides(reversible=cap_rev.get(decl.cap_name, False)),
-            )
+    def _score(arxiv_ids: str = "", days: int = 7, limit: int = 50,
+               windows: str = "", offset: int = 0) -> dict:
+        if arxiv_ids.strip():
+            ids = [part.strip() for part in arxiv_ids.replace("，", ",").split(",")
+                   if part.strip()]
+            papers = list(repo.papers_by_ids(ids).values())
+        elif (windows or "").strip():
+            lo, hi = _window_bounds(windows)
+            papers = repo.between(lo, hi, limit=_SCORE_POOL_CAP)
         else:
-            spec = specs_by_name.get(mecha_name)
-            if spec is None:
-                raise MechaError(f"命令 {mecha_name!r} 不在命令面上",
-                                 kind="capability_missing",
-                                 hint="写命令的声明由 `commands.build_commands` 从 `TOOL_DECLS` 派生；"
-                                      "人类专属命令在 `commands.py` 里手写注册 ⇒ 缺它说明声明与命令面脱节")
-            projected = project(
-                spec,
-                execute=_make_command_bridge(sw.commands, sw.gate, channel, mecha_name,
-                                             approval=sw.approval),
-                policy=policy, side="ai",
-                overrides=ProjectionOverrides(reversible=cap_rev.get(mecha_name, False)),
-            )
-        if projected is None:                 # policy 不让 ⇒ 按设计"看不见"
-            continue
-        # ⚠ **参数面必须在上面那句 `continue` 之后算**（沿用重构前的次序）：`delete_note` /
-        #   `set_config_batch` **不是能力**（它们是人类专属命令）⇒ 它们的 scope 只给人、
-        #   投影返回 None、根本走不到这里；若把取参提到前面，那两条会让装配期直接炸
-        #   （`_cap_params` fail loud）。这也是"看不见由 scope 派生"的连带前提。
-        #   ⚠ 读侧用**能力层口径**（`_derive_parameters`），不用写侧那句 `params.pop("actor")`：
-        #   `read_activity` 的 `actor` 是**过滤条件**（保留给模型），不是归因（见本模块 docstring）。
-        if is_read:
-            parameters = _derive_parameters(_cap_params(container, decl.cap_name), decl)
+            papers = repo.recent(days=max(1, int(days)), limit=_SCORE_POOL_CAP)
+        ranked = scoring.rank(repo, papers, settings.half_life_days)
+        start = max(0, int(offset))
+        page = ranked[start:start + int(limit)]
+        return {"count": len(page), "pool": len(papers), "offset": start,
+                "results": [{"arxiv_id": item["paper"]["arxiv_id"],
+                             "title": item["paper"]["title"],
+                             "published": (item["paper"].get("published_at") or "")[:10],
+                             "score": item["score"], "why": item["why"]} for item in page]}
+
+    read_tool(
+        name="score_papers",
+        description="按画像给一个时间窗内的**全部**论文打分并排序（0~1 + 为什么）；"
+                    "候选面由 windows/days 决定，不由 limit 决定。分页用 offset。",
+        parameters={"arxiv_ids": {"type": "string", "description": "逗号分隔（给了就只评这些）"},
+                    "days": {"type": "integer", "description": "回溯天数（windows 省略时生效）"},
+                    "windows": {"type": "string",
+                                "description": "日期段 from~to，如 2026-01-01~2026-01-31"},
+                    "limit": {"type": "integer", "description": "本页多少条（默认 50，上限 20）"},
+                    "offset": {"type": "integer", "description": "从第几条开始（续读用）"}},
+        required=["count", "results"], execute=_score)
+
+    def _sample(n: int = 10, days: int = 365, mode: str = "random",
+                exclude_recent_drafts: bool = True) -> dict:
+        papers = repo.recent(days=max(1, int(days)), limit=5000)
+        if not papers:
+            raise MechaError(f"近 {days} 天库里没有论文", kind="empty_library",
+                             hint="先 fetch_papers，或把 days 放大")
+        if exclude_recent_drafts:
+            seen = repo.recent_draft_ids(days=settings.recent_draft_days)
+            papers = [p for p in papers if p["arxiv_id"] not in seen]
+        snapshot = scoring.profile_snapshot(repo, settings.half_life_days)
+        top = set(sorted(((k, v["w"]) for k, v in snapshot["category"].items() if v["w"] > 0),
+                         key=lambda kv: -kv[1])[:max(3, settings.default_regions_n)])
+        if mode == "recent":
+            picked = papers[:int(n)]
+        elif mode == "focused":
+            pool = [p for p in papers if p["primary_category"] in top]
+            picked = random.sample(pool, min(int(n), len(pool)))
+        elif mode == "far":
+            pool = [p for p in papers if p["primary_category"] not in top]
+            picked = random.sample(pool, min(int(n), len(pool)))
         else:
-            # ⚠ 写侧的 **mecha 名不一定等于能力名**（`undo_change` → 能力 `undo`；`_SCOPES` 里也是
-            #   这么写的）⇒ 能力层取参必须走 `decl.cap_name`。既有的"参数机械派生"判据
-            #   （`check/test_mecha_criteria.py`）对账用的正是 `decl.cap_name` ⇒ 这里跟它同口径
-            #   （从前这里用 mecha 名，只是**已切的那批恰好都同名**才没炸）。
-            #   `delete_note` / `set_config_batch` 不是能力，但它们在上面就被 policy 挡掉、走不到这里。
-            cap_name = decl.cap_name if decl is not None else mecha_name
-            parameters = _params_for_model(
-                ToolDecl(mecha_name, cap_name, "write", "", omit=()),
-                _cap_params(container, cap_name))
-        reg.register(define_tool(
-            name=projected.name,
-            description=projected.description,
-            parameters=parameters,
-            output_schema={"type": "object", "required": ["ok"]},
-            execute=projected.execute,
-            banned_words=_BANNED_WORDS,
-        ))
-    _register_config_tools(reg, sw, channel)
-    # 写权自省：⭐ **框架的唯一实现**（2026-10-08 用户裁决上提；GP 自写的那份已删——
-    # 留着它就是**第二份判定规则**，正是"上升进架构"要消灭的东西）。
-    # `how_to_open` 是**项目知识**（人从哪个入口切写权），框架刻意不写死 ⇒ 由 GP 给。
-    register_authority_read(
-        reg, sw.authority,
-        how_to_open=("在 Get Paper 的 Web 页 `/settings` 的「写权模式」卡上切"
-                     "（本机可信、无口令；AI 侧不能自解锁——它拿不到控制端点的地址）"))
-    return reg
+            picked = random.sample(papers, min(int(n), len(papers)))
+        return {"mode": mode, "count": len(picked), "pool": len(papers),
+                "papers": [_brief(p) for p in picked]}
+
+    read_tool(
+        name="sample",
+        description="抽样（不是排序）：random / recent / focused（画像分类内）/ far（画像分类外）。",
+        parameters={"n": {"type": "integer"}, "days": {"type": "integer"},
+                    "mode": {"type": "string"}, "exclude_recent_drafts": {"type": "boolean"}},
+        required=["count", "papers"], execute=_sample)
+
+    read_tool(
+        name="scanned_days", description="已经扫过的自然日清单（扫描账）。",
+        parameters={}, required=["days", "count"],
+        execute=lambda: {"days": sorted(repo.scanned_days()),
+                         "count": len(repo.scanned_days())})
+
+    read_tool(
+        name="read_references", description="这一篇引了谁（按被引数降序，标出哪些在库里）。",
+        parameters={"arxiv_id": {"type": "string"}}, required=["references", "count"],
+        execute=lambda arxiv_id: {"count": len(repo.edges_from(arxiv_id)),
+                                  "references": repo.edges_from(arxiv_id)})
+
+    read_tool(
+        name="read_citations", description="谁引用了这一篇（按被引数降序）。",
+        parameters={"arxiv_id": {"type": "string"}}, required=["citations", "count"],
+        execute=lambda arxiv_id: {"count": len(repo.edges_to(arxiv_id)),
+                                  "citations": repo.edges_to(arxiv_id)})
+
+    read_tool(
+        name="related_papers", description="共引相似：引用集交集最大的库内论文。",
+        parameters={"arxiv_id": {"type": "string"}, "limit": {"type": "integer"}},
+        required=["related", "count"],
+        execute=lambda arxiv_id, limit=10: {
+            "count": len(repo.related(arxiv_id, limit=int(limit))),
+            "related": repo.related(arxiv_id, limit=int(limit))})
+
+    read_tool(
+        name="upstream_clusters",
+        description="关键上游簇：库里多篇反复引的同一文献——领域思想源头。",
+        parameters={"min_count": {"type": "integer"}, "limit": {"type": "integer"}},
+        required=["clusters", "count"],
+        execute=lambda min_count=2, limit=20: {
+            "count": len(repo.upstream_clusters(min_count=int(min_count), limit=int(limit))),
+            "clusters": repo.upstream_clusters(min_count=int(min_count), limit=int(limit))})
+
+    read_tool(
+        name="read_activity", description="读事件流（仪表盘同源，可按 op 前缀与操作者过滤）。",
+        parameters={"limit": {"type": "integer"}, "op": {"type": "string"},
+                    "actor": {"type": "string"}},
+        required=["events", "count"],
+        execute=lambda limit=50, op="", actor="": {
+            "count": len(repo.events(limit=int(limit), op_prefix=op, actor=actor)),
+            "events": repo.events(limit=int(limit), op_prefix=op, actor=actor)})
+
+    read_tool(
+        name="read_config", description="读当前生效的标量配置、可写键与信号权重。",
+        parameters={}, required=["config", "writable"],
+        execute=lambda: {"config": {key: getattr(settings, key)
+                                    for key in config_mod.CONFIG_KEYS},
+                         "writable": {key: {"type": spec.kind, "lo": spec.lo, "hi": spec.hi}
+                                      for key, spec in config_mod.CONFIG_SCHEMA.items()},
+                         "signal_weights": dict(settings.signal_weights)})
+
+    read_tool(
+        name="read_status", description="库规模、卡数、收藏数、草稿数、事件数、扫过天数、引文边。",
+        parameters={}, required=["papers", "cards", "drafts"],
+        execute=lambda: _status(repo))
+
+    # ------------------------------------------------------------------ 写（投影）
+    if policy is not None:
+        software.commands.bind_scope_policy(policy)
+    for spec in software.commands.specs():
+        tool = project(spec, execute=_bridge(software, spec.name), policy=policy, side=side)
+        if tool is not None:
+            registry.register(tool)
+    return registry
 
 
-def _make_capability_bridge(container, cap_name: str):
-    """只读能力的 execute 桥（不经门；失败信封转 MechaError 抛出）。"""
-    def _exec(**kwargs):
-        res = capabilities.invoke(container, cap_name, **dict(kwargs))
-        if not res.get("ok"):
-            _raise_from_envelope(res)
-        return res
-    return _exec
+def _bridge(software, name: str):
+    """命令 → 工具的执行桥：回执解包成 `value`，失败重新抛成 MechaError。
 
-
-def _make_command_bridge(commands, gate, channel: Channel, cmd_name: str, *, approval=None):
-    """写入能力的 execute 桥：经命令面 invoke（authority 写权闸 + Gate 审计）。
-
-    ``call_id`` 从请求作用域读并随 args 传入——命令面把它抽给 Gate 审计事件，
-    把这次工具调用与宿主行为史钉在一起（总纲 §5.2② 互引）。经 ``invoke_command``
-    统一入口调用（写权检查前置在框架侧；handler 的 channel 由 ``wants_channel`` 声明注入）。
-    ``approval`` = 宿主的审批通道（``sw.approval``）：声明了 ``approval_required`` 的命令
-    由框架 fail-closed 拦，本项目当前无此声明 ⇒ 不触发，但接口先接对。
+    刻意**不让工具层再判一次写权**：门在命令面，这里只转发。
     """
-    from .commands import invoke_command  # 延迟导入：commands 依赖 tools，避免模块级循环
+    def execute(**kwargs):
+        from mecha.surface import ExecutionContext
 
-    def _exec(**kwargs):
-        args = dict(kwargs)
-        args["call_id"] = CURRENT_CALL_ID.get()
-        # reason 在命令面是必填（才会透传给 handler、写进域 journal）；对模型仍可选，
-        # 故省略时桥接填默认空串（不影响命令 required 契约）。
-        args.setdefault("reason", "")
-        res = invoke_command(commands, gate, channel, cmd_name, args, approval=approval)
-        if res["is_error"]:
-            failure = res["error"]
-            info = failure.get("info", {})
-            raise MechaError(
-                str(failure.get("message") or "写入失败"),
-                kind=str(info.get("kind") or "error"),
-                hint=str(info.get("hint") or ""),
-                suggest=str(info.get("suggest") or ""),
-            )
-        return res["value"]
-    return _exec
+        result = software.commands.invoke(
+            name, kwargs, context=ExecutionContext(), gate=software.gate,
+            channel=software.channels["ai"], approval=software.approval)
+        if result.get("is_error"):
+            error = result.get("error") or {}
+            info = error.get("info") or {}
+            raise MechaError(str(error.get("message") or f"命令 {name} 失败"),
+                             kind=str(info.get("kind") or "command_failed"),
+                             hint=str(info.get("hint") or ""),
+                             suggest=str(info.get("suggest") or ""))
+        return cap(dict(result.get("value") or {}), where=f"{name} 的结果")
+
+    execute.__name__ = name
+    return execute
 
 
-def _register_config_tools(reg: ToolRegistry, sw, channel: Channel) -> None:
-    """配置态工具（Scheme E：标量走 Gate）：**set_config 走命令面**，read_config 直读快照。
-
-    ⭐ **写的那半走命令面**（2026-09-26）：`set_config` 原先是**唯一直写 `gate.set` 的写工具**
-    ⇒ 框架账上只有"某个配置键变了"这条**键事件**，没有"谁执行了一次 set_config"这条**操作审计**。
-    现在它经 `invoke_command`（与 19 条写能力同一条路）⇒ **键事件与 `command.set_config` 审计
-    同时落账**（判据 `test_set_config_via_tools_leaves_command_audit`）。
-    ⚠ **只读的那半（`read_config`）一行不动**：D-4 —— 只读不经门、也不产生操作审计
-    （对偶判据 `test_read_config_stays_ungated`）。
-    ⚠ **工具签名保持具名**（`key, value, reason="ai set_config"`，不用 `**kwargs`）：该工具的 MCP
-    投影历史上依赖"签名可用"（MCP 的 required 从签名派生）⇒ 换形状会改掉模型看到的参数面。
-    """
-    from .commands import invoke_command  # 延迟导入：commands 依赖 tools，避免模块级循环
-
-    gate = sw.gate  # 只读那半仍直读快照（不经门）
-
-    def _set_config_via_command(key: str, value, reason: str = "ai set_config"):
-        """工具面 → 命令面。成功把命令体 values 原样返回（**回执形状不变**：
-        `ok/key/before/resolved/readback`）；失败按命令面桥的同一做法抛 `MechaError`
-        （kind/hint/suggest 取自 failure）⇒ 对模型的失败档位与从前一致。"""
-        res = invoke_command(sw.commands, sw.gate, channel, "set_config",
-                             {"key": key, "value": value, "reason": reason},
-                             approval=sw.approval)
-        if res["is_error"]:
-            failure = res["error"]
-            info = failure.get("info", {})
-            raise MechaError(
-                str(failure.get("message") or "配置写入失败"),
-                kind=str(info.get("kind") or "error"),
-                hint=str(info.get("hint") or ""),
-                suggest=str(info.get("suggest") or ""),
-            )
-        return res["value"]
-
-    reg.register(define_tool(
-        name="set_config",
-        description=(
-            "设置一个标量配置键的值（如评分阈值、抓取回溯天数、每主题配额）。"
-            "键必须是可写配置键（见 read_config 的清单）；类型/值域不符会被拒并说明。"
-            "改动即时对后续每日流水线生效，并留可追溯记录。"
-            "reason 用一句中文写清这次改动的目的。"
-        ),
-        parameters={"key": {"type": "string",
-                            "description": "可写配置键，如 scoring.threshold"},
-                    "value": {"description": "新值，类型须匹配该键（见 read_config）"},
-                    "reason": {"type": "string", "default": "ai set_config",
-                               "description": "一句话中文说明改动目的"}},
-        output_schema={"type": "object", "required": ["ok", "key"]},
-        execute=_set_config_via_command,
-        banned_words=_BANNED_WORDS,
-    ))
-    reg.register(define_tool(
-        name="read_config",
-        description=(
-            "读取当前生效的标量配置（评分阈值、抓取回溯天数、配额等）与可写键清单"
-            "（含类型/值域）。写 set_config 前先看这里确认键名与当前值。"
-        ),
-        parameters={},
-        output_schema={"type": "object", "required": ["ok", "config"]},
-        execute=lambda: _read_config(gate),
-        banned_words=_BANNED_WORDS,
-    ))
+def _brief(paper: dict) -> dict:
+    return {"arxiv_id": paper.get("arxiv_id", ""), "title": paper.get("title", ""),
+            "published": (paper.get("published_at") or "")[:10],
+            "primary_category": paper.get("primary_category", ""),
+            "authors": (paper.get("authors") or [])[:4]}
 
 
-def _coerce_config(key: str, value):
-    """数值/整型配置键：把数字字符串收编回数值（宿主对未声明 type 的参数会转 str）。"""
-    rec = CONFIG_SCHEMA.get(key) or {}
-    tname = rec.get("type")
-    if isinstance(value, str) and tname in ("int", "float"):
-        s = value.strip()
-        try:
-            return int(s) if tname == "int" else float(s)
-        except ValueError:
-            return value          # 非纯数字串：交 validate 如实拒（不猜）
-    return value
-
-
-def _set_config(gate, channel: Channel, key: str, value, reason: str):
-    before = gate.snapshot.get(key)
-    ev = gate.set(channel, key, _coerce_config(key, value), reason=reason,
-                  call_id=CURRENT_CALL_ID.get())
-    # 回执自带回读：resolved=实际落地值、readback=从快照读回值、before=写前旧值。
-    # ⚠ 对齐 mecha 新事件形状（2026-09-30）：事件的 `value` 改名 `after`。
-    return {"ok": True, "key": key, "before": before,
-            "resolved": ev.after, "readback": gate.snapshot.get(key)}
-
-
-def _read_config(gate):
-    snap = gate.snapshot
-    return {"ok": True,
-            "config": {k: snap[k] for k in CONFIG_SCHEMA if k in snap},
-            "keys": {k: {kk: v.get(kk) for kk in ("type", "lo", "hi", "desc")}
-                     for k, v in CONFIG_SCHEMA.items()}}
-
-
-class PaperPilotRequiredSource:
-    """MCP 投影的必填项注入来源（``mecha.providers.mcp.RequiredSource`` 协议）。
-
-    ``execute`` 用 ``**kwargs`` 包装 ⇒ 框架从签名推必填得**空集**（必填会在模型面
-    静默消失）。这里从**同一份声明表 + 能力自描述**求权威必填项，交给
-    ``build_mcp_server(required_source=…)``——投影不靠实现细节反推。
-    """
-
-    def __init__(self, container) -> None:
-        self._map: dict[str, list[str]] = {}
-        for decl in TOOL_DECLS:
-            if not decl.ai_visible:
-                continue
-            cap_params = _cap_params(container, decl.cap_name)
-            self._map[decl.mecha_name] = _required_names(cap_params, decl)
-
-    def required_for(self, name: str, tool) -> list[str] | None:
-        return self._map.get(name)
-
-
-def build_required_source(container) -> PaperPilotRequiredSource:
-    return PaperPilotRequiredSource(container)
+def _status(repo) -> dict:
+    return {"papers": repo.count_papers(),
+            "cards": repo.conn.execute("SELECT COUNT(*) c FROM cards").fetchone()["c"],
+            "starred": len(repo.starred_ids()),
+            "drafts": repo.conn.execute("SELECT COUNT(*) c FROM drafts").fetchone()["c"],
+            "events": repo.conn.execute("SELECT COUNT(*) c FROM events").fetchone()["c"],
+            "scanned_days": len(repo.scanned_days()),
+            "edges": repo.edge_counts()}

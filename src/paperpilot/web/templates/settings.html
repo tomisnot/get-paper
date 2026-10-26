@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}设置 · PaperPilot{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <h1>设置</h1>
+  <div class="sub">草稿归 AI 编辑，这里只是人的管理面：改名、删除、指定默认显示哪一份。</div>
+</div>
+
+<section class="card">
+  <h2>默认草稿</h2>
+  <form method="post" action="/settings/default" class="row">
+    <label>线性页
+      <input type="hidden" name="kind" value="linear">
+      <select name="draft_id">
+        <option value="">（不指定，自动取最近一份线性草稿）</option>
+        {% for draft in drafts if draft.kind == "linear" %}
+        <option value="{{ draft.id }}" {{ "selected" if defaults.linear == draft.id|string else "" }}>{{ draft.title }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="ghost">保存</button>
+  </form>
+  <form method="post" action="/settings/default" class="row">
+    <label>网络页
+      <input type="hidden" name="kind" value="network">
+      <select name="draft_id">
+        <option value="">（不指定）</option>
+        {% for draft in drafts if draft.kind == "network" %}
+        <option value="{{ draft.id }}" {{ "selected" if defaults.network == draft.id|string else "" }}>{{ draft.title }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="ghost">保存</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>草稿清单</h2>
+  {% if drafts %}
+  <table>
+    <tr><th>#</th><th>页</th><th>名字</th><th class="num">条数</th><th>更新</th><th>操作</th></tr>
+    {% for draft in drafts %}
+    <tr>
+      <td class="num">{{ draft.id }}</td>
+      <td>{{ "线性" if draft.kind == "linear" else "网络" }}</td>
+      <td>
+        <form method="post" action="/drafts/{{ draft.id }}/rename" class="inline">
+          <input name="title" value="{{ draft.title }}">
+          <button class="ghost small">改名</button>
+        </form>
+      </td>
+      <td class="num">{{ draft.count }}</td>
+      <td class="muted">{{ draft.updated_at | fmt }}</td>
+      <td>
+        <form method="post" action="/drafts/{{ draft.id }}/delete" class="inline">
+          <button class="ghost small danger">删除</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">还没有草稿。草稿由 AI 写，去对话框里说一句就行。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>系统参数</h2>
+  <form method="post" action="/settings/config" class="grid2">
+    <label>兴趣半衰期（天）<input name="half_life_days" type="number" step="0.5" value="{{ settings.half_life_days }}"></label>
+    <label>抓取分类数<input name="default_regions_n" type="number" value="{{ settings.default_regions_n }}"></label>
+    <label>每日最多页数<input name="max_pages_per_day" type="number" value="{{ settings.max_pages_per_day }}"></label>
+    <label>单次请求上限<input name="max_requests" type="number" value="{{ settings.max_requests }}"></label>
+    <label>体检回看天数<input name="recent_draft_days" type="number" step="1" value="{{ settings.recent_draft_days }}"></label>
+    <button class="ghost">保存</button>
+  </form>
+</section>
+{% endblock %}
+{% block foot %}{{ drafts | length }} 份草稿{% endblock %}

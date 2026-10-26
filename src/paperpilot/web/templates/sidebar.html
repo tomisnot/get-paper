@@ -1,0 +1,15 @@
+{# 侧边栏：本页所有存档草稿。点一条就打开那一条（`?draft=<id>`）。 #}
+{% if sidebar and sidebar.drafts %}
+<aside class="sidebar">
+  <div class="sidehead">{{ sidebar.kind_label }}草稿 <span class="chip">{{ sidebar.drafts | length }}</span></div>
+  <nav class="sidelist">
+    {% for item in sidebar.drafts %}
+    <a class="sideitem{{ ' on' if item.id == sidebar.current else '' }}"
+       href="{{ sidebar.base }}?draft={{ item.id }}">
+      <span class="sidetitle">{{ item.title }}</span>
+      <span class="sidemeta">{{ item.count }} 条 · {{ item.updated_at | fmt }}{% if item.is_default %} · 默认{% endif %}</span>
+    </a>
+    {% endfor %}
+  </nav>
+</aside>
+{% endif %}
